@@ -5,6 +5,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.central.TestCentralConfig
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.util.JWT
 import versola.util.http.Observability
 import zio.*
@@ -17,7 +18,6 @@ import zio.test.*
 
 import java.time.Instant
 import java.util.UUID
-import javax.crypto.spec.SecretKeySpec
 
 object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val limit = VelocityLimitDto(perMinute = 0, perTenMinutes = 0, perHour = 3, perDay = 0, weight = 50)
@@ -61,8 +61,8 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def token(secret: JWT.Signature, claims: JWT.Claims = JWT.Claims("auth", "auth", List("central"), Json.Obj())) =
     JWT.serialize(claims = claims, ttl = 10.minutes, signature = secret)
 
-  /** What auth presents: signed with central's own secret key, as its sync token is. */
-  private val authToken = token(JWT.Signature.Symmetric(TestCentralConfig.config.secretKey))
+  /** What auth presents: signed with the key central is configured with for its auth, as its sync token is. */
+  private val authToken = token(TestCentralConfig.authSignature)
 
   private val sync = URL.root / "antifraud" / "policy" / "sync"
   private val listsSync = URL.root / "antifraud" / "policy" / "lists" / "sync"
@@ -77,6 +77,7 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ZEnvironment[AntifraudSettingsService](settingsService) ++
               ZEnvironment[AntifraudListService](listService) ++
               ZEnvironment[EdgeService](stub[EdgeService]) ++
+              ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
               ZEnvironment(TestCentralConfig.config) ++
               tracing,
           ),
@@ -127,11 +128,11 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
         listService.active.calls.isEmpty,
       )
     } @@ TestAspect.silentLogging,
-    test("a token that is not central's, a malformed one and a Basic credential are refused") {
+    test("a token signed with a key nobody registered, a malformed one and a Basic credential are refused") {
       val settingsService = stub[AntifraudSettingsService]
       val listService = stub[AntifraudListService]
       for
-        foreign <- token(JWT.Signature.Symmetric(SecretKeySpec(Array.fill(32)(9.toByte), "AES")))
+        foreign <- token(TestCentralConfig.foreignSignature)
         wrongKey <- run(Request.get(listsSync).addHeader(Header.Authorization.Bearer(foreign)), settingsService, listService)
         garbage <- run(Request.get(sync).addHeader(Header.Authorization.Bearer("not-a-jwt")), settingsService, listService)
         basic <- run(Request.get(sync).addHeader(Header.Authorization.Basic("admin", "admin")), settingsService, listService)

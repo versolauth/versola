@@ -14,6 +14,7 @@ import versola.central.configuration.topology.{
   TopologyRepository,
 }
 import versola.util.postgres.BasicCodecs
+import zio.json.ast.Json
 import zio.{Task, ZLayer}
 
 class PostgresTopologyRepository(xa: TransactorZIO) extends TopologyRepository, BasicCodecs:
@@ -23,6 +24,7 @@ class PostgresTopologyRepository(xa: TransactorZIO) extends TopologyRepository, 
   given DbCodec[EdgeId] = DbCodec.StringCodec.biMap(EdgeId(_), identity[String])
   given DbCodec[CellState] =
     DbCodec.StringCodec.biMap(code => CellState.from(code).fold(message => throw IllegalStateException(message), identity), _.code)
+  given DbCodec[List[Json.Obj]] = jsonBCodec[List[Json.Obj]]
   given DbCodec[PartitionRecord] = DbCodec.derived
   given DbCodec[RegionRecord] = DbCodec.derived
   given DbCodec[CellRecord] = DbCodec.derived
@@ -53,16 +55,16 @@ class PostgresTopologyRepository(xa: TransactorZIO) extends TopologyRepository, 
   override def getCells: Task[Vector[CellRecord]] =
     xa.connectMeasured("get-cells"):
       sql"""
-        SELECT id, region_id, internal_url, mtls_url, trusted_certificates, state, weight
+        SELECT id, region_id, internal_url, mtls_url, trusted_certificates, state, weight, public_keys
         FROM cells ORDER BY id
       """.query[CellRecord].run()
 
   override def createCell(record: CellRecord): Task[Boolean] =
     xa.connectMeasured("create-cell"):
       sql"""
-        INSERT INTO cells (id, region_id, internal_url, mtls_url, trusted_certificates, state, weight)
+        INSERT INTO cells (id, region_id, internal_url, mtls_url, trusted_certificates, state, weight, public_keys)
         VALUES (${record.id}, ${record.regionId}, ${record.internalUrl}, ${record.mtlsUrl}, ${record.trustedCertificates},
-                ${record.state}, ${record.weight})
+                ${record.state}, ${record.weight}, ${record.publicKeys})
         ON CONFLICT (id) DO NOTHING
       """.update.run() > 0
 
@@ -71,7 +73,8 @@ class PostgresTopologyRepository(xa: TransactorZIO) extends TopologyRepository, 
       sql"""
         UPDATE cells
         SET internal_url = ${record.internalUrl}, mtls_url = ${record.mtlsUrl},
-            trusted_certificates = ${record.trustedCertificates}, state = ${record.state}, weight = ${record.weight}
+            trusted_certificates = ${record.trustedCertificates}, state = ${record.state}, weight = ${record.weight},
+            public_keys = ${record.publicKeys}
         WHERE id = ${record.id}
       """.update.run() > 0
 

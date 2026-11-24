@@ -2,13 +2,15 @@ package versola.central.configuration.topology
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.edges.{EdgeId, EdgeService}
+import versola.central.configuration.edges.{EdgeGroup, EdgeGroupKind, EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.resources.ResourceService
 import versola.central.{TestAdminAuth, TestCentralConfig}
+import versola.util.JWT
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
@@ -17,6 +19,36 @@ import zio.test.*
 object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val kz = PartitionRecord(PartitionId("kz"))
   private val almaty = RegionRecord(RegionId("almaty"), kz.id)
+  private val cellKey = TestCentralConfig.newKeyPair("kz-1-key")
+  private val edgeKey = TestCentralConfig.newKeyPair("edge-1-key")
+
+  private val edgeRecord = EdgeRecord(
+    EdgeId("edge-1"),
+    Some(edgeKey.toPublicJwk),
+    None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
+  )
+
+  private def run(effect: Task[String]): String = Unsafe.unsafe { unsafe ?=> Runtime.default.unsafe.run(effect).getOrThrowFiberFailure() }
+
+  private val configuredAuthToken = run(TestCentralConfig.authToken)
+  private val cellToken = run(TestCentralConfig.authTokenBy(cellKey, cellId = Some("kz-1")))
+  private val edgeToken = run(
+    JWT.serialize(
+      JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+      1.minute,
+      JWT.Signature.Asymmetric(JWT.Algorithm.RS256, edgeKey.keyId, edgeKey.privateKey),
+      headers = Map("edge_id" -> "edge-1"),
+    ),
+  )
+
   private val cell = CellRecord(
     id = CellId("kz-1"),
     regionId = almaty.id,
@@ -25,6 +57,7 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
     trustedCertificates = Nil,
     state = CellState.Open,
     weight = 100,
+    publicKeys = List(cellKey.toPublicJwk),
   )
 
   private val tracingLayer: ULayer[Tracing] =
@@ -41,6 +74,7 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request: Request,
       expectedStatus: Status,
       authorized: Boolean = true,
+      registry: CellRegistry = TestCentralConfig.noCells,
       setup: Stubs => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stubs) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
   ) =
@@ -53,7 +87,7 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             TopologyController.routes.provideEnvironment(
               ZEnvironment[TopologyService](stubs.topology) ++
-                ZEnvironment[EdgeService](stubs.edges) ++
+                ZEnvironment[EdgeService](stubs.edges) ++ ZEnvironment[CellRegistry](registry) ++
                 ZEnvironment[ResourceService](stubs.resources) ++
                 ZEnvironment(TestCentralConfig.config) ++
                 tracing,
@@ -61,6 +95,7 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         _ <- stubs.resources.verifySecret.succeedsWith(true)
+        _ <- stubs.edges.find.succeedsWith(Some(edgeRecord))
         _ <- setup(stubs)
         authed = if authorized then request.addHeader(TestAdminAuth.basicAuthHeader) else request
         response <- client.batched(authed)
@@ -72,6 +107,7 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
     Request(method = method, url = url, body = Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.json))
 
   private val cells = URL.root / "configuration" / "cells"
+  private val syncUrl = cells / "sync"
 
   def spec = suite("topology endpoints")(
     testCase(
@@ -120,7 +156,21 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request.delete(cells.addQueryParam("cellId", "kz-1")),
       expectedStatus = Status.NoContent,
       setup = _.topology.deleteCell.succeedsWith(()),
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List(cell.id))),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, false)))),
+    ),
+    testCase(
+      description = "a cell said to be lost is deleted as lost, and any other value of the parameter is not that",
+      request = Request.delete(cells.addQueryParam("cellId", "kz-1").addQueryParam("lost", "true")),
+      expectedStatus = Status.NoContent,
+      setup = _.topology.deleteCell.succeedsWith(()),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, true)))),
+    ),
+    testCase(
+      description = "lost=yes is not lost=true: the cell is deleted only if it holds no user",
+      request = Request.delete(cells.addQueryParam("cellId", "kz-1").addQueryParam("lost", "yes")),
+      expectedStatus = Status.NoContent,
+      setup = _.topology.deleteCell.succeedsWith(()),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, false)))),
     ),
     testCase(
       description = "an edge is put in a region, and a body that names none takes it out",
@@ -135,5 +185,69 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
       authorized = false,
       expectedStatus = Status.Unauthorized,
       verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.createCell.calls.isEmpty)),
+    ),
+    testCase(
+      description = "a cell with no publicKeys member is not a cell: the keys are required, not defaulted",
+      request = json(Method.POST, cells, cell.toJson.replaceAll(""","publicKeys":\[.*\]""", "")),
+      expectedStatus = Status.BadRequest,
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.createCell.calls.isEmpty)),
+    ),
+    testCase(
+      description = "the keys of a cell are handed to the service as they were sent, and written back as they are stored",
+      request = json(Method.POST, cells, cell.toJson),
+      expectedStatus = Status.Created,
+      setup = _.topology.createCell.succeedsWith(()),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(stubs.topology.createCell.calls.map(_.publicKeys) == List(List(cellKey.toPublicJwk)))),
+    ),
+    // `GET /configuration/cells/sync`: the cells as an auth knows them (#1050)
+    testCase(
+      description = "the cells an auth is told of: id, state, weight, region and public keys, and nothing of addresses or pins",
+      request = Request.get(syncUrl).addHeader(Header.Authorization.Bearer(configuredAuthToken)),
+      authorized = false,
+      registry = TestCentralConfig.registryOf(cell.copy(mtlsUrl = Some("https://auth-kz-1.internal:9443"))),
+      expectedStatus = Status.Ok,
+      verify = (response, _) =>
+        for body <- response.body.asString
+        yield assertTrue(
+          body.fromJson[Json] == Right(
+            Json.Obj(
+              "cells" -> Json.Arr(
+                Json.Obj(
+                  "id" -> Json.Str("kz-1"),
+                  "state" -> Json.Str("open"),
+                  "weight" -> Json.Num(100),
+                  "regionId" -> Json.Str("almaty"),
+                  "publicKeys" -> Json.Arr(cellKey.toPublicJwk),
+                ),
+              ),
+            ),
+          ),
+        ),
+    ),
+    testCase(
+      description = "an auth of a registered cell may read the cells",
+      request = Request.get(syncUrl).addHeader(Header.Authorization.Bearer(cellToken)),
+      authorized = false,
+      registry = TestCentralConfig.registryOf(cell),
+      expectedStatus = Status.Ok,
+    ),
+    testCase(
+      description = "an edge is refused the cells an auth reads, whatever its token proves",
+      request = Request.get(syncUrl).addHeader(Header.Authorization.Bearer(edgeToken)),
+      authorized = false,
+      registry = TestCentralConfig.registryOf(cell),
+      expectedStatus = Status.Unauthorized,
+    ),
+    testCase(
+      description = "a token of a cell that is not registered, so a key that is nowhere, is refused the cells",
+      request = Request.get(syncUrl).addHeader(Header.Authorization.Bearer(cellToken)),
+      authorized = false,
+      expectedStatus = Status.Unauthorized,
+    ),
+    testCase(
+      description = "the admin Basic credential does not read the cells an auth reads",
+      request = Request.get(syncUrl),
+      expectedStatus = Status.Unauthorized,
     ),
   )

@@ -1,6 +1,7 @@
 package versola.central.configuration.topology
 
 import versola.util.RoutingKey
+import zio.json.ast.Json
 import zio.json.{JsonCodec, JsonDecoder, JsonEncoder}
 import zio.schema.*
 
@@ -98,6 +99,9 @@ case class RegionRecord(
   * @param trustedCertificates the leaf certificates (PEM) the cell's endpoints are pinned by; several, so that a
   *                            certificate can be replaced without a gap
   * @param weight the cell's share of new users among the open cells of its region; `0` takes none
+  * @param publicKeys the public RSA JWKs the cell's `auth` signs its calls to central with (#1050): one, or two while a
+  *                   key is being replaced. Central takes a call to be the cell's when the key that verifies its token is
+  *                   here, so a key is in no other cell, no edge and not the configured `auth`
   */
 case class CellRecord(
     id: CellId,
@@ -107,6 +111,7 @@ case class CellRecord(
     trustedCertificates: List[String],
     state: CellState,
     weight: Int,
+    publicKeys: List[Json.Obj],
 ) derives Schema, JsonCodec
 
 /** Where a user nobody placed yet is created (versolauth/versola#547, D8): a weighted choice over the open cells, so

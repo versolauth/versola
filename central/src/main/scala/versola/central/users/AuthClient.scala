@@ -6,7 +6,7 @@ import versola.central.audit.{AuthAuditError, CentralAudit, UserAuditEventsQuery
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.topology.TopologyRepository
+import versola.central.configuration.topology.{CellId, TopologyRepository}
 import versola.util.audit.AuditContext
 import versola.util.http.Observability
 import versola.util.{Email, Patch, Phone}
@@ -47,6 +47,11 @@ trait AuthClient:
   ): Task[Unit]
 
   def deleteUser(userId: UserId): Task[Unit]
+
+  /** The deletion of a user that central's directory no longer holds (the queued one): addressed to the cell that held the
+    * user, which `cell` names, because there is nobody left to look the cell up for. A cell that is not registered any
+    * more, or `None`, is the configured `auth`, as [[deleteUser]] is for a user of no cell. */
+  def deleteUserOf(cell: Option[CellId], userId: UserId): Task[Unit]
 
   /** The user as `auth` holds it: its identifiers, which central keeps only the MACs of, and its claims. */
   def getUser(id: UserId): Task[Option[AuthClient.UserDto]]
@@ -150,18 +155,20 @@ trait AuthClient:
 
 object AuthClient:
   /** The `auth` central is configured with, and no other. */
-  val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
-    AuthTokenService.live >>> ZLayer.fromFunction((client: Client, config: CentralConfig, tokens: AuthTokenService) =>
-      Impl(client, config.auth.url, tokens),
+  val live: ZLayer[Client & CentralConfig, Throwable, AuthClient] =
+    (AuthTokenService.live ++ ZLayer.environment[Client & CentralConfig]) >>> ZLayer.fromFunction(
+      (client: Client, config: CentralConfig, tokens: AuthTokenService) =>
+        Impl(client, config.auth.url, tokens, AuthTokenService.audienceOfConfigured(config)),
     )
 
-  /** Every call about a user goes to the cell that holds the user ([[CellAuthClient]]). */
-  val routed: ZLayer[Scope & Client & CentralConfig & UserRepository & TopologyRepository, Throwable, AuthClient] =
-    AuthTokenService.live >>> ZLayer.fromFunction:
+  /** Every call about a user goes to the cell that holds the user ([[CellAuthClient]]). Each `auth` is sent a token made for
+    * it alone (#1050): the configured one for its `auth.cell-id` (`auth` when it has none), a cell for its id. */
+  val routed: ZLayer[Client & CentralConfig & UserRepository & TopologyRepository, Throwable, AuthClient] =
+    (AuthTokenService.live ++ ZLayer.environment[Client & CentralConfig & UserRepository & TopologyRepository]) >>> ZLayer.fromFunction:
       (client: Client, config: CentralConfig, tokens: AuthTokenService, users: UserRepository, topology: TopologyRepository) =>
         CellAuthClient(
-          configured = Impl(client, config.auth.url, tokens),
-          at = url => Impl(client, url, tokens),
+          configured = Impl(client, config.auth.url, tokens, AuthTokenService.audienceOfConfigured(config)),
+          at = (url, cell) => Impl(client, url, tokens, cell),
           users = users,
           topology = topology,
         )
@@ -292,11 +299,15 @@ object AuthClient:
       actorId: Option[UserId],
   ) derives JsonCodec
 
-  /** @param base the `auth` the calls go to: the one central is configured with, or a cell's own address. */
+  /** @param base the `auth` the calls go to: the one central is configured with, or a cell's own address.
+    * @param audience who the token is made for, the `aud` the `auth` at `base` checks: its cell id, or `auth` where it has none. A
+    *   token is never sent to an `auth` it was not made for.
+    */
   class Impl(
       httpClient: Client,
       base: URL,
       tokenService: AuthTokenService,
+      audience: String,
   ) extends AuthClient:
     private val usersUrl: URL = base / "users"
     private val rolesUrl: URL = usersUrl / "roles"
@@ -543,6 +554,8 @@ object AuthClient:
           case _ => failResponse(response)
       .flatMap(ZIO.fromEither(_))
 
+    override def deleteUserOf(cell: Option[CellId], userId: UserId): Task[Unit] = deleteUser(userId)
+
     override def deleteUser(userId: UserId): Task[Unit] =
       send(
         Request(
@@ -619,10 +632,10 @@ object AuthClient:
         named =
           actor.filter(_ => carriesActorInQuery(request)).fold(request)(id => request.updateURL(_.addQueryParam(AuthClient.ActorParam, id.toString)))
         onBehalf = ip.fold(named)(address => named.updateURL(_.addQueryParam(AuthClient.ActorIpParam, address)))
-        token <- tokenService.getToken
+        token <- tokenService.getToken(audience)
         result <- attemptWithToken(onBehalf)(token).catchSome:
           case AuthClient.TokenExpiredError =>
-            tokenService.refreshToken().flatMap(attemptWithToken(onBehalf))
+            tokenService.refreshToken(audience).flatMap(attemptWithToken(onBehalf))
       yield result
 
     private def authorized(request: Request, token: String): Request =

@@ -5,6 +5,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.{
   AuthorizationDetailTypeResponse,
   AuthorizationDetailTypeSyncResponse,
@@ -28,7 +29,6 @@ import javax.crypto.spec.SecretKeySpec
 
 object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
-  private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
   private val tenantId = TenantId("tenant-a")
   private val detailType = AuthorizationDetailType("payment_initiation")
@@ -41,9 +41,9 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj()),
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(secretKey),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
@@ -74,7 +74,7 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             AuthorizationDetailTypeController.routes.provideEnvironment(
               ZEnvironment[AuthorizationDetailTypeService](service) ++
-                ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[CentralConfig](config) ++
                 tracing,

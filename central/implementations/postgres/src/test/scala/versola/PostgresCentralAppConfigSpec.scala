@@ -15,6 +15,6 @@ object PostgresCentralAppConfigSpec extends ZIOSpecDefault:
     bytes16 = None,
     bytes32 = deriveConfig[Secret.Bytes32],
     plain = deriveConfig[Secret],
-    aesKey = Some(deriveConfig[javax.crypto.SecretKey]),
-    privateKey = None,
+    aesKey = None,
+    privateKey = Some(deriveConfig[java.security.PrivateKey]),
   )

@@ -14,10 +14,16 @@ info:
     This reference covers the admin console surface. Central also exposes internal
     replication endpoints that are not part of this document:
 
-    * `/configuration/*/sync`, `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
+    * `/configuration/*/sync` (`GET /configuration/cells/sync` among them: the cells with their state, weight, region and public keys),
+      `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
       and `POST /users/registrations`, `POST /users/lookup`, `POST /users/home`, `POST /users/sessions/superseded`, `GET /antifraud/policy/sync`
-      and `GET /antifraud/policy/lists/sync`, which auth reads with its shared-secret token. Every
-      route outside `/edge/*` refuses a token that authenticates an edge (`403`).
+      and `GET /antifraud/policy/lists/sync`, which an auth reads with a token of its own: RS256, signed with the private key whose public half
+      is in `publicKeys` of its cell (or in central's `auth.public-keys` for the auth central is configured with), `kid` the key's id, `iss`
+      `auth`, `aud` `central`. Central tells who calls from the key that verifies the token, not from anything the token says of itself; HS256
+      tokens, and the shared secret they were signed with, no longer exist. What the answers of these routes carry as secrets (client and
+      resource secrets, delivery passwords, the private keys tenants sign with) is encrypted to that key, so only that auth reads it.
+      Central calls auth the same way, with RS256 under its own service key and `aud` the id of the cell it calls (`auth` for a configured auth
+      with no cell id). Every route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
       `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`, `cells`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener; the one
@@ -2940,7 +2946,10 @@ paths:
           description: >-
             The record is malformed: a negative weight, an address that is not an absolute
             `http` or `https` URL (`mtlsUrl` must be `https`), a pin that is not a PEM
-            certificate or is named twice, or a region that does not exist. The body says which.
+            certificate or is named twice, a region that does not exist, or `publicKeys` that is empty, has more
+            than two keys, holds a key that is not a public RSA JWK of 2048 to 8192 bits with a `kid`, names a
+            `kid` or a key twice, or holds a key or a `kid` that is already another cell's, an edge's or the
+            one central is configured with for its auth (compared by RFC 7638 thumbprint). The body says which.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
@@ -2949,8 +2958,9 @@ paths:
       tags: [Topology]
       summary: Update a cell
       description: >-
-        Replaces the addresses, the pins, the state and the weight. The id and the region are
-        not changed: a cell is where its database is.
+        Replaces the addresses, the pins, the state, the weight and the keys. The id and the region are
+        not changed: a cell is where its database is. `publicKeys` is the whole set the cell has from
+        now on, not an addition: a cell's key is replaced by sending both for a while, then only the new one.
       operationId: updateCell
       requestBody:
         required: true
@@ -2977,6 +2987,17 @@ paths:
           required: true
           schema:
             $ref: '#/components/schemas/TopologyId'
+        - name: lost
+          in: query
+          required: false
+          description: >-
+            `true` when the cell is gone for good with the users it held (its database was lost, a
+            stand is taken down): it is deleted although the directory still places users in it.
+            Those users stay in the directory and cannot sign in until they are deleted. Not the way
+            to retire a working cell. The cell still has to be `closed`.
+          schema:
+            type: boolean
+            default: false
       responses:
         '204':
           description: Cell deleted.
@@ -2985,7 +3006,9 @@ paths:
         '404':
           description: There is no such cell.
         '409':
-          description: The cell is `open` or `draining`. Only a `closed` cell is deleted.
+          description: >-
+            The cell is `open` or `draining`, or the user directory still places users in it and
+            `lost` is not `true`. Only a `closed` cell that holds no user is deleted.
 
   /configuration/edges/region:
     put:
@@ -7798,7 +7821,19 @@ components:
           type: integer
           minimum: 0
           description: The cell's share of new users among the open cells of its region.
-      required: [id, regionId, internalUrl, trustedCertificates, state, weight]
+        publicKeys:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/Jwk'
+          description: >-
+            The public RSA keys (2048 to 8192 bits, each with a `kid`) the cell's auth signs its calls to
+            central with (`central.private-key`; the `kid` is `central.key-id`). One, or two while a key is
+            being replaced. Central takes a call to be the cell's when its token verifies with a key listed
+            here, and encrypts the secrets it answers that auth to it. No private member is accepted. Required: a
+            cell with no key cannot call central.
+      required: [id, regionId, internalUrl, trustedCertificates, state, weight, publicKeys]
     TopologyResponse:
       type: object
       properties:

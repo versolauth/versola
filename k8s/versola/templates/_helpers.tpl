@@ -67,9 +67,12 @@ Image reference for a service. Expects a dict: {global: .Values.global, svc: <se
 {{/*
 Required ${VAR} secret keys per service (see scripts/gen-env.scala's
 secretField/useOpenBao) -- fixed by the app's own config contract, not a
-values.yaml knob. CENTRAL_SECRET_KEY and CLIENT_SECRETS_SECRET are the
-only two genuinely shared between auth and central (same value, see
-gen-env.scala's own comment on why); everything else -- including
+values.yaml knob. CLIENT_SECRETS_SECRET is the only one genuinely shared
+between auth and central (same value, see gen-env.scala's own comment on
+why). The service keys (versolauth/versola#1050) are two key pairs whose
+halves live in different services under different names -- the private
+half and its kid with the signer, the public JWK with the verifier --
+so none of them is shared by name; everything else -- including
 POSTGRES_PASSWORD, which every service needs but with a DIFFERENT value
 each -- is per-service only. See versola.secretKeyFor below for how that
 distinction avoids the three POSTGRES_PASSWORDs colliding under one key
@@ -77,8 +80,8 @@ in the single shared Secret (values.yaml's `secrets.existingSecret`).
 */}}
 {{- define "versola.requiredSecretVars" -}}
 {{- $vars := dict
-  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "DPOP_NONCES_SECRET" "ANTIFRAUD_SUBJECT_SECRET" "JWT_PRIVATE_KEY" "CENTRAL_SECRET_KEY" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
-  "central" (list "CENTRAL_SECRET_KEY" "CLIENT_SECRETS_SECRET" "ACCOUNT_RESOURCE_SECRET" "JWKS_JSON" "EDGE_PUBLIC_JWK" "POSTGRES_PASSWORD" "CENTRAL_RESOURCE_SECRET" "UTILITY_CLIENT_PUBLIC_JWK")
+  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "DPOP_NONCES_SECRET" "ANTIFRAUD_SUBJECT_SECRET" "JWT_PRIVATE_KEY" "AUTH_SERVICE_PRIVATE_KEY" "AUTH_SERVICE_KEY_ID" "CENTRAL_SERVICE_PUBLIC_JWK" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
+  "central" (list "CENTRAL_SERVICE_PRIVATE_KEY" "CENTRAL_SERVICE_KEY_ID" "AUTH_SERVICE_PUBLIC_JWK" "CLIENT_SECRETS_SECRET" "ACCOUNT_RESOURCE_SECRET" "JWKS_JSON" "EDGE_PUBLIC_JWK" "POSTGRES_PASSWORD" "CENTRAL_RESOURCE_SECRET" "UTILITY_CLIENT_PUBLIC_JWK")
   "edge" (list "EDGE_PRIVATE_KEY" "EDGE_KEY_ID" "EDGE_TOKEN_ENC_KEY" "EDGE_SESSIONS_SECRET" "EDGE_INTERNAL_SECRET" "EDGE_DPOP_NONCE_SALT" "EDGE_NATIVE_BLOB_KEY" "POSTGRES_PASSWORD")
  -}}
 {{- toYaml (index $vars .) -}}
@@ -88,8 +91,8 @@ in the single shared Secret (values.yaml's `secrets.existingSecret`).
 Secret data key for one (service, VAR) pair in the shared
 secrets.existingSecret Secret. Expects a dict: {service: "auth", var:
 "ACCESS_TOKENS_SECRET"}. kebab-cases the VAR name, then:
-  - the 2 vars genuinely shared across services (see
-    versola.requiredSecretVars above) stay bare, e.g. "central-secret-key",
+  - the var genuinely shared across services (see
+    versola.requiredSecretVars above) stays bare, "client-secrets-secret",
     since both auth and central must read the identical key.
   - everything else is namespaced by service, e.g. "auth-postgres-password"
     vs "central-postgres-password" vs "edge-postgres-password", since
@@ -98,7 +101,7 @@ secrets.existingSecret Secret. Expects a dict: {service: "auth", var:
     -> "edge-private-key", not "edge-edge-private-key").
 */}}
 {{- define "versola.secretKeyFor" -}}
-{{- $shared := list "CENTRAL_SECRET_KEY" "CLIENT_SECRETS_SECRET" -}}
+{{- $shared := list "CLIENT_SECRETS_SECRET" -}}
 {{- $kebab := kebabcase .var -}}
 {{- if has .var $shared -}}
 {{- $kebab -}}

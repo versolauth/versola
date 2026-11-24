@@ -4,6 +4,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.util.JWT
+import versola.util.RsaKeyPair
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
@@ -12,21 +13,19 @@ import zio.json.ast.Json
 import zio.test.*
 
 import java.time.Instant
-import javax.crypto.SecretKey
-import javax.crypto.spec.SecretKeySpec
 
 object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val config = TestEnvConfig.coreConfig
-  private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+  private val wrongKey = TestEnvConfig.impostorKeyPair
   private val rules = URL.empty / "antifraud" / "rules"
   private val status = URL.empty / "antifraud" / "status"
 
-  private def token(key: SecretKey) =
+  private def token(key: RsaKeyPair) =
     JWT.serialize(
       claims = JWT.Claims("central", "central", List("auth"), Json.Obj()),
       ttl = 10.minutes,
-      signature = JWT.Signature.Symmetric(key),
+      signature = TestEnvConfig.signedBy(key),
     )
 
   private def call(
@@ -34,7 +33,7 @@ object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tuning: AntifraudTuningStore,
       request: Request,
       decisionEnabled: Boolean = true,
-      key: SecretKey = config.central.secretKey,
+      key: RsaKeyPair = TestEnvConfig.centralKeyPair,
   ): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]

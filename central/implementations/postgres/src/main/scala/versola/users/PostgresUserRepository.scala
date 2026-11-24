@@ -47,6 +47,10 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
             WHERE i.kind = ${identifier.kind.code} AND i.mac = ${identifier.mac}"""
         .query[UserDirectoryRecord].run().headOption
 
+  override def countInCell(cell: CellId): Task[Long] =
+    xa.connectMeasured("count-users-in-cell"):
+      sql"SELECT COUNT(*) FROM user_directory WHERE cell_id = $cell".query[Long].run().head
+
   override def identifierKinds(id: UserId): Task[Set[IdentifierKind]] =
     xa.connectMeasured("find-user-identifier-kinds"):
       sql"SELECT kind FROM identifier_directory WHERE user_id = $id".query[String].run().flatMap(IdentifierKind.of).toSet
@@ -127,8 +131,10 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     for
       eventId <- secureRandom.nextUUIDv7
       _ <- xa.transactMeasured("delete-user"):
-        sql"DELETE FROM user_directory WHERE user_id = $id".update.run()
-        enqueueEventSql(id, eventId, OutboxEvent.DeleteUser(id))
+        // The cell is read by the delete itself, in the same transaction: once the row is gone nothing else says
+        // which `auth` holds the user, and the event is delivered later.
+        val held = sql"DELETE FROM user_directory WHERE user_id = $id RETURNING user_id, cell_id".returning[UserDirectoryRecord].run()
+        enqueueEventSql(id, eventId, OutboxEvent.DeleteUser(userId = id, cell = held.headOption.flatMap(_.cellId)))
     yield ()
 
   override def pendingEvents(id: UserId): Task[Vector[OutboxEvent]] =

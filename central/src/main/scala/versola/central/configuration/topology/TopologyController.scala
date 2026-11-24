@@ -3,9 +3,10 @@ package versola.central.configuration.topology
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.{EdgeId, EdgeService}
 import versola.central.configuration.resources.ResourceService
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.{CentralConfig, authorizeAuth, authorizeBasic}
 import versola.util.http.{Observability, Unauthorized}
 import zio.http.{Method, Request, Response, Status, handler}
+import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 import zio.{IO, ZIO}
@@ -14,7 +15,7 @@ import zio.{IO, ZIO}
   * `edges:read` and changed with `edges:manage`, like the edges and their groups it describes.
   */
 object TopologyController extends AuditedController:
-  type Env = Tracing & TopologyService & EdgeService & CentralConfig & ResourceService
+  type Env = Tracing & TopologyService & EdgeService & CellRegistry & CentralConfig & ResourceService
 
   def endpoints = List(
     getTopologyEndpoint,
@@ -25,7 +26,22 @@ object TopologyController extends AuditedController:
     updateCellEndpoint,
     deleteCellEndpoint,
     setEdgeRegionEndpoint,
+    cellsSyncEndpoint,
   )
+
+  /** The cells as an `auth` knows them (#1050): where each is, whether it takes new users, and the public keys it signs its calls
+    * with, which are what a cell seals a sign-in for another with and opens one with. Internal: an `auth` of a registered cell
+    * or the configured one, with its token; an edge is refused (its own list is `/edge/sync/cells`, which has no keys).
+    * Answered from the cells central holds in memory ([[CellRegistry]]), a change of which is seen at once on the replica that
+    * made it and at the next refresh on the others.
+    */
+  val cellsSyncEndpoint =
+    (Method.GET / "configuration" / "cells" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
+      for
+        _ <- authorizeAuth(request)
+        cells <- ZIO.serviceWithZIO[CellRegistry](_.all)
+      yield Response.json(AuthCellsSyncResponse.of(cells).toJson)
+    }
 
   val getTopologyEndpoint =
     (Method.GET / "configuration" / "topology").audited(Audit.Unrecorded) -> handler { (request: Request) =>
@@ -92,8 +108,10 @@ object TopologyController extends AuditedController:
       for
         _ <- authorizeBasic(request)
         cellId <- request.url.queryZIO[CellId]("cellId")
+        // `lost=true`: the cell is gone for good with the users it held (see `TopologyService.deleteCell`).
+        lost = request.url.queryParams.getAll("lost").headOption.contains("true")
         _ <- Audit.target(cellId)
-        response <- answered(Status.NoContent)(ZIO.serviceWithZIO[TopologyService](_.deleteCell(cellId)))
+        response <- answered(Status.NoContent)(ZIO.serviceWithZIO[TopologyService](_.deleteCell(cellId, lost)))
       yield response
     }
 
@@ -170,4 +188,26 @@ object CellsSyncResponse:
             weight = cell.weight,
           ),
       region = region,
+    )
+
+/** A cell as an `auth` is told of it (`GET /configuration/cells/sync`, #1050): the state, the weight and the region, and the public
+  * RSA JWKs its `auth` signs with. No address and no certificate: an `auth` does not call another. */
+case class AuthCellRecord(
+    id: CellId,
+    state: CellState,
+    weight: Int,
+    regionId: RegionId,
+    publicKeys: List[Json.Obj],
+) derives JsonCodec
+
+case class AuthCellsSyncResponse(
+    cells: Vector[AuthCellRecord],
+) derives JsonCodec
+
+object AuthCellsSyncResponse:
+  def of(cells: Vector[CellRecord]): AuthCellsSyncResponse =
+    AuthCellsSyncResponse(
+      cells = cells.map(cell =>
+        AuthCellRecord(id = cell.id, state = cell.state, weight = cell.weight, regionId = cell.regionId, publicKeys = cell.publicKeys),
+      ),
     )

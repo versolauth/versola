@@ -4,6 +4,7 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.theme.{ThemePresets, ThemeVariables}
 import zio.ZIO
@@ -11,7 +12,7 @@ import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 object ThemeController extends AuditedController:
-  type Env = Tracing & ThemeService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & ThemeService & ResourceService & CentralConfig & EdgeService & CellRegistry
 
   def endpoints = List(
     getAllThemesEndpoint,

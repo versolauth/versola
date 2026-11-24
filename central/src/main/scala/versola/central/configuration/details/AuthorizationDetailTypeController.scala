@@ -4,6 +4,7 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.{
   AuthorizationDetailTypeResponse,
   AuthorizationDetailTypeSyncResponse,
@@ -18,7 +19,7 @@ import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 object AuthorizationDetailTypeController extends AuditedController:
-  type Env = Tracing & AuthorizationDetailTypeService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & AuthorizationDetailTypeService & ResourceService & CentralConfig & EdgeService & CellRegistry
 
   def endpoints = List(
     getAllTypesEndpoint,

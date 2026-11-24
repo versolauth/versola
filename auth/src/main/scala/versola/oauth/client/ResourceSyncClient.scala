@@ -11,7 +11,7 @@ import zio.{Task, URLayer, ZIO, ZLayer}
   * validate the RFC 8707 `resource` request parameter. The response also carries the secrets
   * of auth's own internal resource (hard-coded resourceId `"auth"`, matching central's
   * `BootstrapService.authResourceId`),
-  * encrypted with the central secret key the same way as edge's resource sync (see
+  * encrypted to this auth's key (`central.privateKey`) the same way as edge's resource sync (see
   * [[ResourceSyncClient.decryptSecret]]), so auth can authenticate that resource without a
   * separately configured static secret.
   */
@@ -51,7 +51,7 @@ object ResourceSyncClient:
     private def decryptSecret(value: String): Task[Secret] =
       for
         encrypted <- ZIO.attempt(Base64.urlDecode(value))
-        decrypted <- securityService.decryptAes256(encrypted, config.central.secretKey)
+        decrypted <- securityService.decryptRsaHybrid(encrypted, config.central.privateKey)
       yield Secret(decrypted)
 
     private case class RegistryEntry(

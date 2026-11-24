@@ -118,7 +118,7 @@ object UserOutboxProcessor:
         case e: OutboxEvent.UpsertUser => client.upsertUser(e.userId, e.version, e.email, e.phone, e.login)
         case e: OutboxEvent.PatchUser => client.patchUser(e.userId, e.version, e.email, e.phone, e.login)
         case e: OutboxEvent.UpdateUserRoles => client.updateUserRoles(e.userId, e.tenantId, e.add, e.remove)
-        case e: OutboxEvent.DeleteUser => client.deleteUser(e.userId)
+        case e: OutboxEvent.DeleteUser => client.deleteUserOf(e.cell, e.userId)
 
     private def dispatchWithRetry(event: OutboxEvent): Task[Unit] =
       dispatch(event).retry(flushRetrySchedule)

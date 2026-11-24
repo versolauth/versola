@@ -11,9 +11,11 @@ import java.util.concurrent.TimeUnit
 /** A second cell beside the staged `auth` (versolauth/versola#604): another `auth` of the same build, with its own
   * database and its own `cell-id`, and both cells registered in central so that the staged edge routes by them.
   *
-  * What a cell is, is a database of its own: the second `auth` is started on the running one's `env.conf` with the
-  * database, the cell id and the address of its mutual-TLS listener replaced, and it migrates the database it is given.
-  * Central, the signing keys and the clients are the ones of the stack, so a token of either cell verifies everywhere.
+  * What a cell is, is a database of its own and a key of its own: the second `auth` is started on the running one's
+  * `env.conf` with the database, the cell id and its key pair (`central.key-id`, `central.private-key`; generated here,
+  * versolauth/versola#1050) replaced, and it migrates the database it is given. Both cells are registered with their
+  * public keys, which is how central tells which of them calls it. Central, the signing keys and the clients are the
+  * ones of the stack, so a token of either cell verifies everywhere.
   *
   * The registration changes how the staged edge reaches `auth` for every spec, so it lasts for the scope only: the
   * cells are removed and the edge is told again when it closes. Cell 2 is registered closed: nothing is placed in it
@@ -49,7 +51,7 @@ object CellStand:
   val SecondCellId = "local-2"
 
   /** How many registration setups are made up front. */
-  val Setups = 18
+  val Setups = 24
 
   /** A client as a spec uses it at `/authorize` and `/token`. */
   final case class RegisteredClient(clientId: String, clientSecret: String, redirectUri: String)
@@ -111,7 +113,7 @@ object CellStand:
       finally connection.close()
     .unit
 
-  private def launch(config: E2EConfig, database: String): ZIO[Scope, Throwable, (Process, Path)] =
+  private def launch(config: E2EConfig, database: String, key: CellIdentity.ServiceKey): ZIO[Scope, Throwable, (Process, Path)] =
     ZIO.acquireRelease(
       ZIO.attemptBlocking:
         val conf = Files.createTempFile("e2e-cell-", ".conf").nn
@@ -123,6 +125,8 @@ object CellStand:
         val overrides =
           s"""
              |cell-id = "$SecondCellId"
+             |central.key-id = "${key.keyId}"
+             |central.private-key = "${key.encoded}"
              |postgres.url = "$database"
              |""".stripMargin
         Files.writeString(conf, Files.readString(Path.of(config.authEnvConf)) + overrides)
@@ -159,7 +163,7 @@ object CellStand:
             ZIO.fail(RuntimeException(s"the second cell did not become ready:\n${out.takeRight(4000)}")),
           )
 
-  private def cell(id: String, internalUrl: String, mutualTlsUrl: String, pin: String, state: String, weight: Int): Json.Obj =
+  private def cell(id: String, internalUrl: String, mutualTlsUrl: String, pin: String, state: String, weight: Int, publicKey: Json.Obj): Json.Obj =
     Json.Obj(
       "id" -> Json.Str(id),
       "regionId" -> Json.Str(Region),
@@ -168,6 +172,7 @@ object CellStand:
       "trustedCertificates" -> Json.Arr(Json.Str(pin)),
       "state" -> Json.Str(state),
       "weight" -> Json.Num(weight),
+      "publicKeys" -> Json.Arr(publicKey),
     )
 
   private def accepted(what: String, result: ApiResult, also: Status*): Task[Unit] =
@@ -181,7 +186,7 @@ object CellStand:
     // What an earlier run that was stopped left: the same removal as at the end, and nothing to remove is not an error.
     val remove =
       ZIO.foreachDiscard(List(first, second))(cell =>
-        (central.put("/configuration/cells", closed(cell)) *> central.delete("/configuration/cells", "cellId" -> id(cell))).ignore,
+        (central.put("/configuration/cells", closed(cell)) *> central.delete("/configuration/cells", "cellId" -> id(cell), "lost" -> "true")).ignore,
       ) *> central.delete("/configuration/regions", "regionId" -> Region).ignore *> edge.syncConfiguration.ignore
     ZIO.acquireRelease(
       for
@@ -230,21 +235,29 @@ object CellStand:
           Set(RedirectUri),
           authFlow = Some(Flows.loginPasswordPasskeyAuthFlow),
         ).success
+        // Each cell is known to central by its own key: the staged auth's, which central's configuration lists as `auth.public-keys`
+        // (the cell it is configured with is this one), and one generated for the second cell, whose kid no other key has.
+        firstKey <- CellIdentity.stagedAuth(config)
+        secondKey <- CellIdentity.generate(s"auth-$SecondCellId-e2e")
+        firstPublicKey <- firstKey.publicJwk
+        secondPublicKey <- secondKey.publicJwk
         server <- databaseOf(config.authEnvConf)
         database = s"${server.name}_cell2"
         _ <- freshDatabase(server, database)
-        (process, log) <- launch(config, server.named(database))
-        _ <- awaitReady(process, log, client)
         // The leaf of auth's own listener, which is what an edge pins a cell by; both cells present the same one.
         pin <- ZIO.attemptBlocking(Files.readString(Path.of(config.authMutualTlsTrustedCertificates).resolveSibling("server.crt")).trim)
         secondUrl = s"http://localhost:$Port"
         secondMutualTlsUrl = s"https://localhost:$MutualTlsPort"
+        // Registered before the second cell starts: central knows an auth by its key, and a cell that central does not
+        // know cannot read the configuration it starts with (versolauth/versola#1050).
         _ <- registered(
           central,
           edge,
-          first = cell(config.authCellId, config.authUrl, config.authMutualTlsUrl, pin, state = "open", weight = 100),
-          second = cell(SecondCellId, secondUrl, secondMutualTlsUrl, pin, state = "closed", weight = 0),
+          first = cell(config.authCellId, config.authUrl, config.authMutualTlsUrl, pin, state = "open", weight = 100, publicKey = firstPublicKey),
+          second = cell(SecondCellId, secondUrl, secondMutualTlsUrl, pin, state = "closed", weight = 0, publicKey = secondPublicKey),
         )
+        (process, log) <- launch(config, server.named(database), secondKey)
+        _ <- awaitReady(process, log, client)
         unused <- Ref.make(setups)
       yield CellStand(
         first = Cell(config.authCellId, oauth, config.authUrl, config.authMutualTlsUrl),

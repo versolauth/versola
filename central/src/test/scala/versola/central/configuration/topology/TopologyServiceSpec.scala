@@ -1,9 +1,15 @@
 package versola.central.configuration.topology
 
+import com.nimbusds.jose.jwk.gen.{ECKeyGenerator, RSAKeyGenerator}
+import com.nimbusds.jose.jwk.{Curve, JWK}
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.edges.{EdgeGroup, EdgeGroupId, EdgeGroupKind, EdgeId, EdgeRecord, EdgeService}
+import versola.central.users.UserRepository
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.TestCertificates
 import zio.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
@@ -11,6 +17,21 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val almaty = RegionRecord(RegionId("almaty"), kz.id)
   private val astana = RegionRecord(RegionId("astana"), kz.id)
   private val pin = TestCertificates.generate(subject = "CN=auth-kz-1").certificatePem
+
+  private def json(key: JWK): Json.Obj = key.toJSONString.fromJson[Json.Obj].toOption.get
+
+  private def renamed(key: Json.Obj, kid: String): Json.Obj =
+    Json.Obj(key.fields.map {
+      case ("kid", _) => "kid" -> Json.Str(kid)
+      case other => other
+    }*)
+
+  private def publicRsa(kid: String): Json.Obj = TestCentralConfig.newKeyPair(kid).toPublicJwk
+
+  private val key1 = publicRsa("kz-1-key-1")
+  private val key2 = publicRsa("kz-1-key-2")
+  private val otherCellKey = publicRsa("kz-2-key")
+  private val edgeKey = publicRsa("edge-key")
 
   private val cell = CellRecord(
     id = CellId("kz-1"),
@@ -20,11 +41,12 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
     trustedCertificates = List(pin),
     state = CellState.Open,
     weight = 100,
+    publicKeys = List(key1),
   )
 
-  private def edge(id: String, kind: EdgeGroupKind) = EdgeRecord(
+  private def edge(id: String, kind: EdgeGroupKind, key: Option[Json.Obj] = None) = EdgeRecord(
     id = EdgeId(id),
-    publicKey = None,
+    publicKey = key,
     oldPublicKey = None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -36,20 +58,29 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
     publicUrl = None,
   )
 
-  class Env:
+  class Env(config: CentralConfig = TestCentralConfig.config):
     val repository = stub[TopologyRepository]
     val edges = stub[EdgeService]
-    val service = TopologyService.Impl(repository, edges)
+    val users = stub[UserRepository]
+
+    /** Counts how often the cells in memory were brought up to date: a change of a cell is to be seen at once. */
+    val refreshed = Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(0))
+    val registry: CellRegistry = new CellRegistry:
+      override def all: UIO[Vector[CellRecord]] = ZIO.succeed(Vector.empty)
+      override def refreshNow: Task[Unit] = refreshed.update(_ + 1)
+    val service = TopologyService.Impl(repository, edges, users, config, registry)
 
     def stored(
         regions: Vector[RegionRecord] = Vector(almaty, astana),
         cells: Vector[CellRecord] = Vector.empty,
         edgeRegions: Map[EdgeId, RegionId] = Map.empty,
+        registeredEdges: Vector[EdgeRecord] = Vector.empty,
     ): UIO[Unit] =
       repository.getPartitions.succeedsWith(Vector(kz)) *>
         repository.getRegions.succeedsWith(regions) *>
         repository.getCells.succeedsWith(cells) *>
-        repository.getEdgeRegions.succeedsWith(edgeRegions)
+        repository.getEdgeRegions.succeedsWith(edgeRegions) *>
+        edges.getAllEdges.succeedsWith(registeredEdges)
 
   private def invalid(result: Either[Throwable | TopologyError, Unit]) = result.left.exists(_.isInstanceOf[TopologyError.Invalid])
   private def missing(result: Either[Throwable | TopologyError, Unit]) = result.left.exists(_.isInstanceOf[TopologyError.Missing])
@@ -153,11 +184,161 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.stored(cells = Vector(cell, closed, draining))
           _ <- env.repository.deleteCell.succeedsWith(true)
-          open <- env.service.deleteCell(cell.id).either
-          emptying <- env.service.deleteCell(draining.id).either
-          unknown <- env.service.deleteCell(CellId("kz-9")).either
-          _ <- env.service.deleteCell(closed.id)
-        yield assertTrue(conflict(open), conflict(emptying), missing(unknown), env.repository.deleteCell.calls == List(closed.id))
+          _ <- env.users.countInCell.succeedsWith(0L)
+          open <- env.service.deleteCell(cell.id, lost = false).either
+          emptying <- env.service.deleteCell(draining.id, lost = false).either
+          unknown <- env.service.deleteCell(CellId("kz-9"), lost = false).either
+          _ <- env.service.deleteCell(closed.id, lost = false)
+        yield assertTrue(
+          conflict(open),
+          conflict(emptying),
+          missing(unknown),
+          env.repository.deleteCell.calls == List(closed.id),
+          // The state rule is first: a cell that is not closed is refused without the directory being asked.
+          env.users.countInCell.calls == List(closed.id),
+        )
+      },
+      test("a closed cell that the directory still places users in is refused with their number, and nothing is deleted") {
+        val env = new Env
+        val closed = cell.copy(id = CellId("kz-2"), state = CellState.Closed)
+        for
+          _ <- env.stored(cells = Vector(closed))
+          _ <- env.repository.deleteCell.succeedsWith(true)
+          _ <- env.users.countInCell.succeedsWith(3L)
+          result <- env.service.deleteCell(closed.id, lost = false).either
+        yield assertTrue(
+          conflict(result),
+          result.left.exists(_.asInstanceOf[TopologyError].message.contains("3 user")),
+          env.users.countInCell.calls == List(closed.id),
+          env.repository.deleteCell.calls.isEmpty,
+        )
+      },
+      test("a cell said to be lost is deleted with the users the directory places in it, and only when it is closed") {
+        val env = new Env
+        val closed = cell.copy(id = CellId("kz-2"), state = CellState.Closed)
+        val draining = cell.copy(id = CellId("kz-3"), state = CellState.Draining)
+        for
+          _ <- env.stored(cells = Vector(closed, draining))
+          _ <- env.repository.deleteCell.succeedsWith(true)
+          _ <- env.users.countInCell.succeedsWith(3L)
+          emptying <- env.service.deleteCell(draining.id, lost = true).either
+          _ <- env.service.deleteCell(closed.id, lost = true)
+        yield assertTrue(
+          conflict(emptying),
+          env.repository.deleteCell.calls == List(closed.id),
+          // the directory is not what decides here
+          env.users.countInCell.calls.isEmpty,
+        )
+      },
+    ),
+    suite("the keys of a cell")(
+      test("the keys are stored with the cell, one or two, and the cells in memory are brought up to date") {
+        val env = new Env
+        val two = cell.copy(publicKeys = List(key1, key2))
+        for
+          _ <- env.stored()
+          _ <- env.repository.createCell.succeedsWith(true)
+          _ <- env.service.createCell(cell)
+          _ <- env.service.createCell(two)
+          refreshed <- env.refreshed.get
+        yield assertTrue(env.repository.createCell.calls == List(cell, two), refreshed == 2)
+      },
+      test("a cell is refused, and nothing is written, for each thing its keys may not be") {
+        val env = new Env
+        val withPrivate = json(RSAKeyGenerator(2048).keyID("with-private").generate())
+        val refused = List(
+          "no key" -> cell.copy(publicKeys = Nil),
+          "three keys" -> cell.copy(publicKeys = List(key1, key2, publicRsa("third"))),
+          "an EC key" -> cell.copy(publicKeys = List(json(ECKeyGenerator(Curve.P_256).keyID("ec").generate().toPublicJWK))),
+          "a key with a private member" -> cell.copy(publicKeys = List(withPrivate)),
+          "an RSA key under 2048 bits" -> cell.copy(publicKeys = List(json(RSAKeyGenerator(1024, true).keyID("small").generate().toPublicJWK))),
+          "a key with no kid" -> cell.copy(publicKeys = List(Json.Obj(key1.fields.filterNot(_._1 == "kid")*))),
+          "something that is not a JWK" -> cell.copy(publicKeys = List(Json.Obj("kty" -> Json.Str("nonsense")))),
+          "a kid named twice" -> cell.copy(publicKeys = List(key1, renamed(key2, "kz-1-key-1"))),
+          "a key named twice, under two kids" -> cell.copy(publicKeys = List(key1, renamed(key1, "another-name"))),
+        )
+        for
+          _ <- env.stored()
+          results <- ZIO.foreach(refused)((name, record) => env.service.createCell(record).either.map(name -> _))
+          refreshed <- env.refreshed.get
+        yield assertTrue(
+          results.filterNot(result => invalid(result._2)).map(_._1).isEmpty,
+          env.repository.createCell.calls.isEmpty,
+          refreshed == 0,
+        )
+      },
+      test("a key of another cell, or one of its kids, is refused: a call would be taken for the other cell's") {
+        val env = new Env
+        val other = cell.copy(id = CellId("kz-2"), publicKeys = List(otherCellKey))
+        for
+          _ <- env.stored(cells = Vector(other))
+          sameKey <- env.service.createCell(cell.copy(publicKeys = List(renamed(otherCellKey, "mine")))).either
+          sameKid <- env.service.createCell(cell.copy(publicKeys = List(renamed(key1, "kz-2-key")))).either
+          _ <- env.repository.createCell.succeedsWith(true)
+          own <- env.service.createCell(cell).either
+        yield assertTrue(invalid(sameKey), invalid(sameKid), own.isRight, env.repository.createCell.calls == List(cell))
+      },
+      test("a key of an edge is refused") {
+        val env = new Env
+        for
+          _ <- env.stored(registeredEdges = Vector(edge("edge-1", EdgeGroupKind.FirstParty, key = Some(edgeKey))))
+          sameKey <- env.service.createCell(cell.copy(publicKeys = List(renamed(edgeKey, "mine")))).either
+          _ <- env.repository.createCell.succeedsWith(true)
+          own <- env.service.createCell(cell).either
+        yield assertTrue(invalid(sameKey), own.isRight)
+      },
+      test("a key of the configured auth is refused for a cell, which is none of its own, and allowed for the cell it is configured as") {
+        val configured = TestCentralConfig.authConfig.publicKeys.head
+        val sharing = cell.copy(publicKeys = List(configured))
+        val asCell1 = TestCentralConfig.config.copy(auth = TestCentralConfig.authConfig.copy(cellId = Some(cell.id)))
+        val asCell2 = TestCentralConfig.config.copy(auth = TestCentralConfig.authConfig.copy(cellId = Some(CellId("kz-2"))))
+        val env = new Env
+        val itsCell = new Env(asCell1)
+        val another = new Env(asCell2)
+        for
+          _ <- env.stored()
+          _ <- itsCell.stored()
+          _ <- another.stored()
+          _ <- itsCell.repository.createCell.succeedsWith(true)
+          unnamed <- env.service.createCell(sharing).either
+          named <- another.service.createCell(sharing).either
+          renamedKid <- env.service.createCell(cell.copy(publicKeys = List(renamed(key1, TestCentralConfig.authKeyPair.keyId)))).either
+          itself <- itsCell.service.createCell(sharing).either
+        yield assertTrue(invalid(unnamed), invalid(named), invalid(renamedKid), itself.isRight, itsCell.repository.createCell.calls == List(sharing))
+      },
+      test("an update replaces the keys, and may keep the ones the cell has: they are not another cell's") {
+        val env = new Env
+        val replaced = cell.copy(publicKeys = List(key1, key2))
+        val next = cell.copy(publicKeys = List(key2))
+        for
+          _ <- env.stored(cells = Vector(cell))
+          _ <- env.repository.updateCell.succeedsWith(true)
+          _ <- env.service.updateCell(replaced)
+          _ <- env.service.updateCell(next)
+          refreshed <- env.refreshed.get
+        yield assertTrue(env.repository.updateCell.calls == List(replaced, next), refreshed == 2)
+      },
+      test("an update is refused, and nothing is written, for a key that is none, too many, or another cell's") {
+        val env = new Env
+        val other = cell.copy(id = CellId("kz-2"), publicKeys = List(otherCellKey))
+        for
+          _ <- env.stored(cells = Vector(cell, other))
+          none <- env.service.updateCell(cell.copy(publicKeys = Nil)).either
+          many <- env.service.updateCell(cell.copy(publicKeys = List(key1, key2, publicRsa("third")))).either
+          stolen <- env.service.updateCell(cell.copy(publicKeys = List(key1, renamed(otherCellKey, "mine")))).either
+          refreshed <- env.refreshed.get
+        yield assertTrue(invalid(none), invalid(many), invalid(stolen), env.repository.updateCell.calls.isEmpty, refreshed == 0)
+      },
+      test("a deleted cell stops verifying at once") {
+        val env = new Env
+        val closed = cell.copy(state = CellState.Closed)
+        for
+          _ <- env.stored(cells = Vector(closed))
+          _ <- env.repository.deleteCell.succeedsWith(true)
+          _ <- env.users.countInCell.succeedsWith(0L)
+          _ <- env.service.deleteCell(closed.id, lost = false)
+          refreshed <- env.refreshed.get
+        yield assertTrue(refreshed == 1)
       },
     ),
     suite("the region of an edge site")(

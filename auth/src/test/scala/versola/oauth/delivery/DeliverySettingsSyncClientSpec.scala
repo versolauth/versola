@@ -2,7 +2,7 @@ package versola.oauth.delivery
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.CentralSyncTokenService
-import versola.util.{Base64, SecureRandom, SecurityService}
+import versola.util.{Base64, RsaKeyPair, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.test.*
@@ -17,9 +17,9 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
     override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
 
-  /** What central sends: a password is encrypted under the secret the two services share and encoded base64url. */
-  private def transportEncrypted(plaintext: String): ZIO[SecurityService, Throwable, String] =
-    ZIO.serviceWithZIO[SecurityService](_.encryptAes256(plaintext.getBytes(StandardCharsets.UTF_8), config.central.secretKey))
+  /** What central sends: a password is encrypted to the key of the auth that asked, and encoded base64url. */
+  private def transportEncrypted(plaintext: String, to: RsaKeyPair = TestEnvConfig.authKeyPair): ZIO[SecurityService, Throwable, String] =
+    ZIO.serviceWithZIO[SecurityService](_.encryptRsaHybrid(plaintext.getBytes(StandardCharsets.UTF_8), to.publicKey))
       .map(Base64.urlEncode)
 
   private def serve(status: Status, body: String): ZIO[TestClient, Nothing, Ref[Option[Request]]] =
@@ -51,7 +51,7 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
       yield assertTrue(request.method == Method.GET, request.url.path.segments.toList == List("configuration", "delivery-settings", "sync"))
     },
-    test("reads both blocks and decrypts each password under the shared secret") {
+    test("reads both blocks and decrypts each password with the auth's own key") {
       for
         smtpPassword <- transportEncrypted("mail-s3cret")
         smsPassword <- transportEncrypted("sms-s3cret")
@@ -118,17 +118,22 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
         result <- fetch.either
       yield assertTrue(result.isLeft)
     },
-    test("fails the fetch when a password was not encrypted under the shared secret, so the cache keeps what it has") {
+    test("fails the fetch when a password was not encrypted to this auth's key, so the cache keeps what it has") {
       for
         smsPassword <- transportEncrypted("sms-s3cret")
+        // another cell's key: what central would send to that cell
+        forSomeoneElse <- transportEncrypted("mail-s3cret", to = TestEnvConfig.anotherCellKeyPair)
         _ <- serve(
           Status.Ok,
-          s"""{"stored":true,"smtp":$smtp,"smtpPassword":"${Base64.urlEncode(
-              Array.fill(40)(1.toByte),
-            )}","otpProvider":${provider()},"otpProviderPassword":"$smsPassword"}""",
+          s"""{"stored":true,"smtp":$smtp,"smtpPassword":"$forSomeoneElse","otpProvider":${provider()},"otpProviderPassword":"$smsPassword"}""",
         )
-        result <- fetch.either
-      yield assertTrue(result.isLeft)
+        wrongKey <- fetch.either
+        _ <- serve(
+          Status.Ok,
+          s"""{"stored":true,"smtp":$smtp,"smtpPassword":"${Base64.urlEncode(Array.fill(300)(1.toByte))}"}""",
+        )
+        garbage <- fetch.either
+      yield assertTrue(wrongKey.isLeft, garbage.isLeft)
     },
     test("fails the fetch for an address that is not an URL and for a sender that is not an email address") {
       for

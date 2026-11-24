@@ -3,6 +3,7 @@ package versola.central.configuration.forms
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Status, handler}
@@ -10,7 +11,7 @@ import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
 
 object FormController extends AuditedController:
-  type Env = Tracing & FormService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & FormService & ResourceService & CentralConfig & EdgeService & CellRegistry
 
   def endpoints = List(
     getAllFormsEndpoint,

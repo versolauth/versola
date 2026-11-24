@@ -72,7 +72,7 @@ import versola.oauth.conversation.{
 import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
 import versola.oauth.est.{EstCentralClient, EstController, EstService}
-import versola.oauth.handoff.CellHandoff
+import versola.oauth.handoff.{CellHandoff, CellRegistry, CellSyncClient}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -99,6 +99,7 @@ import zio.http.Server.RequestStreaming
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.security.PrivateKey
+import java.security.interfaces.RSAPrivateKey
 import java.util.UUID
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
@@ -147,6 +148,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthorizeEndpointService &
       AuthorizationResponseService &
       ConversationRouter &
+      CellSyncClient &
+      CellRegistry &
       CellHandoff &
       ConversationService &
       AntifraudEvents &
@@ -359,14 +362,14 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         _.load(Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings]))),
       )
 
-  /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */
+  /** Keyed off this auth's own private key, see [[ConfigSnapshot]] and [[CoreConfig.CentralSyncConfig.snapshotKey]]. */
   private val configSnapshot: ZLayer[TransactorZIO & CoreConfig, Nothing, ConfigSnapshot] =
     (PostgresConfigSnapshotRepository.live("auth_config_snapshots") ++ ZLayer.service[CoreConfig]) >>>
       ZLayer.fromZIO:
         for
           repository <- ZIO.service[ConfigSnapshot.Repository]
           config <- ZIO.service[CoreConfig]
-          snapshot <- ConfigSnapshot.make(repository, config.central.secretKey.getEncoded)
+          snapshot <- ConfigSnapshot.make(repository, config.central.snapshotKey)
         yield snapshot
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
@@ -463,6 +466,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PowChallengeVerifier.live >++>
       CodeAlternativeService.live >++>
       ConversationService.live >++>
+      // The cells' keys a handoff is sealed for and opened with; an auth that is no cell never reads them.
+      CellSyncClient.live >++>
+      CellRegistry.live >++>
       CellHandoff.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
@@ -481,6 +487,14 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   given DeriveConfig[SecretKey] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
     .map(bytes => SecretKeySpec(bytes, "AES"))
+
+  /** `central.private-key`: read as an edge reads its `private-key`, RSA only, whereas `jwt.private-key` may be EC. */
+  given DeriveConfig[RSAPrivateKey] = DeriveConfig[String]
+    .mapOrFail(CoreConfig.CentralSyncConfig.decodePrivateKey(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
+
+  /** `central.public-key-jwk`: central's public RSA JWK, as the JSON text of the key. */
+  given DeriveConfig[JWT.PublicKeys] = DeriveConfig[String]
+    .mapOrFail(CoreConfig.CentralSyncConfig.decodePublicKey(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))

@@ -13,6 +13,7 @@ import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionService
 import versola.user.UserController
 import versola.user.UserRepository
+import versola.util.RsaKeyPair
 import versola.util.audit.*
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.net.GeoResolver
@@ -25,7 +26,6 @@ import zio.test.*
 
 import java.time.Instant
 import java.util.UUID
-import javax.crypto.SecretKey
 
 /** The per-user report auth serves central (`GET /users/audit-events` and `/users/audit-summary`, every input a typed query parameter): the window it accepts, the pages and
   * the cursor between them, the shape of the answers that central codes against, and who may ask. */
@@ -428,22 +428,22 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       ZEnvironment[AuditEvents](stub[AuditEvents]) ++ ZEnvironment[OAuthConfigurationService](stub[OAuthConfigurationService]) ++
       ZEnvironment[AccessTokenRevocationService](stub[AccessTokenRevocationService])
 
-  private val key: SecretKey = TestEnvConfig.coreConfig.central.secretKey
-  private val wrongKey: SecretKey = javax.crypto.spec.SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+  private val key: RsaKeyPair = TestEnvConfig.centralKeyPair
+  private val wrongKey: RsaKeyPair = TestEnvConfig.impostorKeyPair
 
-  private def tokenFor(secret: SecretKey): Task[String] =
-    JWT.serialize(JWT.Claims("central", "central", List("auth"), Json.Obj()), 10.minutes, JWT.Signature.Symmetric(secret))
+  private def tokenFor(secret: RsaKeyPair): Task[String] =
+    JWT.serialize(JWT.Claims("central", "central", List("auth"), Json.Obj()), 10.minutes, TestEnvConfig.signedBy(secret))
 
   private def call(
       repository: Stub[AuditReadRepository],
       path: String,
-      signedWith: Option[SecretKey] = Some(key),
+      signedWith: Option[RsaKeyPair] = Some(key),
   ): ZIO[Client & TestClient & Scope, Throwable, Response] = callWith(service(repository), path, signedWith)
 
   private def callWith(
       reports: AuditReportService,
       path: String,
-      signedWith: Option[SecretKey] = Some(key),
+      signedWith: Option[RsaKeyPair] = Some(key),
   ): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]

@@ -60,9 +60,12 @@ reachable from the cluster, before the first install.
 Each service reads one HOCON file, mounted at `/app/config/env.conf`, in which every secret is a
 `${VAR}` placeholder resolved from the process environment. `scripts/gen-env.scala` generates
 that file, the placeholders, and the values behind them as a single coherent set — coherent
-matters, because several values must agree across services (`CENTRAL_SECRET_KEY` and
-`CLIENT_SECRETS_SECRET` are shared between auth and central, and central holds the public half
-of edge's key).
+matters, because several values must agree across services (`CLIENT_SECRETS_SECRET` is shared
+between auth and central; central holds the public half of edge's key; and there are two more key
+pairs, auth's and central's service keys, each with its private half and `kid` at the signer and its
+public JWK at the other side: `AUTH_SERVICE_PRIVATE_KEY`/`AUTH_SERVICE_KEY_ID` in auth with
+`AUTH_SERVICE_PUBLIC_JWK` in central, `CENTRAL_SERVICE_PRIVATE_KEY`/`CENTRAL_SERVICE_KEY_ID` in central
+with `CENTRAL_SERVICE_PUBLIC_JWK` in auth).
 
 Run it and answer `k8s` at the first prompt:
 
@@ -190,18 +193,22 @@ set, and splitting it would invent a boundary the source of truth does not have.
 broader access — each Deployment pulls only the keys it needs.
 
 **Key names are not the variable names.** `versola.secretKeyFor` kebab-cases each variable, then
-prefixes it with the service name unless the result already starts with that prefix; the two
-genuinely shared values stay bare. So:
+prefixes it with the service name unless the result already starts with that prefix; the one
+genuinely shared value stays bare. So:
 
 | Variable | Service | Key |
 |---|---|---|
 | `ACCESS_TOKENS_SECRET` | auth | `auth-access-tokens-secret` |
 | `AUTH_CODES_SECRET` | auth | `auth-codes-secret` — not `auth-auth-codes-secret` |
 | `EDGE_PUBLIC_JWK` | central | `central-edge-public-jwk` — central holds edge's public half |
-| `CENTRAL_SECRET_KEY` | auth *and* central | `central-secret-key` — one key, one value |
+| `CLIENT_SECRETS_SECRET` | auth *and* central | `client-secrets-secret` — one key, one value |
+| `AUTH_SERVICE_PRIVATE_KEY`, `AUTH_SERVICE_KEY_ID` | auth | `auth-service-private-key`, `auth-service-key-id` — auth's own key pair, which signs its calls to central |
+| `AUTH_SERVICE_PUBLIC_JWK` | central | `central-auth-service-public-jwk` — central holds the public half of auth's key |
+| `CENTRAL_SERVICE_PRIVATE_KEY`, `CENTRAL_SERVICE_KEY_ID` | central | `central-service-private-key`, `central-service-key-id` — central's own key pair, which signs its calls to auth |
+| `CENTRAL_SERVICE_PUBLIC_JWK` | auth | `auth-central-service-public-jwk` — auth holds the public half of central's key |
 | `POSTGRES_PASSWORD` | each | `auth-postgres-password`, `central-postgres-password`, `edge-postgres-password` |
 
-Twenty-nine keys in total. `versola.secretEnv` fails the template if `secrets.existingSecret` is
+Thirty-five keys in total. `versola.secretEnv` fails the template if `secrets.existingSecret` is
 unset, and a missing key surfaces as an unresolved HOCON substitution at startup, so both
 mistakes fail loudly rather than silently.
 
@@ -488,6 +495,26 @@ give that `auth` a host of its own with the `endpoints` group (with one cell, th
 One release of this chart runs one `auth`. A further cell is a further `auth` with its own database
 and its own `cell-id`, registered on the Cells screen of the console with the address the edge reaches
 it at; this chart does not render a second one.
+
+A cell is registered with its public key (`publicKeys`, a list of public RSA JWKs with a `kid`; a cell
+cannot be registered without one), and central knows the cell by that key: it is how it tells which
+cell calls. `gen-env` writes it, with the cell's key pair, in every run: the public JWK of this `auth`
+is the file `auth.service-public-key.jwk` next to `auth.conf` in `.local/env/<target>/` (and is printed as
+a line to register it), and the private half is `AUTH_SERVICE_PRIVATE_KEY` with `AUTH_SERVICE_KEY_ID`.
+The first cell's key is also the one central's own configuration lists as `auth.public-keys`, so central
+accepts that `auth` before any cell is registered. **Each further cell has a pair of its own**: never
+copy the secrets of one cell to another, or central cannot tell them apart and refuses the second
+registration (no two cells share a key). Make a further cell's configuration with
+
+```bash
+scala-cli run scripts/gen-env.scala -- --target=k8s --cell-id=kz-2 \
+  --central-public-jwk-file=<central.service-public-key.jwk written by the run that made central> \
+  --auth-url=<the same issuer address as the first cell> …
+```
+
+— it writes that cell's `auth.conf` and `auth.generated-secrets.env` (and the edge's, which you do not
+need) and no `central.conf`, since central already exists; the cell's own public key is in its
+`auth.service-public-key.jwk`. Register the cell with the content of that file as its `publicKeys`.
 
 There is no route group for central, but nothing needs one: `loadgen provision` reaches central
 through `auth` (a `client_credentials` token, the `oidc` group's `/token`) and then `edge`'s

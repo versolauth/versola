@@ -51,6 +51,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.topology.{
   CellId,
   CellRecord,
+  CellRegistry,
   CellState,
   CellSyncRecord,
   CellsSyncResponse,
@@ -169,7 +170,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     JWT.serialize(
       JWT.Claims("auth", "auth", List("central"), Json.Obj()),
       1.minute,
-      JWT.Signature.Symmetric(config.secretKey),
+      TestCentralConfig.authSignature,
     )
 
   private val clientSecret = Secret(Array.fill(48)(1.toByte))
@@ -389,7 +390,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[PermissionService](services.permissions) ++
                 ZEnvironment[JwksService](services.jwks) ++
                 ZEnvironment[ServerMetadataService](services.metadata) ++
-                ZEnvironment[EdgeService](services.edges) ++
+                ZEnvironment[EdgeService](services.edges) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[EdgeIdentityService](services.identity) ++
                 ZEnvironment[PartnerRegistry](services.registry) ++
                 ZEnvironment[TopologyService](services.topology) ++
@@ -444,6 +445,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         trustedCertificates = List("PIN-1"),
         state = CellState.Open,
         weight = 100,
+        publicKeys = Nil,
       ),
       CellRecord(
         id = CellId("kz-2"),
@@ -453,6 +455,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         trustedCertificates = Nil,
         state = CellState.Draining,
         weight = 0,
+        publicKeys = Nil,
       ),
     ),
     edgeRegions = edgeRegions,

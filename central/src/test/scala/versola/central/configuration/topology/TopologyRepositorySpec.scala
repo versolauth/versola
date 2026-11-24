@@ -3,6 +3,7 @@ package versola.central.configuration.topology
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.edges.{EdgeGroup, EdgeId, EdgeRecord, EdgeRepository}
 import versola.util.DatabaseSpecBase
+import zio.json.ast.Json
 import zio.test.*
 
 trait TopologyRepositorySpec extends DatabaseSpecBase[TopologyRepositorySpec.Env]:
@@ -12,6 +13,15 @@ trait TopologyRepositorySpec extends DatabaseSpecBase[TopologyRepositorySpec.Env
   val almaty = RegionRecord(RegionId("topology-spec-almaty"), kz.id)
   val astana = RegionRecord(RegionId("topology-spec-astana"), kz.id)
 
+  /** Members in the order Postgres gives a JSONB object back (by length, then by name), so that what is read equals what was written;
+    * the keys are not parsed here, whether they are keys is the service's to check. */
+  private def jwk(kid: String) = Json.Obj(
+    "e" -> Json.Str("AQAB"),
+    "n" -> Json.Str(s"modulus-of-$kid"),
+    "kid" -> Json.Str(kid),
+    "kty" -> Json.Str("RSA"),
+  )
+
   val cell = CellRecord(
     id = CellId("topology-spec-1"),
     regionId = almaty.id,
@@ -20,6 +30,7 @@ trait TopologyRepositorySpec extends DatabaseSpecBase[TopologyRepositorySpec.Env
     trustedCertificates = List("PIN-A", "PIN-B"),
     state = CellState.Open,
     weight = 100,
+    publicKeys = List(jwk("cell-key-1"), jwk("cell-key-2")),
   )
 
   private def edge(env: TopologyRepositorySpec.Env, id: EdgeId) =
@@ -57,7 +68,9 @@ trait TopologyRepositorySpec extends DatabaseSpecBase[TopologyRepositorySpec.Env
           regions.filter(_.id.startsWith("topology-spec-")) == Vector(almaty),
         )
       },
-      test("a cell is stored as it was given, pins in their order, and an update replaces everything but its id and region") {
+      test(
+        "a cell is stored as it was given, pins and keys in their order, and an update replaces everything but its id and region, the keys included",
+      ) {
         val changed = cell.copy(
           regionId = astana.id,
           internalUrl = "http://auth-1b.internal:9003",
@@ -65,6 +78,7 @@ trait TopologyRepositorySpec extends DatabaseSpecBase[TopologyRepositorySpec.Env
           trustedCertificates = List("PIN-C"),
           state = CellState.Draining,
           weight = 0,
+          publicKeys = List(jwk("cell-key-3")),
         )
         for
           _ <- env.repository.createPartition(kz)
@@ -83,6 +97,26 @@ trait TopologyRepositorySpec extends DatabaseSpecBase[TopologyRepositorySpec.Env
           updated,
           afterUpdate.filter(_.id == cell.id) == Vector(changed.copy(regionId = almaty.id)),
           !missing,
+        )
+      },
+      test("the public keys of a cell are read back as they were written, one or two, and an update replaces the whole set") {
+        val one = cell.copy(id = CellId("topology-spec-keys"), publicKeys = List(jwk("only")))
+        val replacing = one.copy(publicKeys = List(jwk("old"), jwk("new")))
+        val replaced = one.copy(publicKeys = List(jwk("new")))
+        for
+          _ <- env.repository.createPartition(kz)
+          _ <- env.repository.createRegion(almaty)
+          _ <- env.repository.createCell(one)
+          first <- env.repository.getCells
+          _ <- env.repository.updateCell(replacing)
+          second <- env.repository.getCells
+          _ <- env.repository.updateCell(replaced)
+          third <- env.repository.getCells
+        yield assertTrue(
+          first.filter(_.id == one.id).flatMap(_.publicKeys) == Vector(jwk("only")),
+          second.filter(_.id == one.id).flatMap(_.publicKeys) == Vector(jwk("old"), jwk("new")),
+          // the set is replaced, not added to
+          third.filter(_.id == one.id).flatMap(_.publicKeys) == Vector(jwk("new")),
         )
       },
       test("a cell and a region are deleted once, and a deletion of what is not there says so") {

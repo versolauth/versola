@@ -7,16 +7,23 @@ import versola.oauth.model.{Nonce, State}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionRecord, SupersededSession, UserAgentId}
 import versola.user.model.UserId
-import versola.util.{CoreConfig, Email, MAC, Phone, RoutingKey, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{Base64, CoreConfig, Email, JWT, MAC, Phone, RoutingKey, RsaKeyPair, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
+import java.nio.charset.StandardCharsets
+import java.security.KeyPairGenerator
+import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.UUID
-import javax.crypto.spec.SecretKeySpec
 
-/** The seal a sign-in is handed to another cell in (versolauth/versola#1046): what goes in it, and who may open it. */
+/** The seal a sign-in is handed to another cell in (versolauth/versola#1046, #1050): what goes in it, and who may open it.
+  *
+  * Four cells take part. `kz-1` is the cell [[TestEnvConfig.coreConfig]] is a key of, `kz-2` (the home cell) has
+  * [[TestEnvConfig.anotherCellKeyPair]], `kz-3` has a key of its own and is a cell every registry knows; `kz-9` has a key
+  * and is known to nobody. */
 object CellHandoffSpec extends UnitSpecBase:
 
   private val home = RoutingKey.CellId.parse("kz-2").toOption.get
@@ -41,15 +48,84 @@ object CellHandoffSpec extends UnitSpecBase:
   /** A sign-in that was started in a cell by a browser that had a session there. */
   private val withPrior = record.copy(priorSessionId = Some(priorMac), priorSessionUserId = Some(userId))
 
+  private def generate(keyId: String): RsaKeyPair =
+    val generator = KeyPairGenerator.getInstance("RSA")
+    generator.initialize(2048)
+    val pair = generator.generateKeyPair()
+    RsaKeyPair(keyId, pair.getPublic.asInstanceOf[RSAPublicKey], pair.getPrivate.asInstanceOf[RSAPrivateKey])
+
+  private val thirdKeyPair = generate("kz-3-key")
+  private val strangerKeyPair = generate("kz-9-key")
+
+  /** The keys of the cells the registry lists. */
+  private val listed: Map[String, RsaKeyPair] =
+    Map("kz-1" -> TestEnvConfig.authKeyPair, "kz-2" -> TestEnvConfig.anotherCellKeyPair, "kz-3" -> thirdKeyPair)
+
+  private val keyOf: Map[String, RsaKeyPair] = listed + ("kz-9" -> strangerKeyPair)
+
+  private def registryOf(known: Map[String, RsaKeyPair] = listed, withoutKey: Set[String] = Set.empty): CellRegistry =
+    new CellRegistry:
+      override def keysOf(cell: String) = ZIO.succeed(known.get(cell).filterNot(_ => withoutKey(cell)).map(TestEnvConfig.publicKeysOf))
+      override def encryptionKeyOf(cell: String) = ZIO.succeed(known.get(cell).filterNot(_ => withoutKey(cell)).map(_.publicKey))
+      override def all = ZIO.succeed(Nil)
+      override def refresh = ZIO.unit
+      override def refreshAfterMiss = ZIO.unit
+
+  /** A registry that learns of `late` only when it is read again after a miss, as an auth learns of a cell that was
+    * registered since its last refresh; `refreshed` counts those reads. */
+  private def registryLearning(late: String, refreshed: Ref[Int]): UIO[CellRegistry] =
+    Ref.make(listed - late).map: known =>
+      new CellRegistry:
+        override def keysOf(cell: String) = known.get.map(_.get(cell).map(TestEnvConfig.publicKeysOf))
+        override def encryptionKeyOf(cell: String) = known.get.map(_.get(cell).map(_.publicKey))
+        override def all = ZIO.succeed(Nil)
+        override def refresh = ZIO.unit
+        override def refreshAfterMiss = refreshed.update(_ + 1) *> known.set(listed)
+
+  /** The cell `cell`, under its own key; one that is none for `None`. `pair` puts another key in its place. */
   private def at(
       cell: Option[String],
-      config: CoreConfig = TestEnvConfig.coreConfig,
+      pair: Option[RsaKeyPair] = None,
       sessions: Stub[SessionRepository] = stub[SessionRepository],
+      registry: CellRegistry = registryOf(),
   ): URIO[SecurityService & SecureRandom, CellHandoff] =
     for
       security <- ZIO.service[SecurityService]
       random <- ZIO.service[SecureRandom]
-    yield CellHandoff.Impl(config.copy(cellId = cell.map(RoutingKey.CellId.parse(_).toOption.get)), security, random, sessions)
+      keys = pair.orElse(cell.flatMap(keyOf.get)).getOrElse(TestEnvConfig.authKeyPair)
+      config = TestEnvConfig.withKeyPairOf(TestEnvConfig.coreConfig, keys).copy(cellId = cell.map(RoutingKey.CellId.parse(_).toOption.get))
+    yield CellHandoff.Impl(config, security, random, sessions, registry)
+
+  /** A seal as a cell that does what it should not would make it: every part chosen by the caller, the signature made
+    * properly under `signer` and the whole encrypted to `to`. */
+  private def forged(
+      signer: RsaKeyPair = TestEnvConfig.authKeyPair,
+      issuer: String = "kz-1",
+      audience: List[String] = List("kz-2"),
+      from: String = "kz-1",
+      to: String = "kz-2",
+      expiresAt: Long = 60,
+      ttl: Duration = 1.minute,
+      algorithm: JWT.Algorithm = JWT.Algorithm.RS256,
+      encryptedTo: RsaKeyPair = TestEnvConfig.anotherCellKeyPair,
+  ): ZIO[SecurityService, Throwable, String] =
+    val payload = CellHandoff.Payload(
+      params = Map("client_id" -> List("c")),
+      from = from,
+      to = to,
+      expiresAt = expiresAt,
+      submission = None,
+      superseded = None,
+    )
+    for
+      security <- ZIO.service[SecurityService]
+      jws <- JWT.serialize(
+        claims = JWT.Claims(issuer, issuer, audience, Json.Obj("handoff" -> payload.toJsonAST.toOption.get)),
+        ttl = ttl,
+        signature = JWT.Signature.Asymmetric(algorithm, signer.keyId, signer.privateKey),
+      )
+      encrypted <- security.encryptRsaHybrid(jws.getBytes(StandardCharsets.UTF_8), encryptedTo.publicKey)
+    yield RoutingKey.encode(home, Base64.urlEncode(encrypted))
 
   def spec = suite("CellHandoff")(
     test("the home cell opens what another cell sealed for it: the request's parameters and the address as the login hint") {
@@ -66,6 +142,7 @@ object CellHandoffSpec extends UnitSpecBase:
           "ISO-8859-1",
         ).contains("user@example.com"),
         payload.to == "kz-2",
+        payload.from == "kz-1",
         payload.params("client_id") == List(record.clientId: String),
         payload.params("redirect_uri") == List(record.redirectUri.encode),
         payload.params("response_type") == List("code"),
@@ -87,38 +164,43 @@ object CellHandoffSpec extends UnitSpecBase:
         payload <- second.open(ticket)
       yield assertTrue(payload.params("login_hint") == List("+15551234567"))
     },
-    test("a seal is opened only by the cell it names, whatever key stands in front of it") {
+    test("a seal is opened only by the cell it is encrypted to, whatever key stands in front of it") {
       for
         first <- at(Some("kz-1"))
         third <- at(Some("kz-3"))
         ticket <- first.seal(record, Left(email), home)
+        // a cell that holds another key cannot read it: the cell inside is the one the key was chosen for
         elsewhere <- third.open(ticket).either
-        // the key in front is a hint for the router: changing it does not change who the seal is for
+        // the key in front is a hint for the router: changing it does not change who can read the seal
         relabelled <- third.open(ticket.replace("v1.kz-2.", "v1.kz-3.")).either
         notACell <- at(None).flatMap(_.open(ticket).either)
       yield assertTrue(
-        elsewhere == Left(CellHandoff.Refused.Elsewhere),
-        relabelled == Left(CellHandoff.Refused.Elsewhere),
+        elsewhere == Left(CellHandoff.Refused.Forged),
+        relabelled == Left(CellHandoff.Refused.Forged),
         notACell == Left(CellHandoff.Refused.NotACell),
       )
     },
     test("a seal that was altered, or made under another key, or is not one, is refused") {
-      val otherKey = TestEnvConfig.coreConfig.copy(central =
-        TestEnvConfig.coreConfig.central.copy(secretKey = SecretKeySpec(Array.fill(32)(9.toByte), "HmacSHA256")),
-      )
       for
         first <- at(Some("kz-1"))
         second <- at(Some("kz-2"))
-        stranger <- at(Some("kz-1"), otherKey)
+        // `kz-1` with a key the registry does not list for it: not the cell it says
+        stranger <- at(Some("kz-1"), pair = Some(strangerKeyPair))
+        // the same key id as `kz-1`'s, another key
+        impostor <- at(Some("kz-1"), pair = Some(strangerKeyPair.copy(keyId = TestEnvConfig.authKeyPair.keyId)))
         ticket <- first.seal(record, Left(email), home)
         altered <- second.open(ticket.dropRight(4) + "AAAA").either
         foreign <- stranger.seal(record, Left(email), home).flatMap(second.open(_).either)
+        impersonated <- impostor.seal(record, Left(email), home).flatMap(second.open(_).either)
         garbage <- second.open("v1.kz-2.not base64!").either
+        shortCiphertext <- second.open(RoutingKey.encode(home, Base64.urlEncode(Array.fill(10)(1.toByte)))).either
         bare <- second.open("").either
       yield assertTrue(
         altered == Left(CellHandoff.Refused.Forged),
         foreign == Left(CellHandoff.Refused.Forged),
+        impersonated == Left(CellHandoff.Refused.Forged),
         garbage == Left(CellHandoff.Refused.Malformed),
+        shortCiphertext == Left(CellHandoff.Refused.Forged),
         bare.isLeft,
       )
     },
@@ -151,6 +233,7 @@ object CellHandoffSpec extends UnitSpecBase:
         yield assertTrue(
           ticket.startsWith("v1.kz-2."),
           payload.to == "kz-2",
+          payload.from == "kz-1",
           payload.submission.map(_.cookie) == Some(CellHandoff.cookieDigest(cookie)),
           payload.submission.flatMap(_.passkeyRequest) == Some("""{"challenge":"c"}"""),
           payload.submission.exists(_.id.nonEmpty),
@@ -207,13 +290,163 @@ object CellHandoffSpec extends UnitSpecBase:
           !CellHandoff.sameCookie(submission, ""),
         )
       },
-      test("is opened only by the cell it names") {
+      test("is opened only by the cell it is encrypted to") {
         for
           first <- at(Some("kz-1"))
           third <- at(Some("kz-3"))
           ticket <- first.sealSubmission(record, home, cookie, None)
           elsewhere <- third.open(ticket).either
-        yield assertTrue(elsewhere == Left(CellHandoff.Refused.Elsewhere))
+        yield assertTrue(elsewhere == Left(CellHandoff.Refused.Forged))
+      },
+    ),
+    // versolauth/versola#1050: each cell has a key of its own; nothing is shared between them.
+    suite("who made a seal, and for whom")(
+      test("a seal by cell A for cell B opens in B, and names A") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          fromFirst <- first.seal(record, Left(email), home).flatMap(second.open)
+          // and the other way round: the same code, the roles swapped
+          back <- second.seal(record, Left(email), RoutingKey.CellId.parse("kz-1").toOption.get).flatMap(first.open)
+        yield assertTrue(fromFirst.from == "kz-1", fromFirst.to == "kz-2", back.from == "kz-2", back.to == "kz-1")
+      },
+      test("a seal made by a cell the home cell does not know is refused, though it is well made") {
+        for
+          stranger <- at(Some("kz-9"))
+          second <- at(Some("kz-2"))
+          ticket <- stranger.seal(record, Left(email), home)
+          refused <- second.open(ticket).either
+        yield assertTrue(refused == Left(CellHandoff.Refused.Forged))
+      },
+      test("a cell that does not know another's key does not take its seal, and the registry is consulted by the issuer's name") {
+        for
+          first <- at(Some("kz-1"))
+          // the home cell's registry has lost kz-1
+          second <- at(Some("kz-2"), registry = registryOf(known = listed - "kz-1"))
+          noKey <- at(Some("kz-2"), registry = registryOf(withoutKey = Set("kz-1")))
+          ticket <- first.seal(record, Left(email), home)
+          unknown <- second.open(ticket).either
+          keyless <- noKey.open(ticket).either
+        yield assertTrue(unknown == Left(CellHandoff.Refused.Forged), keyless == Left(CellHandoff.Refused.Forged))
+      },
+      test("a seal for the home cell that is encrypted to another cell's key cannot be read by the home cell") {
+        for
+          second <- at(Some("kz-2"))
+          ticket <- forged(encryptedTo = thirdKeyPair)
+          refused <- second.open(ticket).either
+        yield assertTrue(refused == Left(CellHandoff.Refused.Forged))
+      },
+      test("a seal whose audience names another cell is refused as sealed for another cell") {
+        for
+          second <- at(Some("kz-2"))
+          other <- forged(audience = List("kz-3"))
+          none <- forged(audience = Nil)
+          several <- forged(audience = List("kz-3", "kz-2"))
+          wrongAudience <- second.open(other).either
+          noAudience <- second.open(none).either
+          withHome <- second.open(several).either
+        yield assertTrue(
+          wrongAudience == Left(CellHandoff.Refused.Elsewhere),
+          // a seal that names nobody is not one a cell makes
+          noAudience.isLeft,
+          withHome.isRight,
+        )
+      },
+      test("a seal whose payload names another cell is refused as sealed for another cell") {
+        for
+          second <- at(Some("kz-2"))
+          ticket <- forged(to = "kz-3")
+          refused <- second.open(ticket).either
+        yield assertTrue(refused == Left(CellHandoff.Refused.Elsewhere))
+      },
+      test("a seal whose payload says another cell made it than the one whose key signed it is refused") {
+        for
+          second <- at(Some("kz-2"))
+          // kz-1 signs, and the payload says kz-3 sealed it
+          ticket <- forged(from = "kz-3")
+          // kz-1 signs, and says kz-3 is the issuer: kz-3's keys do not verify it
+          claimed <- forged(issuer = "kz-3", from = "kz-3")
+          // kz-3 signs as itself but the payload says kz-1: a cell cannot make a seal in another's name
+          inOthersName <- forged(signer = thirdKeyPair, issuer = "kz-3", from = "kz-1")
+          differs <- second.open(ticket).either
+          notVerified <- second.open(claimed).either
+          named <- second.open(inOthersName).either
+        yield assertTrue(
+          differs == Left(CellHandoff.Refused.Forged),
+          notVerified == Left(CellHandoff.Refused.Forged),
+          named == Left(CellHandoff.Refused.Forged),
+        )
+      },
+      test("a seal signed with anything but RS256 is refused, as is one signed with a key the issuer has not got") {
+        for
+          second <- at(Some("kz-2"))
+          ps256 <- forged(algorithm = JWT.Algorithm.PS256)
+          wrongKey <- forged(signer = strangerKeyPair)
+          sameKid <- forged(signer = strangerKeyPair.copy(keyId = TestEnvConfig.authKeyPair.keyId))
+          one <- second.open(ps256).either
+          two <- second.open(wrongKey).either
+          three <- second.open(sameKid).either
+        yield assertTrue(
+          one == Left(CellHandoff.Refused.Forged),
+          two == Left(CellHandoff.Refused.Forged),
+          three == Left(CellHandoff.Refused.Forged),
+        )
+      },
+      test("a seal expired in its signature is refused, whatever its payload says; so is one expired in its payload") {
+        for
+          second <- at(Some("kz-2"))
+          signature <- forged(ttl = Duration.fromSeconds(-60), expiresAt = 3600)
+          payload <- forged(expiresAt = 0)
+          fresh <- forged()
+          one <- second.open(signature).either
+          two <- second.open(payload).either
+          three <- second.open(fresh).either
+        yield assertTrue(one == Left(CellHandoff.Refused.Expired), two == Left(CellHandoff.Refused.Expired), three.isRight)
+      },
+      test("a cell registered since the last refresh is sealed for, and opened from, after the cells are read once more") {
+        for
+          sealerReads <- Ref.make(0)
+          openerReads <- Ref.make(0)
+          // kz-1 does not know kz-2 yet when it seals, and kz-2 does not know kz-1 yet when it opens.
+          sealerRegistry <- registryLearning(late = "kz-2", refreshed = sealerReads)
+          openerRegistry <- registryLearning(late = "kz-1", refreshed = openerReads)
+          first <- at(Some("kz-1"), registry = sealerRegistry)
+          second <- at(Some("kz-2"), registry = openerRegistry)
+          ticket <- first.seal(record, Left(email), home)
+          payload <- second.open(ticket)
+          readsToSeal <- sealerReads.get
+          readsToOpen <- openerReads.get
+        yield assertTrue(payload.from == "kz-1", readsToSeal == 1, readsToOpen == 1)
+      },
+      test("a seal for a cell that has no key is not made: a typed error, and nothing is read for it") {
+        val sessions = stub[SessionRepository]
+        val nobody = RoutingKey.CellId.parse("kz-9").toOption.get
+        val keyless = RoutingKey.CellId.parse("kz-3").toOption.get
+        for
+          first <- at(Some("kz-1"), sessions = sessions)
+          noKeyAtAll <- first.seal(withPrior, Left(email), nobody).either
+          noKeyListed <- at(Some("kz-1"), sessions = sessions, registry = registryOf(withoutKey = Set("kz-3")))
+            .flatMap(_.sealSubmission(withPrior, keyless, cookie, None).either)
+        yield assertTrue(
+          noKeyAtAll == Left(CellHandoff.NoKey("kz-9")),
+          noKeyListed == Left(CellHandoff.NoKey("kz-3")),
+          sessions.findSession.calls.isEmpty,
+        )
+      },
+      test("an auth that is no cell does not seal") {
+        for
+          plain <- at(None)
+          result <- plain.seal(record, Left(email), home).either
+        yield assertTrue(result.isLeft, !result.left.exists(_.isInstanceOf[CellHandoff.NoKey]))
+      },
+      test("a typical seal fits the limit with room to spare, and so does a passkey request") {
+        val passkey =
+          Some("""{"challenge":"yBO3RR9k3zWpZQ1p0y2v8hLWZ0fE5jvD0cT3qk0jVqQ","rpId":"example.com","timeout":60000,"userVerification":"preferred"}""")
+        for
+          first <- at(Some("kz-1"))
+          address <- first.seal(record, Left(email), home)
+          submission <- first.sealSubmission(record, home, cookie, passkey)
+        yield assertTrue(address.length < CellHandoff.MaxLength / 2, submission.length < CellHandoff.MaxLength / 2)
       },
     ),
     // versolauth/versola#1048: the session the browser had in the first cell travels in the seal.

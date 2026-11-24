@@ -26,6 +26,7 @@ import versola.oauth.session.model.{
 }
 import versola.role.model.RoleId
 import versola.user.model.*
+import versola.util.RsaKeyPair
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, Email, JWT, Patch, Phone}
@@ -37,13 +38,12 @@ import zio.test.*
 
 import java.time.Instant
 import java.util.UUID
-import javax.crypto.spec.SecretKeySpec
 
 object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val config = TestEnvConfig.coreConfig
-  private val secretKey = config.central.secretKey
-  private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+  private val secretKey = TestEnvConfig.centralKeyPair
+  private val wrongKey = TestEnvConfig.impostorKeyPair
 
   private val userRepo = stub[UserRepository]
   private val logoutService = stub[LogoutService]
@@ -99,11 +99,11 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       _ <- configuration.find.succeedsWith(client)
     yield configuration
 
-  private def validToken(key: javax.crypto.SecretKey): Task[String] =
+  private def validToken(key: RsaKeyPair): Task[String] =
     JWT.serialize(
       claims = JWT.Claims("central", "central", List("auth"), Json.Obj()),
       ttl = 10.minutes,
-      signature = JWT.Signature.Symmetric(key),
+      signature = TestEnvConfig.signedBy(key),
     )
 
   private val passkeyUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))

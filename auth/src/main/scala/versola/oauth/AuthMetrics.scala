@@ -26,6 +26,7 @@ object AuthMetrics:
     response match
       case _: AuthorizeResponse.Authorized => authorize("silent")
       case _: AuthorizeResponse.Initialize => authorize("interactive")
+      case _: AuthorizeResponse.HandedOff => authorize("handed_off")
 
   def authorizeError(reason: String): UIO[Unit] =
     authorize("error", Some(reason))

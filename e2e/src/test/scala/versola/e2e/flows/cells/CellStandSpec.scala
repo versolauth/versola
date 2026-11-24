@@ -487,6 +487,40 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
           .label("the password was asked and checked in cell 2") &&
         assertTrue(subAgain == sub).label("and the sign-in is the user cell 2 holds")
     },
+    test("a request with a login_hint of a user of cell 2, placed in cell 1, is answered with the redirect to cell 2 and goes on there") {
+      for
+        s <- stand
+        config <- ZIO.service[E2EConfig]
+        client <- ZIO.service[Client]
+        front <- front
+        setup <- s.nextRegistration
+        email = setup.email.get
+        registered <- register(s.second, setup, email)
+        sub <- subject(registered.tokens.accessToken)
+        // No address is typed: the client names it. The request is placed in cell 1, which does not hold it.
+        hinted <- front.auth.authorizeRaw(clientId = setup.clientId, redirectUri = setup.redirectUri, loginHint = Some(email))
+        handoffUrl <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}${hinted.location}")).mapError(RuntimeException(_))
+        taken <- client.batched(Request.get(handoffUrl))
+        secondCookie <- ZIO.fromOption(
+          taken.headers.getAll(Header.SetCookie).collectFirst {
+            case h if h.value.name == "__Host-SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
+          },
+        ).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${taken.status} ${hinted.location}"))
+        otp <- front.auth.getChallenge(secondCookie).assertStep(ConversationStep.Otp)
+        code <- front.auth.submitOtp(secondCookie, fixedOtp, otp.csrf).flatMap(_.assertRedirect)
+        tokens <- s.second.auth.token(
+          code,
+          hinted.verifier,
+          clientId = Some(setup.clientId),
+          clientSecret = Some(setup.clientSecret),
+          redirectUri = Some(setup.redirectUri),
+        ).success
+        subAgain <- subject(tokens.accessToken)
+      yield assertTrue(hinted.response.status == Status.SeeOther, hinted.location.contains(s"/challenge/handoff?handoff=v1.${s.second.id}."))
+        .label(s"cell 1 answers the request itself with the redirect to cell 2: ${hinted.response.status} ${hinted.location}") &&
+        assertTrue(hinted.conversationCookie.isEmpty).label("and sets no cookie of a conversation that is over") &&
+        assertTrue(code.startsWith(s"v1.${s.second.id}."), subAgain == sub).label("the sign-in goes on and finishes in cell 2")
+    },
     // versolauth/versola#1048: what names the user only when it is submitted is repeated in the cell that holds the user.
     test("a login and password typed where the sign-in was placed are checked in the cell that holds the user, once, and not asked twice") {
       for

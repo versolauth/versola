@@ -3,9 +3,10 @@ package versola.central.configuration.jwks
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.topology.CellRegistry
+import versola.central.{CentralConfig, authorizeAuth, authorizeBasic, authorizeInternal}
 import versola.util.JWT
-import versola.util.http.Observability
+import versola.util.http.{Observability, Unauthorized}
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
@@ -28,7 +29,7 @@ import zio.{Task, ZIO}
   *     every `/configuration` route (#554), so edge is never sent key material it cannot need.
   */
 object JwksController extends AuditedController:
-  type Env = Tracing & JwksService & CentralConfig & EdgeService & ResourceService
+  type Env = Tracing & JwksService & CentralConfig & EdgeService & CellRegistry & ResourceService
 
   def endpoints = List(
     getJwksEndpoint,
@@ -132,9 +133,10 @@ object JwksController extends AuditedController:
   val getSigningKeysSyncEndpoint =
     (Method.GET / "configuration" / "jwks" / "signing-keys" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
-        _ <- authorizeInternal(request)
+        caller <- authorizeAuth(request)
+        callerKey <- ZIO.fromOption(caller.authKey).orElseFail(Unauthorized)
         service <- ZIO.service[JwksService]
-        keys <- service.getSigningKeys
+        keys <- service.getSigningKeys(callerKey)
       yield Response.json(SigningKeysResponse(keys).toJson)
     }
 
@@ -142,8 +144,8 @@ object JwksController extends AuditedController:
 
   case class GeneratedKey(kid: String, alg: String) derives JsonCodec
 
-  /** Encrypted under the shared transport secret `secretKey`, base64url encoded, the same way
-    * client secrets already reach auth over this channel.
+  /** Encrypted to the key of the `auth` that asked, base64url encoded, the same way
+    * client secrets already reach auth over this channel (`SecretTransport`).
     */
   case class SigningKeysResponse(privateKeys: Map[String, String]) derives JsonCodec
 

@@ -2,29 +2,20 @@ package versola.oauth.client
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{ClientId, ResourceId, ResourceUri, TenantId}
-import versola.util.{Base64, Secret, SecurityService}
+import versola.util.{Base64, RsaKeyPair, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
 import zio.test.*
 
 object ResourceSyncClientSpec extends ZIOSpecDefault:
-  private val decryptedSecret = Array.fill(32)(4.toByte)
 
   private def tokenService(client: Client): CentralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
     override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
 
-  private val fakeSecurityService = new SecurityService:
-    override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.dieMessage("Unused in test")
-    override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(decryptedSecret)
-    override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
-    override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
-    override def mac(macInput: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
-    override def hashPassword(pw: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) =
-      ZIO.dieMessage("Unused in test")
-    override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
-    override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
+  private def encryptedTo(pair: RsaKeyPair, plaintext: Array[Byte]): ZIO[SecurityService, Throwable, String] =
+    ZIO.serviceWithZIO[SecurityService](_.encryptRsaHybrid(plaintext, pair.publicKey)).map(Base64.urlEncode)
 
   private case class RegistryEntryMirror(
       resourceId: ResourceId,
@@ -49,13 +40,15 @@ object ResourceSyncClientSpec extends ZIOSpecDefault:
   )
 
   def spec = suite("ResourceSyncClient")(
-    test("maps the resource registry and decrypts current + previous auth secrets") {
-      val body = RegistryResponseMirror(
-        resources = Vector(resource),
-        authResourceSecret = Some(Base64.urlEncode(Array.fill(32)(1.toByte))),
-        authResourcePreviousSecret = Some(Base64.urlEncode(Array.fill(32)(2.toByte))),
-      ).toJson
+    test("maps the resource registry and decrypts current + previous auth secrets with the auth's own key") {
       for
+        current <- encryptedTo(TestEnvConfig.authKeyPair, Array.fill(32)(1.toByte))
+        previous <- encryptedTo(TestEnvConfig.authKeyPair, Array.fill(32)(2.toByte))
+        body = RegistryResponseMirror(
+          resources = Vector(resource),
+          authResourceSecret = Some(current),
+          authResourcePreviousSecret = Some(previous),
+        ).toJson
         seen <- Ref.make(Option.empty[Request])
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request] { request =>
@@ -63,7 +56,8 @@ object ResourceSyncClientSpec extends ZIOSpecDefault:
           }.toRoutes,
         )
         client <- ZIO.service[Client]
-        service = ResourceSyncClient.Impl(TestEnvConfig.coreConfig, fakeSecurityService, tokenService(client))
+        security <- ZIO.service[SecurityService]
+        service = ResourceSyncClient.Impl(TestEnvConfig.coreConfig, security, tokenService(client))
         result <- service.getAll
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
       yield assertTrue(
@@ -79,8 +73,22 @@ object ResourceSyncClientSpec extends ZIOSpecDefault:
           ),
         ),
         result.authResourceSecrets.size == 2,
-        result.authResourceSecrets.forall(_.sameElements(decryptedSecret)),
+        result.authResourceSecrets.head.sameElements(Array.fill(32)(1.toByte)),
+        result.authResourceSecrets.last.sameElements(Array.fill(32)(2.toByte)),
       )
+    },
+    test("fails the sync for a secret encrypted to another key, rather than serving none") {
+      for
+        forSomeoneElse <- encryptedTo(TestEnvConfig.anotherCellKeyPair, Array.fill(32)(1.toByte))
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request] { _ =>
+            ZIO.succeed(Response.json(RegistryResponseMirror(Vector(resource), Some(forSomeoneElse), None).toJson))
+          }.toRoutes,
+        )
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        result <- ResourceSyncClient.Impl(TestEnvConfig.coreConfig, security, tokenService(client)).getAll.either
+      yield assertTrue(result.isLeft)
     },
     test("returns no auth secrets when central sends none") {
       val body = RegistryResponseMirror(Vector.empty, None, None).toJson
@@ -89,8 +97,9 @@ object ResourceSyncClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request] { _ => ZIO.succeed(Response.json(body)) }.toRoutes,
         )
         client <- ZIO.service[Client]
-        service = ResourceSyncClient.Impl(TestEnvConfig.coreConfig, fakeSecurityService, tokenService(client))
+        security <- ZIO.service[SecurityService]
+        service = ResourceSyncClient.Impl(TestEnvConfig.coreConfig, security, tokenService(client))
         result <- service.getAll
       yield assertTrue(result.resources.isEmpty, result.authResourceSecrets.isEmpty)
     },
-  ).provide(TestClient.layer) @@ TestAspect.silentLogging
+  ).provide(TestClient.layer, SecureRandom.live, SecurityService.live) @@ TestAspect.silentLogging

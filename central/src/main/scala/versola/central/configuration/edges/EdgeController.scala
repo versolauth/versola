@@ -5,10 +5,11 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.partners.{PartnerId, PartnerRecord, PartnerRegistry}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.topology.{RegionId, TopologyRepository}
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.{CentralConfig, authorizeAuth, authorizeBasic}
 import versola.util.Base64Url
-import versola.util.http.{AccessLogPolicy, Observability, OverloadPolicy, RateLimitPolicies, Unauthorized}
+import versola.util.http.{AccessLogPolicy, Observability, OverloadPolicy, RateLimitPolicies}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
@@ -18,8 +19,9 @@ import zio.{Duration, UIO, ZIO}
 import java.time.Instant
 
 object EdgeController extends AuditedController:
-  type Env = Tracing & EdgeService & EdgeGroupService & EdgeIdentityService & EdgeCertificateRepository & PartnerRegistry & ResourceService &
-    CentralConfig & TenantRepository & TopologyRepository
+  type Env =
+    Tracing & EdgeService & CellRegistry & EdgeGroupService & EdgeIdentityService & EdgeCertificateRepository & PartnerRegistry & ResourceService &
+      CentralConfig & TenantRepository & TopologyRepository
 
   def endpoints = List(
     getAllEdgesEndpoint,
@@ -279,14 +281,13 @@ object EdgeController extends AuditedController:
     * First-party edges only (#549): a partner's edge verifies tokens at its own boundary and calls `/userinfo` as a
     * client with the user's token, never as a voucher, so auth must not learn it as one.
     *
-    * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has no
+    * Restricted to auth, a cell's or the configured one (`authorizeAuth`): an edge has no
     * use for its peers' identities.
     */
   val edgesRegistryEndpoint =
     (Method.GET / "configuration" / "edges" / "registry").audited(Audit.Internal) -> handler { (request: Request) =>
       for
-        callerEdgeId <- authorizeInternal(request)
-        _ <- ZIO.fail(Unauthorized).when(callerEdgeId.isDefined)
+        _ <- authorizeAuth(request)
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
         tenants <- ZIO.serviceWithZIO[TenantRepository](_.getAll)

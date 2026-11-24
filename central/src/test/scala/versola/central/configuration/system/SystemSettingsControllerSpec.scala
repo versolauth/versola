@@ -4,6 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
@@ -14,8 +15,6 @@ import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
-
-import javax.crypto.spec.SecretKeySpec
 
 object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
@@ -31,9 +30,9 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj()),
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(SecretKeySpec(Array.fill(32)(7.toByte), "AES")),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
@@ -65,7 +64,7 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
             SystemSettingsController.routes.provideEnvironment(
               ZEnvironment[SystemSettingsService](service) ++
                 tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[ResourceService](resourceService),
             ),
           ),

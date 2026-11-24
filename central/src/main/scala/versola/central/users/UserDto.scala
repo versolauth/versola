@@ -22,8 +22,9 @@ case class CreateUserResponse(id: UserId) derives JsonCodec, Schema
 /** The claim of an account's identifiers by the `auth` that is about to create it through self-service registration
   * (versolauth/versola#1041).
   *
-  * @param cell the cell of the caller; absent from an `auth` that is not one. It is a statement of the caller, whose
-  *   token is signed with the key every `auth` shares.
+  * @param cell the cell the caller says it is; absent from an `auth` that is not one. It is only a statement: the cell of a
+  *   new claim is the one the key of the caller's token belongs to (#1050), and a body that names another is refused
+  *   (`403 cell_mismatch`). An `auth` central is configured with and that is no registered cell yet names its own here.
   */
 case class RegisteredUserRequest(
     email: Option[Email],

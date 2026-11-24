@@ -1,19 +1,22 @@
 package versola.central
 
 import versola.central.configuration.clients.ClientId
-import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.edges.{EdgeId, EdgeSigningKey}
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.util.Secret
 import zio.http.URL
 import zio.json.ast.Json
-import zio.{Config, Duration}
+import zio.{Config, Duration, ZIO, ZLayer}
 
-import javax.crypto.SecretKey
+import java.security.PrivateKey
 
 case class CentralConfig(
     bootstrap: Option[CentralConfig.BootstrapConfig],
     clientSecretsSecret: Secret,
-    secretKey: SecretKey,
+    /** Central's own key pair (#1050), the service key: the private half signs the tokens it sends `auth`, the public half is
+      * what every `auth` is configured with (`central.public-key-jwk`). */
+    serviceKey: CentralConfig.ServiceKey,
     auth: CentralConfig.AuthConfig,
     userOutbox: CentralConfig.UserOutboxConfig,
     configurationCacheRefreshInterval: Duration,
@@ -58,12 +61,47 @@ case class CentralConfig(
     edgeCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
 
 object CentralConfig:
+  /** The configuration as it is let run: `auth.public-keys` are public RSA keys of a size central accepts, each with a `kid` of its
+    * own, and no key is in the list twice. A key that is not is refused at start, not when the first call fails to verify. */
+  val validated: ZLayer[CentralConfig, Throwable, CentralConfig] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig]: config =>
+        val keys = config.auth.publicKeys
+        val kids = keys.flatMap(key => key.fields.collectFirst { case ("kid", Json.Str(kid)) => kid })
+        val prints = keys.map(EdgeSigningKey.thumbprint)
+        val invalid = keys.zipWithIndex
+          .map((key, index) => EdgeSigningKey.validate(key, s"auth.public-keys[$index]"))
+          .collectFirst { case Left(reason) => reason }
+        val problem = invalid
+          .orElse(Option.when(kids.distinct.size != kids.size)("auth.public-keys names a kid twice"))
+          .orElse(Option.when(prints.distinct.size != prints.size)("auth.public-keys names a key twice"))
+        ZIO.foreachDiscard(problem)(reason => ZIO.fail(IllegalArgumentException(reason))).as(config)
+
   val centralClientId: ClientId = ClientId("central-admin")
   val defaultTenantId: TenantId = TenantId("default")
 
+  /** The key pair central signs its calls to `auth` with (#1050): `key-id` is the `kid` of the token, `private-key` a
+    * base64-encoded PKCS#8 RSA key, read the way an edge's `private-key` is.
+    *
+    * @param keyId the token's `kid`, and the `kid` of the public JWK every `auth` is configured with
+    */
+  case class ServiceKey(keyId: String, privateKey: PrivateKey)
+
   /** @param mtlsUrl the public name of auth's mutual-TLS listener (`MPORT`), where a partner's edge authenticates its clients
-    *                with the group's certificate; told to the edge in `/edge/partner/me` and when it enrols. */
-  case class AuthConfig(url: URL, mtlsUrl: Option[URL] = None)
+    *                with the group's certificate; told to the edge in `/edge/partner/me` and when it enrols.
+    * @param publicKeys the public RSA JWKs of "the configured auth", the one at [[url]] (#1050): what a call from an `auth`
+    *                   is verified with for an installation with no cell registered, and for an `auth` that runs before its cell
+    *                   is. Each is validated at start ([[CentralConfig.validated]]). Empty, only the keys of the registered cells
+    *                   verify a caller.
+    * @param cellId the cell id that `auth` is configured with, if any: the cell it is, and the audience of the tokens central
+    *               sends it. Absent, the audience is `auth`.
+    */
+  case class AuthConfig(
+      url: URL,
+      mtlsUrl: Option[URL] = None,
+      publicKeys: List[Json.Obj] = Nil,
+      cellId: Option[CellId] = None,
+  )
 
   case class PublicUrlsConfig(enroll: URL, mtls: URL)
 

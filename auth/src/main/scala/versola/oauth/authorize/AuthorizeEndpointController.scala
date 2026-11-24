@@ -229,6 +229,10 @@ object AuthorizeEndpointController extends Controller:
             AuthorizeRedirect.successParams(AuthorizationCode.present(code), request.state, idToken, config.jwt.issuer),
           ).map(Response.seeOther)
 
+        // No cookie: the conversation this cell started is over, the home cell starts its own.
+        case AuthorizeResponse.HandedOff(location) =>
+          ZIO.succeed(Response.seeOther(location))
+
         case AuthorizeResponse.Initialize(authId) =>
           onStarted(
             authId,

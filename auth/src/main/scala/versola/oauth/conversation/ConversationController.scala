@@ -201,6 +201,9 @@ object ConversationController extends Controller:
         {
           case _: CellHandoff.TooLarge =>
             Observability.setError("handoff_too_large") *> render.renderSubmit(ConversationResult.ServiceUnavailable, record, uiLocale)
+          // The home cell has no key to seal for: the same as a directory that does not answer.
+          case _: CellHandoff.NoKey =>
+            Observability.setError("directory_unavailable") *> render.renderSubmit(ConversationResult.ServiceUnavailable, record, uiLocale)
           case failure => ZIO.fail(failure)
         },
         ticket =>

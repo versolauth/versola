@@ -14,7 +14,20 @@ import zio.test.*
   */
 object TopologyApiSpec extends CentralApiSpec:
 
-  private case class Ids(partition: String, region: String, otherRegion: String, cell: String)
+  /** `key` is the public key of `cell`, `otherKey` another one; `otherCell` is a second cell, for the rules between two. */
+  private case class Ids(
+      partition: String,
+      region: String,
+      otherRegion: String,
+      cell: String,
+      otherCell: String,
+      key: Json.Obj,
+      otherKey: Json.Obj,
+  )
+
+  /** A public RSA JWK of a key of its own, 2048 bits, under a kid nobody else has. */
+  private def publicKey(kid: String): UIO[Json.Obj] =
+    CellIdentity.generate(kid).flatMap(_.publicJwk).orDie
 
   private def ids: UIO[Ids] =
     for
@@ -22,9 +35,19 @@ object TopologyApiSpec extends CentralApiSpec:
       region <- CentralApi.id("e2e-region")
       otherRegion <- CentralApi.id("e2e-region")
       cell <- CentralApi.id("e2e-cell")
-    yield Ids(partition, region, otherRegion, cell)
+      otherCell <- CentralApi.id("e2e-cell")
+      key <- publicKey(s"$cell-key")
+      otherKey <- publicKey(s"$otherCell-key")
+    yield Ids(partition, region, otherRegion, cell, otherCell, key, otherKey)
 
-  private def cell(id: String, region: String, state: String = "open", weight: Int = 100, mtlsUrl: Option[String] = None): Json.Obj =
+  private def cell(
+      id: String,
+      region: String,
+      key: Json.Obj,
+      state: String = "open",
+      weight: Int = 100,
+      mtlsUrl: Option[String] = None,
+  ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
         "id" -> Json.Str(id),
@@ -33,6 +56,8 @@ object TopologyApiSpec extends CentralApiSpec:
         "trustedCertificates" -> Json.Arr(),
         "state" -> Json.Str(state),
         "weight" -> Json.Num(weight),
+        // A cell is registered with its public key (versolauth/versola#1050): central knows the cell that calls it by that key.
+        "publicKeys" -> Json.Arr(key),
       ) ++ Chunk.fromIterable(mtlsUrl.map(url => "mtlsUrl" -> Json.Str(url))),
     )
 
@@ -48,8 +73,10 @@ object TopologyApiSpec extends CentralApiSpec:
 
   /** Removes what a test registered, in the order the rules allow: a cell closed and deleted, then its region. */
   private def cleanup(central: CentralApi, ids: Ids): UIO[Unit] =
-    (central.put("/configuration/cells", cell(ids.cell, ids.region, state = "closed")) *>
+    (central.put("/configuration/cells", cell(ids.cell, ids.region, ids.key, state = "closed")) *>
       central.delete("/configuration/cells", "cellId" -> ids.cell) *>
+      central.put("/configuration/cells", cell(ids.otherCell, ids.region, ids.otherKey, state = "closed")) *>
+      central.delete("/configuration/cells", "cellId" -> ids.otherCell) *>
       central.delete("/configuration/regions", "regionId" -> ids.region) *>
       central.delete("/configuration/regions", "regionId" -> ids.otherRegion)).ignore
 
@@ -61,14 +88,14 @@ object TopologyApiSpec extends CentralApiSpec:
         result <- (for
           _ <- created(central, "/configuration/partitions", Json.Obj("id" -> Json.Str(ids.partition)))
           _ <- created(central, "/configuration/regions", region(ids.region, ids.partition))
-          _ <- created(central, "/configuration/cells", cell(ids.cell, ids.region))
+          _ <- created(central, "/configuration/cells", cell(ids.cell, ids.region, ids.key))
           listed <- cells(central)
-          again <- central.post("/configuration/cells", cell(ids.cell, ids.region))
-          updated <- central.put("/configuration/cells", cell(ids.cell, ids.region, state = "draining", weight = 0))
+          again <- central.post("/configuration/cells", cell(ids.cell, ids.region, ids.key))
+          updated <- central.put("/configuration/cells", cell(ids.cell, ids.region, ids.key, state = "draining", weight = 0))
           afterUpdate <- cells(central)
           regionInUse <- central.delete("/configuration/regions", "regionId" -> ids.region)
           deletedWhileDraining <- central.delete("/configuration/cells", "cellId" -> ids.cell)
-          closed <- central.put("/configuration/cells", cell(ids.cell, ids.region, state = "closed", weight = 0))
+          closed <- central.put("/configuration/cells", cell(ids.cell, ids.region, ids.key, state = "closed", weight = 0))
           deleted <- central.delete("/configuration/cells", "cellId" -> ids.cell)
           regionDeleted <- central.delete("/configuration/regions", "regionId" -> ids.region)
           afterDelete <- cells(central)
@@ -94,9 +121,9 @@ object TopologyApiSpec extends CentralApiSpec:
         result <- (for
           _ <- created(central, "/configuration/partitions", Json.Obj("id" -> Json.Str(ids.partition)))
           _ <- created(central, "/configuration/regions", region(ids.region, ids.partition))
-          noRegion <- central.post("/configuration/cells", cell(ids.cell, ids.otherRegion))
-          negative <- central.post("/configuration/cells", cell(ids.cell, ids.region, weight = -1))
-          plainMtls <- central.post("/configuration/cells", cell(ids.cell, ids.region, mtlsUrl = Some("http://cell.internal.example:9008")))
+          noRegion <- central.post("/configuration/cells", cell(ids.cell, ids.otherRegion, ids.key))
+          negative <- central.post("/configuration/cells", cell(ids.cell, ids.region, ids.key, weight = -1))
+          plainMtls <- central.post("/configuration/cells", cell(ids.cell, ids.region, ids.key, mtlsUrl = Some("http://cell.internal.example:9008")))
           noPartition <- central.post("/configuration/regions", region(ids.otherRegion, s"${ids.partition}-none"))
           listed <- cells(central)
         yield assertTrue(noRegion.status == Status.BadRequest).label("a region nobody registered") &&
@@ -104,6 +131,51 @@ object TopologyApiSpec extends CentralApiSpec:
           assertTrue(plainMtls.status == Status.BadRequest).label("a mutual-TLS listener is https") &&
           assertTrue(noPartition.status == Status.BadRequest).label("a region needs its partition") &&
           assertTrue(!listed.exists(_.str("id").contains(ids.cell))).label("nothing refused is stored")).ensuring(cleanup(central, ids))
+      yield result
+    },
+    test("a cell is refused with no key, with a key that is not a public RSA key, and with a key another cell holds") {
+      for
+        central <- api
+        ids <- ids
+        result <- (for
+          _ <- created(central, "/configuration/partitions", Json.Obj("id" -> Json.Str(ids.partition)))
+          _ <- created(central, "/configuration/regions", region(ids.region, ids.partition))
+          withoutKeys = Json.Obj(cell(ids.cell, ids.region, ids.key).fields.filterNot(_._1 == "publicKeys"))
+          noField <- central.post("/configuration/cells", withoutKeys)
+          noKey <- central.post("/configuration/cells", Json.Obj(withoutKeys.fields :+ ("publicKeys" -> Json.Arr())))
+          private_ = Json.Obj(ids.key.fields :+ ("d" -> Json.Str("AQAB")))
+          withPrivate <- central.post("/configuration/cells", Json.Obj(withoutKeys.fields :+ ("publicKeys" -> Json.Arr(private_))))
+          withoutKid = Json.Obj(ids.key.fields.filterNot(_._1 == "kid"))
+          noKid <- central.post("/configuration/cells", Json.Obj(withoutKeys.fields :+ ("publicKeys" -> Json.Arr(withoutKid))))
+          three <- central.post(
+            "/configuration/cells",
+            Json.Obj(withoutKeys.fields :+ ("publicKeys" -> Json.Arr(
+              ids.key,
+              ids.otherKey,
+              ids.key.copy(fields = ids.key.fields.map((k, v) => if k == "kid" then k -> Json.Str("third") else k -> v)),
+            ))),
+          )
+          _ <- created(central, "/configuration/cells", cell(ids.cell, ids.region, ids.key))
+          // the same key under another cell's id, and under a kid of its own: the key is what is compared, not its name
+          sameKey <- central.post("/configuration/cells", cell(ids.otherCell, ids.region, ids.key))
+          renamed = Json.Obj(ids.key.fields.map((k, v) => if k == "kid" then k -> Json.Str(s"${ids.otherCell}-renamed") else k -> v))
+          sameKeyRenamed <- central.post("/configuration/cells", cell(ids.otherCell, ids.region, renamed))
+          // another cell's key in a change of this one is refused too; its own key is not
+          otherCreated <- central.post("/configuration/cells", cell(ids.otherCell, ids.region, ids.otherKey))
+          stolen <- central.put("/configuration/cells", cell(ids.otherCell, ids.region, ids.key))
+          unchanged <- central.put("/configuration/cells", cell(ids.cell, ids.region, ids.key, weight = 50))
+          listed <- cells(central)
+        yield assertTrue(noField.status == Status.BadRequest).label("a cell with no publicKeys") &&
+          assertTrue(noKey.status == Status.BadRequest).label("a cell with an empty list of keys cannot call central") &&
+          assertTrue(withPrivate.status == Status.BadRequest).label("a key with a private member") &&
+          assertTrue(noKid.status == Status.BadRequest).label("a key without a kid") &&
+          assertTrue(three.status == Status.BadRequest).label("at most two keys: the second only while a key is replaced") &&
+          assertTrue(sameKey.status == Status.BadRequest).label("a key another cell holds") &&
+          assertTrue(sameKeyRenamed.status == Status.BadRequest).label("the same key under another kid") &&
+          assertTrue(otherCreated.status == Status.Created, stolen.status == Status.BadRequest).label("a change cannot take another cell's key") &&
+          assertTrue(unchanged.status == Status.NoContent).label("a cell keeps its own key through a change") &&
+          assertTrue(listed.count(c => c.str("id").exists(Set(ids.cell, ids.otherCell).contains)) == 2)
+            .label("only the two cells that were accepted are stored")).ensuring(cleanup(central, ids))
       yield result
     },
     test("an edge of the operator is put in a region and syncs the cells with its own region; a partner's edge is refused them") {
@@ -114,7 +186,7 @@ object TopologyApiSpec extends CentralApiSpec:
         result <- (for
           _ <- created(central, "/configuration/partitions", Json.Obj("id" -> Json.Str(ids.partition)))
           _ <- created(central, "/configuration/regions", region(ids.region, ids.partition))
-          _ <- created(central, "/configuration/cells", cell(ids.cell, ids.region))
+          _ <- created(central, "/configuration/cells", cell(ids.cell, ids.region, ids.key))
           own <- createFirstParty(central, tenantId)
           partner <- createPartner(central, tenantId)
           placed <- central.put("/configuration/edges/region", Json.Obj("regionId" -> Json.Str(ids.region)), "edgeId" -> own.edgeId)

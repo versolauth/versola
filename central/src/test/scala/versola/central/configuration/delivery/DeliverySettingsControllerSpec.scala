@@ -4,6 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import versola.util.{Base64, JWT, Secret, SecureRandom, SecurityService}
@@ -16,7 +17,6 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 import java.nio.charset.StandardCharsets
-import javax.crypto.spec.SecretKeySpec
 
 object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
@@ -61,22 +61,22 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     otpProviderPassword = None,
   )
 
-  private def token(key: Array[Byte]): String = Unsafe.unsafe { unsafe ?=>
+  private def token(signature: JWT.Signature): String = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          claims = JWT.Claims(issuer = "a", subject = "b", audience = List("c"), custom = Json.Obj()),
+          claims = JWT.Claims(issuer = "auth", subject = "auth", audience = List("central"), custom = Json.Obj()),
           ttl = 1.minute,
-          signature = JWT.Signature.Symmetric(SecretKeySpec(key, "AES")),
+          signature = signature,
         ),
       )
       .getOrThrowFiberFailure()
   }
 
-  /** Signed under `TestCentralConfig.config.secretKey`, the way auth signs its own. */
-  private val syncToken = token(Array.fill(32)(7.toByte))
+  /** Signed with the key central is configured with for its auth, the way auth signs its own. */
+  private val syncToken = token(TestCentralConfig.authSignature)
 
-  private val foreignToken = token(Array.fill(32)(8.toByte))
+  private val foreignToken = token(TestCentralConfig.foreignSignature)
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -112,7 +112,7 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
             DeliverySettingsController.routes.provideEnvironment(
               ZEnvironment[DeliverySettingsService](service) ++
                 tracing ++ security ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[ResourceService](resourceService),
             ),
           ),
@@ -242,7 +242,7 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, svc, _) => ZIO.succeed(assertTrue((() => svc.deleteSettings()).calls.isEmpty)),
     ),
     controllerTestCase(
-      description = "GET sync serves auth the stored record with the passwords encrypted under the transport secret",
+      description = "GET sync serves auth the stored record with the passwords encrypted to its key: only its private key opens them",
       request = Request.get(path / "sync").addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
       setup = svc => svc.getSettings.succeedsWith(Some(stored)),
@@ -251,8 +251,10 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
           raw <- response.body.asString
           payload <- decode[DeliverySettingsController.SyncResponse](response)
           encrypted <- ZIO.fromOption(payload.smtpPassword).orElseFail(RuntimeException("no smtp password in the sync answer"))
-          decrypted <- security.decryptAes256(Base64.urlDecode(encrypted), config.secretKey)
+          decrypted <- security.decryptRsaHybrid(Base64.urlDecode(encrypted), TestCentralConfig.authKeyPair.privateKey)
+          withOthersKey <- security.decryptRsaHybrid(Base64.urlDecode(encrypted), TestCentralConfig.foreignKeyPair.privateKey).either
         yield assertTrue(
+          withOthersKey.isLeft,
           payload.stored,
           payload.smtp == Some(smtp),
           payload.otpProvider == Some(otpProvider),

@@ -1,6 +1,7 @@
 package versola.antifraud
 
 import versola.auth.TestEnvConfig
+import versola.util.RsaKeyPair
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{JWT, Patch}
 import zio.*
@@ -9,24 +10,21 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
-import javax.crypto.SecretKey
-import javax.crypto.spec.SecretKeySpec
-
 object AntifraudSettingsControllerSpec extends ZIOSpecDefault:
 
   private val config = TestEnvConfig.coreConfig
-  private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+  private val wrongKey = TestEnvConfig.impostorKeyPair
   private val checkUrl = URL.empty / "antifraud" / "settings" / "check"
   private val settings = Tuning.off.copy(blockAt = 80, shadowRules = Set("velocity_ip_1m"))
 
-  private def token(key: SecretKey) =
+  private def token(key: RsaKeyPair) =
     JWT.serialize(
       claims = JWT.Claims("central", "central", List("auth"), Json.Obj()),
       ttl = 10.minutes,
-      signature = JWT.Signature.Symmetric(key),
+      signature = TestEnvConfig.signedBy(key),
     )
 
-  private def call(request: Request, key: SecretKey = config.central.secretKey): ZIO[Client & TestClient & Scope, Throwable, Response] =
+  private def call(request: Request, key: RsaKeyPair = TestEnvConfig.centralKeyPair): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]
       tracing <- NoopTracing.layer.build

@@ -34,6 +34,7 @@ object UserServiceSpec extends UnitSpecBase:
       trustedCertificates = Nil,
       state = CellState.Open,
       weight = 100,
+      publicKeys = Nil,
     )
   private val registeredCells = Vector("kz-1", "kz-2", "kz-3").map(CellId(_))
 
@@ -89,6 +90,7 @@ object UserServiceSpec extends UnitSpecBase:
           trustedCertificates = Nil,
           state = state,
           weight = weight,
+          publicKeys = Nil,
         )
       for
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(newId)
@@ -114,6 +116,7 @@ object UserServiceSpec extends UnitSpecBase:
           trustedCertificates = Nil,
           state = CellState.Open,
           weight = weight,
+          publicKeys = Nil,
         )
       val cells = Vector(cellOf("kz-1", 30), cellOf("kz-2", 70))
       assertTrue(

@@ -35,9 +35,11 @@ import versola.role.model.RoleId
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.user.{UserDirectory, UserRepository}
 import versola.util.audit.AuditOutcome
+import versola.util.http.Observability
 import versola.util.{CoreConfig, Email, Phone, RoutingKey, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast.Json
+import zio.logging.logContext
 import zio.prelude.NonEmptyList
 import zio.test.*
 import zio.{Exit, ZIO}
@@ -755,6 +757,49 @@ object ConversationRouterSpec extends UnitSpecBase:
           prepared = env.otpConversationService.prepareInitialOtp.times
           sealedTimes = env.handoff.seal.calls.size
         yield assertTrue(result == ConversationResult.ServiceUnavailable, prepared == 0, sealedTimes == 0)
+      },
+      // versolauth/versola#1050: a home cell whose key this cell does not have is a cell it cannot hand a sign-in to.
+      test("a cell whose home cell has no key refuses the step as it does for a directory that does not answer, and keeps the conversation") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val home = RoutingKey.CellId.parse("kz-2").toOption.get
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.lookup.succeedsWith(Some(UserDirectory.Claim(UserId(UUID.randomUUID()), Some(home))))
+          _ <- env.handoff.seal.failsWith(CellHandoff.NoKey("kz-2"))
+          (result, _, code) <- logContext.locallyWith(identity)(
+            env.router.submit(authId, submission, None, None).zip(logContext.get.map(_.get(Observability.error).map(_.code))),
+          )
+          prepared = env.otpConversationService.prepareInitialOtp.times
+          registrations = env.otpConversationService.startRegistration.times
+        yield assertTrue(
+          result == ConversationResult.ServiceUnavailable,
+          code.contains("directory_unavailable"),
+          env.conversationRepository.delete.calls.isEmpty,
+          prepared == 0,
+          registrations == 0,
+        )
+      },
+      test("a cell keeps the conversation too when the sealed request is too large for a URL") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val home = RoutingKey.CellId.parse("kz-2").toOption.get
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.lookup.succeedsWith(Some(UserDirectory.Claim(UserId(UUID.randomUUID()), Some(home))))
+          _ <- env.handoff.seal.failsWith(CellHandoff.TooLarge(9000))
+          (result, _) <- env.router.submit(authId, submission, None, None)
+        yield assertTrue(result == ConversationResult.ServiceUnavailable, env.conversationRepository.delete.calls.isEmpty)
       },
       test("an auth that is no cell asks the directory nothing, and neither does a cell that finds the user itself") {
         val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")

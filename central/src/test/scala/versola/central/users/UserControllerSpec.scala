@@ -8,8 +8,8 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.topology.CellId
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.central.configuration.topology.{CellId, CellRecord, CellRegistry}
+import versola.central.{Caller, CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import versola.util.{Email, EnvName, JWT, Phone}
 import zio.*
@@ -60,8 +60,23 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     JWT.serialize(
       JWT.Claims("auth", "auth", List("central"), Json.Obj()),
       1.minute,
-      JWT.Signature.Symmetric(TestCentralConfig.config.secretKey),
+      TestCentralConfig.authSignature,
     ).map(token => Header.Authorization.Bearer(token))
+
+  private val kz1Key = TestCentralConfig.newKeyPair("kz-1-key")
+  private val kz1 = TestCentralConfig.cellRecord("kz-1", kz1Key)
+  private val kz2 = TestCentralConfig.cellRecord("kz-2", TestCentralConfig.newKeyPair("kz-2-key"))
+
+  /** What the `auth` of cell `kz-1` presents: signed with the key registered for the cell. */
+  private val cellAuthorization: Task[Header] =
+    TestCentralConfig.authTokenBy(kz1Key, cellId = Some("kz-1")).map(token => Header.Authorization.Bearer(token))
+
+  private def registration(body: String) =
+    Request(
+      method = Method.POST,
+      url = URL.empty / "users" / "registrations",
+      body = Body.fromString(body),
+    ).addHeader(Header.ContentType(MediaType.application.json))
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -78,6 +93,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup: Stub[UserService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[UserService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
       authorization: Task[Header] = ZIO.succeed(TestAdminAuth.basicAuthHeader),
+      cells: List[CellRecord] = Nil,
   ) =
     test(description) {
       for
@@ -92,7 +108,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[UserService](service) ++
                 ZEnvironment[CentralConfig](TestCentralConfig.config) ++
                 tracing ++ ZEnvironment[ResourceService](resourceService) ++
-                ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.registryOf(cells*)) ++
                 ZEnvironment[EnvName](env) ++
                 ZEnvironment[AuditReportService](stub[AuditReportService]),
             ),
@@ -144,6 +160,83 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           body == RegisteredUserResponse(userId = userId, cell = None),
         ),
     ),
+    // versolauth/versola#1050: the cell of a new claim is the caller's, from the key of its token
+    controllerTestCase(
+      description = "a registration by the auth of a cell is claimed in that cell, whatever the body says of it: none",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-1")))),
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest.copy(cell = Some(CellId("kz-1")))))),
+    ),
+    controllerTestCase(
+      description = "a registration by the auth of a cell that names the same cell is claimed in it",
+      request = registration(s"""{"email":"$email","cell":"kz-1"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-1")))),
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest.copy(cell = Some(CellId("kz-1")))))),
+    ),
+    controllerTestCase(
+      description = "a registration by the auth of a cell that names another cell is 403, and nothing is claimed",
+      request = registration(s"""{"email":"$email","cell":"kz-2"}"""),
+      expectedStatus = Status.Forbidden,
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "a registration by the configured auth that names a cell that is not registered is claimed in that cell",
+      request = registration(s"""{"email":"$email","cell":"kz-9"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-9")))),
+      authorization = internalAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest.copy(cell = Some(CellId("kz-9")))))),
+    ),
+    controllerTestCase(
+      description = "a registration by the configured auth that names a registered cell is 403: it is not that cell, whose key it does not hold",
+      request = registration(s"""{"email":"$email","cell":"kz-1"}"""),
+      expectedStatus = Status.Forbidden,
+      authorization = internalAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "a registration by the configured auth that names no cell is claimed in none, with cells registered or not",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None)),
+      authorization = internalAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest))),
+    ),
+    controllerTestCase(
+      description = "a registration with a token that is nobody's is 401, whatever cell the body names",
+      request = registration(s"""{"email":"$email","cell":"kz-1"}"""),
+      expectedStatus = Status.Unauthorized,
+      authorization = TestCentralConfig.authTokenBy(TestCentralConfig.foreignKeyPair).map(token => Header.Authorization.Bearer(token)),
+      cells = List(kz1),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls.isEmpty)),
+    ),
+    test("the cell of a claim: the caller's, with the refusals named by their codes") {
+      val registered = Vector(CellId("kz-1"), CellId("kz-2"))
+      val key = kz1Key.publicKey
+      assertTrue(
+        UserController.claimCell(Caller.Cell(CellId("kz-1"), key), None, registered) == Right(Some(CellId("kz-1"))),
+        UserController.claimCell(Caller.Cell(CellId("kz-1"), key), Some(CellId("kz-1")), registered) == Right(Some(CellId("kz-1"))),
+        UserController.claimCell(Caller.Cell(CellId("kz-1"), key), Some(CellId("kz-2")), registered) == Left("cell_mismatch"),
+        UserController.claimCell(Caller.ConfiguredAuth(key), Some(CellId("kz-9")), registered) == Right(Some(CellId("kz-9"))),
+        UserController.claimCell(Caller.ConfiguredAuth(key), Some(CellId("kz-2")), registered) == Left("cell_registered"),
+        UserController.claimCell(Caller.ConfiguredAuth(key), None, registered) == Right(None),
+        UserController.claimCell(Caller.ConfiguredAuth(key), None, Vector.empty) == Right(None),
+      )
+    },
     // versolauth/versola#1046
     controllerTestCase(
       description = "lookup answers the holder of a credential to auth's token",

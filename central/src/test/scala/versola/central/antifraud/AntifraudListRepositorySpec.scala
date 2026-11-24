@@ -211,7 +211,7 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
           audit.map(a => (a.action, a.actor)).head == (AntifraudListAction.expire, "system"),
         )
       },
-      test("every change moves the version and nothing else does") {
+      test("creating and deleting an entry move the version, and reads, a purge and a prune do not") {
         for
           v0 <- repository.version
           e <- repository.upsert(entry(expiresAt = Some(at.plusSeconds(1))), "x", at)
@@ -236,7 +236,57 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
           v7 <- repository.version
           _ <- repository.pruneAudit(at.plusSeconds(1000), 100)
           v8 <- repository.version
-        yield assertTrue(v1 == v0 + 1, v2 == v1, v3 == v2, v4 == v3 + 1, v5 == v4, v6 == v5, v7 == v6 + 2, v8 == v7)
+        yield assertTrue(v1 == v0 + 1, v2 == v1, v3 == v2, v4 == v3, v5 == v4, v6 == v5, v7 == v6 + 2, v8 == v7)
+      },
+      test("a purge of expired entries writes its audit and deletes them but leaves the version, and active does not change") {
+        for
+          live <- repository.upsert(entry(value = "live", expiresAt = Some(at.plusSeconds(60))), "x", at)
+          old <- repository.upsert(entry(value = "old", expiresAt = Some(at.plusSeconds(1))), "x", at)
+          before <- repository.active(at.plusSeconds(2))
+          purged <- repository.purgeExpired(at.plusSeconds(2), 10)
+          after <- repository.active(at.plusSeconds(2))
+          audit <- repository.audit(Some(old.id), 10, None)
+          version <- repository.version
+        yield assertTrue(
+          purged == 1,
+          before.entries == after.entries,
+          after.entries.map(_.id) == List(live.id),
+          after.version == before.version,
+          version == before.version,
+          audit.map(_.action).contains(AntifraudListAction.expire),
+        )
+      },
+      test("an upsert that finds the entry as it is leaves the version, and still records the request in the audit") {
+        val e = entry(expiresAt = Some(at.plusSeconds(60)))
+        for
+          first <- repository.upsert(e, "alice", at)
+          v1 <- repository.version
+          again <- repository.upsert(e.copy(id = UUID.randomUUID(), createdBy = "bob"), "bob", at.plusSeconds(1))
+          v2 <- repository.version
+          audit <- repository.audit(Some(first.id), 10, None)
+        yield assertTrue(again.id == first.id, v2 == v1, audit.map(_.action).toSet == Set(AntifraudListAction.create, AntifraudListAction.update))
+      },
+      test("an upsert that changes the expiry, the reason, the source or the shadow flag moves the version, each by one") {
+        val base = entry(expiresAt = Some(at.plusSeconds(60)))
+        val changes = List(
+          base.copy(expiresAt = Some(at.plusSeconds(120))),
+          base.copy(expiresAt = None),
+          base.copy(reason = Some("another reason")),
+          base.copy(reason = None),
+          base.copy(source = "rule"),
+          base.copy(shadow = true),
+        )
+        for
+          _ <- repository.upsert(base, "x", at)
+          // Each change is made from the stored entry as the one before left it, and checked on its own.
+          moved <- ZIO.foreach(changes): change =>
+            for
+              _ <- repository.upsert(base, "x", at)
+              before <- repository.version
+              _ <- repository.upsert(change, "x", at)
+              after <- repository.version
+            yield after - before
+        yield assertTrue(moved == List.fill(changes.size)(1L))
       },
       test("purges and prunes in batches of at most the limit, oldest first, and does not touch what is not yet due") {
         for

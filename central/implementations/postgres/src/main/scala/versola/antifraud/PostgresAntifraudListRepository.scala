@@ -65,8 +65,12 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
               shadow = EXCLUDED.shadow
         RETURNING $EntryColumns
       """.query[EntryRow].run().head
+      // The audit records the request even when it changed nothing (an `update` whose previous values equal the new ones):
+      // who asked, and when, is worth keeping, and the audit is not a version anyone compares.
       audited(if existing.isDefined then AntifraudListAction.update else AntifraudListAction.create, actor, at, stored, existing)
-      bumped()
+      // The version moves only when what a cell copies does: a repeat of what is stored changes nothing, and a cell that
+      // downloaded and rewrote the lists for it would do it for every instance of every cell.
+      if existing.forall(_.copiedFieldsDiffer(stored)) then bumped()
       stored.toRecord
 
   override def delete(id: UUID, actor: String, at: Instant): Task[Boolean] =
@@ -118,7 +122,8 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
         DELETE FROM antifraud_list_entries e USING due WHERE e.id = due.id RETURNING $EntryReturning
       """.query[EntryRow].run()
       removed.foreach(row => audited(AntifraudListAction.expire, "system", now, row, previous = None))
-      if removed.nonEmpty then bumped()
+      // No bump: `active` leaves these entries out already, and a cell filters by its own clock, so what a cell copies does not
+      // change when they are removed. Bumping made every instance of every cell read the lists again every 30 seconds.
       removed.size
 
   override def pruneAudit(before: Instant, limit: Int): Task[Int] =
@@ -166,6 +171,10 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
       createdBy: String,
       createdAt: Instant,
   ) derives DbCodec:
+    /** Whether `other`, the same entry as stored now, differs in a field a cell copies. */
+    def copiedFieldsDiffer(other: EntryRow): Boolean =
+      expiresAt != other.expiresAt || reason != other.reason || source != other.source || shadow != other.shadow
+
     def toRecord: ListEntryRecord = ListEntryRecord(
       id = id,
       listType = AntifraudListType.valueOf(listType),

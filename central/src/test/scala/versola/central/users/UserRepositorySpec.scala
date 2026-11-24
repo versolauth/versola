@@ -37,6 +37,9 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
   private def create(env: UserRepositorySpec.Env, id: UserId, identifiers: DirectoryIdentifier*) =
     env.repository.create(user = user(id), identifiers = identifiers.toList, event = upsert(id, created(id)), eventId = eventId(created(id)))
 
+  private def createIn(env: UserRepositorySpec.Env, id: UserId, cellId: Option[CellId], identifiers: DirectoryIdentifier*) =
+    env.repository.create(user = user(id, cellId), identifiers = identifiers.toList, event = upsert(id, created(id)), eventId = eventId(created(id)))
+
   /** Claims and acknowledges everything currently queued, so a later assertion sees only the
     * events the test itself provoked. The outbox is per-user FIFO, so simply claiming the
     * earlier events would leave them leased and block the ones under test.
@@ -224,6 +227,37 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           deletes = events.map(_.event).collect { case e: OutboxEvent.DeleteUser => e }
           owner <- env.repository.claim(List(phone), user(userId2))
         yield assertTrue(found.isEmpty, byPhone.isEmpty, deletes.map(_.userId) == Vector(userId1), owner == user(userId2))
+      },
+      test("delete queues the deletion naming the cell that held the user, and None for a user of no cell") {
+        for
+          _ <- createIn(env, userId1, Some(cell), email)
+          _ <- createIn(env, userId2, None, phone)
+          _ <- drainOutbox(env)
+          _ <- env.repository.delete(userId1)
+          _ <- env.repository.delete(userId2)
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
+          deletes = events.map(_.event).collect { case e: OutboxEvent.DeleteUser => e }
+        yield assertTrue(
+          deletes.toSet == Set(OutboxEvent.DeleteUser(userId = userId1, cell = Some(cell)), OutboxEvent.DeleteUser(userId = userId2, cell = None)),
+        )
+      },
+      test("countInCell counts none for a cell without users") {
+        for
+          _ <- createIn(env, userId1, Some(otherCell), email)
+          held <- env.repository.countInCell(cell)
+        yield assertTrue(held == 0L)
+      },
+      test("countInCell counts the users of the cell, and not those of another cell or of no cell") {
+        for
+          _ <- createIn(env, userId1, Some(cell), email)
+          _ <- createIn(env, userId2, Some(cell), phone)
+          _ <- createIn(env, userId3, Some(otherCell), otherPhone)
+          _ <- create(env, UserId(UUID.fromString("00000000-0000-0000-0000-000000000004")), login)
+          held <- env.repository.countInCell(cell)
+          other <- env.repository.countInCell(otherCell)
+          _ <- env.repository.delete(userId1)
+          afterDelete <- env.repository.countInCell(cell)
+        yield assertTrue(held == 2L, other == 1L, afterDelete == 1L)
       },
       test("deleteEvent drops a dispatched event from the outbox") {
         for

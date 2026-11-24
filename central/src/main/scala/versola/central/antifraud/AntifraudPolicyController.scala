@@ -2,6 +2,7 @@ package versola.central.antifraud
 
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, authorizeInternal}
 import zio.*
 import zio.http.{Method, Request, Response, handler}
@@ -15,7 +16,7 @@ import zio.json.EncoderOps
   * its own database, so nothing here is on the path of a sign-in.
   */
 object AntifraudPolicyController extends AuditedController:
-  type Env = Tracing & CentralConfig & EdgeService & AntifraudSettingsService & AntifraudListService
+  type Env = Tracing & CentralConfig & EdgeService & CellRegistry & AntifraudSettingsService & AntifraudListService
 
   def endpoints = List(stateEndpoint, listsEndpoint)
 

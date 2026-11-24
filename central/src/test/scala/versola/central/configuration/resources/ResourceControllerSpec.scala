@@ -8,10 +8,11 @@ import versola.central.configuration.edges.EdgeGroup
 import versola.central.configuration.edges.EdgeGroupKind
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.DeclaredRateLimitBy
 import versola.util.http.{DeclaredRateLimit, GuardMode, Observability, RateLimitWindow}
-import versola.util.{Base64Url, JWT, RsaKeyPair, Secret, SecurityService}
+import versola.util.{Base64, Base64Url, JWT, RsaKeyPair, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -173,17 +174,8 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](Tracing.live(logAnnotated = false), OpenTelemetry.contextZIO, ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")))
 
-  private val securityLayer: ULayer[SecurityService] =
-    ZLayer.succeed(new SecurityService:
-      override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
-      override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
-      override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
-      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
-      override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
-      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) =
-        ZIO.dieMessage("Unused in test")
-      override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
-      override def generateEcKeyPair = ZIO.dieMessage("Unused in test"))
+  /** The real one: the secrets of a sync answer are encrypted to a key, and the tests open them with the private half. */
+  private val securityLayer: ULayer[SecurityService] = ZLayer.make[SecurityService](SecureRandom.live, SecurityService.live)
 
   private def controllerTestCase(
       description: String,
@@ -203,7 +195,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells),
             ),
           ),
         )
@@ -216,6 +208,10 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  /** What `auth` does with a secret of the registry: opens it with the private half of the key it asked with. */
+  private def opened(value: String, security: SecurityService, key: RsaKeyPair): Task[Array[Byte]] =
+    ZIO.attempt(Base64.urlDecode(value)).flatMap(security.decryptRsaHybrid(_, key.privateKey))
 
   private def decodeJsonBody[A: JsonDecoder](response: Response): Task[A] =
     response.body.asString
@@ -473,7 +469,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells),
             ),
           ),
         )
@@ -498,7 +494,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         token <- JWT.serialize(
           JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(config.secretKey),
+          TestCentralConfig.authSignature,
         )
         _ <- service.getResourcesForSync.succeedsWith(Vector(
           resourceRecords.head.copy(secret = Some(previousSyncSecret)),
@@ -508,7 +504,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells),
             ),
           ),
         )
@@ -517,9 +513,15 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
             .addHeader(Header.Authorization.Bearer(token)),
         )
         payload <- decodeJsonBody[GetResourcesRegistryResponse](response)
+        authSecret <-
+          ZIO.foreach(payload.authResourceSecret)(opened(_, security.get[SecurityService], TestCentralConfig.authKeyPair)).map(_.map(_.toList))
+        foreignAttempt <-
+          ZIO.foreach(payload.authResourceSecret.toList)(opened(_, security.get[SecurityService], TestCentralConfig.foreignKeyPair).either)
       yield assertTrue(
         response.status == Status.Ok,
-        payload.authResourceSecret.contains(Base64Url.encode(syncSecret)),
+        authSecret.contains(syncSecret.toList),
+        // encrypted to the caller's key: no other key opens it
+        foreignAttempt.forall(_.isLeft),
         payload.authResourcePreviousSecret.isEmpty,
       )
     }.provideSomeLayer(TestClient.layer),
@@ -535,7 +537,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         token <- JWT.serialize(
           JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(config.secretKey),
+          TestCentralConfig.authSignature,
         )
         _ <- service.getResourcesForSync.succeedsWith(Vector(
           resourceRecords.head.copy(
@@ -548,7 +550,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells),
             ),
           ),
         )
@@ -557,10 +559,17 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
             .addHeader(Header.Authorization.Bearer(token)),
         )
         payload <- decodeJsonBody[GetResourcesRegistryResponse](response)
+        authSecret <-
+          ZIO.foreach(payload.authResourceSecret)(opened(_, security.get[SecurityService], TestCentralConfig.authKeyPair)).map(_.map(_.toList))
+        authPrevious <- ZIO.foreach(payload.authResourcePreviousSecret)(opened(
+          _,
+          security.get[SecurityService],
+          TestCentralConfig.authKeyPair,
+        )).map(_.map(_.toList))
       yield assertTrue(
         response.status == Status.Ok,
-        payload.authResourceSecret.contains(Base64Url.encode(syncSecret)),
-        payload.authResourcePreviousSecret.contains(Base64Url.encode(previousSyncSecret)),
+        authSecret.contains(syncSecret.toList),
+        authPrevious.contains(previousSyncSecret.toList),
       )
     }.provideSomeLayer(TestClient.layer),
   )

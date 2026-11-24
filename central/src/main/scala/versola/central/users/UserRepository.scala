@@ -2,6 +2,7 @@ package versola.central.users
 
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.util.{Email, Patch, Phone}
 import zio.{Duration, IO, Task}
 
@@ -16,6 +17,9 @@ trait UserRepository:
 
   /** The user an identifier belongs to, in any cell. */
   def findByIdentifier(identifier: DirectoryIdentifier): Task[Option[UserDirectoryRecord]]
+
+  /** How many users the directory places in `cell`. Users of another cell, and users of no cell, are not counted. */
+  def countInCell(cell: CellId): Task[Long]
 
   /** The kinds of identifier the user holds. */
   def identifierKinds(id: UserId): Task[Set[IdentifierKind]]
@@ -60,7 +64,8 @@ trait UserRepository:
       remove: Set[RoleId],
   ): Task[Unit]
 
-  /** Removes the user and its identifiers, which may be claimed again, and enqueues the deletion for `auth`. */
+  /** Removes the user and its identifiers, which may be claimed again, and enqueues the deletion for `auth`. The event
+    * names the cell that held the user, as read by the removal, because the directory no longer says it. */
   def delete(id: UserId): Task[Unit]
 
   /** The events of the user that `auth` has not been given yet, oldest first: what the user will be there once they

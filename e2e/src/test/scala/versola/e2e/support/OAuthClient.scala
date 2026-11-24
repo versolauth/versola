@@ -1938,41 +1938,23 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** Auth's public base URL — what the discovery document must advertise its endpoints on. */
   val authBaseUrl: String = config.authUrl
 
-  /** Auth's diagnostics base URL (`DPORT`) -- `/metrics`, `/liveness`, `/readiness`. */
-  /** The service token central presents to auth on its internal calls, minted from the `central.secret-key` auth's own config holds: the
-    * key the two share, which is how a spec reaches an endpoint that only central is meant to call. */
-  private def internalToken(key: Array[Byte]): Task[String] =
-    ZIO.attemptBlocking:
-      val claims = com.nimbusds.jwt.JWTClaimsSet.Builder()
-        .jwtID(java.util.UUID.randomUUID().toString).issuer("central").subject("central").audience("auth")
-        .expirationTime(java.util.Date.from(java.time.Instant.now.plusSeconds(600)))
-        .build()
-      val jwt = SignedJWT(
-        com.nimbusds.jose.JWSHeader.Builder(com.nimbusds.jose.JWSAlgorithm.HS256).`type`(com.nimbusds.jose.JOSEObjectType.JWT).build(),
-        claims,
-      )
-      jwt.sign(com.nimbusds.jose.crypto.MACSigner(key))
-      jwt.serialize()
-
-  private lazy val authSharedKey: Task[Array[Byte]] =
-    ZIO.attemptBlocking:
-      val conf = com.typesafe.config.ConfigFactory.parseFile(java.io.File(config.authEnvConf)).resolve()
-      java.util.Base64.getUrlDecoder.decode(conf.getString("central.secret-key"))
-
-  /** GET `path` (with its query) on auth's internal audit endpoints, as central would call them. `Authenticated.No` sends no token and
-    * `Authenticated.WrongKey` one signed with a key auth does not hold. */
+  /** GET `path` (with its query) on auth's internal audit endpoints, as central would call them: with a token signed by central's service
+    * key (`service-key` of central's `env.conf`) for the cell the staged auth is, which is how a spec reaches an endpoint that only
+    * central is meant to call (versolauth/versola#1050). `Authenticated.No` sends no token and `Authenticated.WrongKey` one signed
+    * with a key of its own that auth does not trust. */
   def auditGet(path: String, authenticated: OAuthClient.Authenticated = OAuthClient.Authenticated.Yes): Task[Response] =
     for
-      key <- authSharedKey
       token <- authenticated match
-        case OAuthClient.Authenticated.Yes => internalToken(key).asSome
-        case OAuthClient.Authenticated.WrongKey => internalToken(Array.fill(32)(99.toByte)).asSome
+        case OAuthClient.Authenticated.Yes => CellIdentity.stagedCentral(config).flatMap(_.centralToken(config.authCellId)).asSome
+        case OAuthClient.Authenticated.WrongKey =>
+          CellIdentity.generate("e2e-not-central").flatMap(_.centralToken(config.authCellId)).asSome
         case OAuthClient.Authenticated.No => ZIO.none
       url <- ZIO.fromEither(URL.decode(s"${config.authUrl}$path")).mapError(RuntimeException(_))
       request = Request(method = Method.GET, url = url)
       response <- Client.batched(token.fold(request)(t => request.addHeader(Authorization.Bearer(t)))).provide(ZLayer.succeed(client))
     yield response
 
+  /** Auth's diagnostics base URL (`DPORT`) -- `/metrics`, `/liveness`, `/readiness`. */
   val authDiagnosticsBaseUrl: String = config.authDiagnosticsUrl
 
   /** Issues an unauthenticated request at an arbitrary URL, so tests can check that an

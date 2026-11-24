@@ -610,6 +610,12 @@ object ConversationControllerSpec extends UnitSpecBase:
         expected = ConversationResult.ServiceUnavailable,
       ),
       notSentOnTestCase(
+        description = "keeps its conversation and answers the step's service unavailable when the home cell has no key to seal for",
+        seal = Left(CellHandoff.NoKey("kz-2")),
+        ended = true,
+        expected = ConversationResult.ServiceUnavailable,
+      ),
+      notSentOnTestCase(
         description = "gets no redirect when another request has ended the conversation already: one submission, one seal",
         seal = Right("v1.kz-2.sealed"),
         ended = false,

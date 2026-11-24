@@ -4,6 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
@@ -31,9 +32,9 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj()),
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(config.secretKey),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
@@ -66,7 +67,9 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             FormController.routes.provideEnvironment(
               ZEnvironment[FormService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++ ZEnvironment[ResourceService](
+                  resourceService,
+                ),
             ),
           ),
         )

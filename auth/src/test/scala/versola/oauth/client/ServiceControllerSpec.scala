@@ -3,6 +3,7 @@ package versola.oauth.client
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.delivery.DeliveryChannels
+import versola.oauth.handoff.CellRegistry
 import versola.oauth.jwks.JwksService
 import versola.oauth.mtls.EdgeCertificateTrust
 import versola.user.UserRepository
@@ -21,9 +22,9 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val internalAuthHeader: Task[Header] =
     versola.util.JWT.serialize(
-      versola.util.JWT.Claims("auth", "auth", List("central"), JsonAst.Obj()),
+      versola.util.JWT.Claims("central", "central", List("auth"), JsonAst.Obj()),
       1.minute,
-      versola.util.JWT.Signature.Symmetric(TestEnvConfig.coreConfig.central.secretKey),
+      TestEnvConfig.signedBy(TestEnvConfig.centralKeyPair),
     ).map(token => Header.Authorization.Bearer(token))
 
   private type Stubs = (Stub[OAuthConfigurationService], Stub[UserRepository], Stub[JwksService], Stub[DeliveryChannels])
@@ -54,6 +55,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[JwksService](jwksService) ++
                 ZEnvironment[DeliveryChannels](deliveryChannels) ++
                 ZEnvironment[EdgeCertificateTrust](EdgeCertificateTrust.none) ++
+                ZEnvironment[CellRegistry](CellRegistry.none) ++
                 ZEnvironment[EnvName](env) ++
                 ZEnvironment(TestEnvConfig.coreConfig) ++
                 tracing,

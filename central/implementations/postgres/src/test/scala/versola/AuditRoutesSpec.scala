@@ -108,6 +108,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
           "GET" -> "/antifraud/policy/sync",
           "GET" -> "/antifraud/policy/lists/sync",
           "GET" -> "/configuration/authorization-detail-types/sync",
+          "GET" -> "/configuration/cells/sync",
           "GET" -> "/configuration/challenges/challenge-settings/sync",
           "GET" -> "/configuration/challenges/otp-templates/sync",
           "GET" -> "/configuration/clients/sync",

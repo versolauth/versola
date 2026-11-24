@@ -1,18 +1,17 @@
 package versola.oauth.handoff
 
-import org.apache.commons.codec.digest.Blake3
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.conversation.model.ConversationRecord
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.SupersededSession
-import versola.util.{Base64, CoreConfig, Dpop, Email, Phone, RoutingKey, SecureRandom, SecurityService}
+import versola.util.{Base64, CoreConfig, Dpop, Email, JWT, Phone, RoutingKey, Rs256Jwt, SecureRandom, SecurityService}
 import zio.http.{Path, URL}
 import zio.json.*
+import zio.json.ast.Json
 import zio.{Clock, Duration, IO, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import javax.crypto.spec.SecretKeySpec
 
 /** A sign-in handed from the cell that took it to the cell that holds its user (versolauth/versola#547 D18, #1046).
   *
@@ -21,10 +20,12 @@ import javax.crypto.spec.SecretKeySpec
   * the browser to the home cell with it; the home cell opens it and starts the request as its own `/authorize` would,
   * with the address as the login hint.
   *
-  * The seal is AES-GCM under a key derived from the key every `auth` shares with central, so only a cell makes or reads
-  * one and the address is not readable in the URL. It names the cell it is for and lives [[CellHandoff.Lifetime]]. It
-  * grants nothing: opening it starts a sign-in for that address, which is what typing the address does, so it is not
-  * kept to be refused a second time.
+  * The seal is a JWS signed with the key of the cell that makes it, encrypted to the key of the cell it is for
+  * (versolauth/versola#1050): only the home cell reads it, so the address is not readable in the URL, and only a cell the
+  * home cell knows by its key can have made it, and which one is in the seal. No key is shared between cells, so a cell
+  * cannot make a seal in another's name or open one meant for another. It names the cell it is for and lives
+  * [[CellHandoff.Lifetime]]. It grants nothing: opening it starts a sign-in for that address, which is what typing the
+  * address does, so it is not kept to be refused a second time.
   *
   * ==A submission handed over (versolauth/versola#1048)==
   * A login and password, or a passkey with no address typed, name the user only once they are submitted, and the person
@@ -36,7 +37,7 @@ import javax.crypto.spec.SecretKeySpec
   */
 trait CellHandoff:
   /** The value of the `handoff` parameter: the routing key of `to` in front of the seal, so that what is in front of the
-    * cells sends the browser there. */
+    * cells sends the browser there. Fails with [[CellHandoff.NoKey]] when `to` has no key to seal for. */
   def seal(record: ConversationRecord, credential: Either[Email, Phone], to: RoutingKey.CellId): Task[String]
 
   /** The same for a submission the home cell is to check ([[CellHandoff.Submission]]).
@@ -61,6 +62,10 @@ object CellHandoff:
   /** A request too large to be sealed into a URL ([[MaxLength]]). The caller keeps its conversation. */
   final case class TooLarge(length: Int) extends RuntimeException(s"a handoff of $length characters is over $MaxLength")
 
+  /** A cell this auth has no key for (not listed by central, or listed with none): nothing can be sealed for it. The caller
+    * keeps its conversation, as for a directory that does not answer. */
+  final case class NoKey(cell: String) extends RuntimeException(s"cell '$cell' has no key to seal a handoff for")
+
   /** The parameter of `/challenge/handoff`. */
   val Parameter = "handoff"
 
@@ -79,6 +84,7 @@ object CellHandoff:
   /** What an authorization request asked for, as the parameters of `/authorize` it was made with or resolved to, with
     * the address typed as its `login_hint`. The home cell validates them as it validates any authorization request.
     *
+    * @param from the cell that made the seal; the home cell checks it is the one whose key signed it
     * @param to the cell the seal is for
     * @param expiresAt epoch seconds
     * @param submission set when the request that follows the seal is the submission the first cell took
@@ -88,6 +94,7 @@ object CellHandoff:
     */
   final case class Payload(
       params: Map[String, List[String]],
+      from: String,
       to: String,
       expiresAt: Long,
       submission: Option[Submission],
@@ -149,17 +156,28 @@ object CellHandoff:
       Option.when(record.resources.nonEmpty)("resource" -> record.resources.map(identity[String])),
     ).flatten.toMap
 
-  /** Never to change: it separates this key from every other use of the secret it is derived from. */
-  private val Context = "versola auth cell handoff v1".getBytes(StandardCharsets.UTF_8)
+  val live: ZLayer[CoreConfig & SecurityService & SecureRandom & SessionRepository & CellRegistry, Nothing, CellHandoff] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _))
 
-  val live: ZLayer[CoreConfig & SecurityService & SecureRandom & SessionRepository, Nothing, CellHandoff] =
-    ZLayer.fromFunction(Impl(_, _, _, _))
+  /** The claims of a seal that matter to the cell that opens it. */
+  private case class SealClaims(iss: String, aud: List[String], handoff: Payload)
 
-  class Impl(config: CoreConfig, security: SecurityService, random: SecureRandom, sessions: SessionRepository) extends CellHandoff:
-    private val key: SecretKeySpec =
-      val derived = Array.ofDim[Byte](32)
-      Blake3.initKeyDerivationFunction(Context).update(config.central.secretKey.getEncoded).doFinalize(derived)
-      SecretKeySpec(derived, "AES")
+  private object SealClaims:
+    given JsonDecoder[SealClaims] = JsonDecoder[Json.Obj].mapOrFail: obj =>
+      for
+        iss <- obj.get("iss").flatMap(_.asString).toRight("no iss")
+        aud <- obj.get("aud") match
+          case Some(Json.Str(single)) => Right(List(single))
+          case Some(Json.Arr(many)) => Right(many.collect { case Json.Str(value) => value }.toList)
+          case _ => Left("no aud")
+        handoff <- obj.get("handoff").toRight("no handoff").flatMap(_.as[Payload])
+      yield SealClaims(iss, aud, handoff)
+
+  /** Only the issuer, read before the signature is, to find the key it is verified with. */
+  private case class Issuer(iss: String) derives JsonDecoder
+
+  class Impl(config: CoreConfig, security: SecurityService, random: SecureRandom, sessions: SessionRepository, registry: CellRegistry)
+    extends CellHandoff:
 
     override def seal(record: ConversationRecord, credential: Either[Email, Phone], to: RoutingKey.CellId): Task[String] =
       sealOf(record, params = paramsOf(record, Some(credential)), to = to, submission = None)
@@ -196,22 +214,55 @@ object CellHandoff:
         submission: Option[Submission],
     ): Task[String] =
       for
+        own <- ZIO.fromOption(config.cellId).orElseFail(IllegalStateException("an auth that is no cell has no handoff to seal"))
+        // Before anything else is read or made: a cell with no key is not sealed for.
+        recipient <- registry.encryptionKeyOf(to).some
+          // A cell registered a moment ago: read the cells once more before the sign-in is refused for it.
+          .orElse(registry.refreshAfterMiss *> registry.encryptionKeyOf(to).some)
+          .orElseFail(NoKey(to))
         now <- Clock.instant
         superseded <- supersededBy(record)
-        payload = Payload(params = params, to = to, expiresAt = now.plus(Lifetime).getEpochSecond, submission = submission, superseded = superseded)
-        ciphertext <- security.encryptAes256(payload.toJson.getBytes(StandardCharsets.UTF_8), key)
+        payload = Payload(
+          params = params,
+          from = own,
+          to = to,
+          expiresAt = now.plus(Lifetime).getEpochSecond,
+          submission = submission,
+          superseded = superseded,
+        )
+        handoff <- ZIO.fromEither(payload.toJsonAST).mapError(IllegalStateException(_))
+        jws <- JWT.serialize(
+          claims = JWT.Claims(issuer = own, subject = own, audience = List(to), custom = Json.Obj("handoff" -> handoff)),
+          ttl = Lifetime,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, config.central.keyId, config.central.privateKey),
+        )
+        ciphertext <- security.encryptRsaHybrid(jws.getBytes(StandardCharsets.UTF_8), recipient)
         ticket = RoutingKey.encode(to, Base64.urlEncode(ciphertext))
         _ <- ZIO.fail(TooLarge(ticket.length)).when(ticket.length > MaxLength)
       yield ticket
 
+    /** Everything that is not the cell's own key, the sealing cell's, the audience, or the clock is a seal that was not
+      * made by a cell this one knows. */
     override def open(presented: String): IO[Refused, Payload] =
       for
         own <- ZIO.fromOption(config.cellId).orElseFail(Refused.NotACell)
         decoded <- ZIO.fromEither(RoutingKey.decode(presented)).orElseFail(Refused.Malformed)
         bytes <- ZIO.attempt(Base64.urlDecode(decoded.value)).orElseFail(Refused.Malformed)
-        opened <- security.decryptAes256(bytes, key).orElseFail(Refused.Forged)
-        payload <- ZIO.fromEither(String(opened, StandardCharsets.UTF_8).fromJson[Payload]).orElseFail(Refused.Malformed)
+        opened <- security.decryptRsaHybrid(bytes, config.central.privateKey).orElseFail(Refused.Forged)
+        jws = String(opened, StandardCharsets.UTF_8)
+        // Read before it is verified, only to know whose key to verify it with: nothing else in it is believed until then.
+        sealer <- JWT.parseClaims[Issuer](jws).orElseFail(Refused.Forged)
+        keys <- registry.keysOf(sealer.iss).some
+          .orElse(registry.refreshAfterMiss *> registry.keysOf(sealer.iss).some)
+          .orElseFail(Refused.Forged)
+        claims <- Rs256Jwt.deserialize[SealClaims](jws, keys).mapError:
+          case JWT.Error.Expired(_) => Refused.Expired
+          case _ => Refused.Forged
         // The cell is inside the seal: the key in front of it only chose where the browser was sent.
+        _ <- ZIO.fail(Refused.Elsewhere).unless(claims.aud.contains(own: String))
+        payload = claims.handoff
+        // The cell that signed is the cell the seal says made it, or a cell could make a seal in another's name.
+        _ <- ZIO.fail(Refused.Forged).unless(payload.from == claims.iss)
         _ <- ZIO.fail(Refused.Elsewhere).unless(payload.to == (own: String))
         now <- Clock.instant
         _ <- ZIO.fail(Refused.Expired).when(now.getEpochSecond >= payload.expiresAt)

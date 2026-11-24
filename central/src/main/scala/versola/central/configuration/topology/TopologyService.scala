@@ -1,7 +1,10 @@
 package versola.central.configuration.topology
 
-import versola.central.configuration.edges.{EdgeGroupKind, EdgeId, EdgeService}
+import versola.central.CentralConfig
+import versola.central.configuration.edges.{EdgeGroupKind, EdgeId, EdgeRecord, EdgeService, EdgeSigningKey}
+import versola.central.users.UserRepository
 import zio.http.{Scheme, URL}
+import zio.json.ast.Json
 import zio.{IO, Task, URLayer, ZIO, ZLayer}
 
 import java.io.ByteArrayInputStream
@@ -42,21 +45,33 @@ trait TopologyService:
   /** Only a region with no cell and no edge site in it. */
   def deleteRegion(id: RegionId): IO[Throwable | TopologyError, Unit]
 
-  /** In a region that exists, with well-formed addresses and certificates and a weight that is not negative. */
+  /** In a region that exists, with well-formed addresses and certificates, a weight that is not negative and the key or two
+    * keys the cell's `auth` signs with, each valid and in no other cell, edge or the configured `auth` (#1050). */
   def createCell(record: CellRecord): IO[Throwable | TopologyError, Unit]
 
-  /** Everything but the id and the region: a cell stays where its database is. */
+  /** Everything but the id and the region: a cell stays where its database is. The keys are replaced, not added to: the
+    * request carries the one or two the cell is to have from now on. */
   def updateCell(record: CellRecord): IO[Throwable | TopologyError, Unit]
 
-  /** Only a `closed` cell: one that takes new users, or is still being emptied, holds users. */
-  def deleteCell(id: CellId): IO[Throwable | TopologyError, Unit]
+  /** Only a `closed` cell that the directory places no user in: one that takes new users, or is still being emptied, holds
+    * users, and a closed one may still hold some that were not moved out.
+    *
+    * @param lost the cell is gone for good and its users with it (its database was lost, a stand is taken down): it is
+    *   deleted although the directory still places users in it. Those users stay in the directory, held by a cell that is
+    *   not registered, so their identifiers stay taken and nothing can sign them in until they are deleted. Never the
+    *   way to retire a cell that works: that is moving its users out. The state rule holds either way.
+    */
+  def deleteCell(id: CellId, lost: Boolean): IO[Throwable | TopologyError, Unit]
 
   /** The region of one of the operator's own edges; `None` takes it out of any region. */
   def setEdgeRegion(edgeId: EdgeId, regionId: Option[RegionId]): IO[Throwable | TopologyError, Unit]
 
 object TopologyService:
-  val live: URLayer[TopologyRepository & EdgeService, TopologyService] =
-    ZLayer.fromFunction(Impl(_, _))
+  val live: URLayer[TopologyRepository & EdgeService & UserRepository & CentralConfig & CellRegistry, TopologyService] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _))
+
+  /** How many keys a cell is registered with: the one it signs with, and a second while the first is being replaced. */
+  val MaxCellKeys = 2
 
   /** What a cell's record has to satisfy whatever is stored already, in the order an operator would fix it. */
   private[topology] def problems(cell: CellRecord): Option[String] =
@@ -70,6 +85,56 @@ object TopologyService:
       Option.when(cell.trustedCertificates.distinct.size != cell.trustedCertificates.size)("trustedCertificates names a certificate twice"),
     ).flatten.headOption
 
+  /** What a cell's keys have to satisfy against what is registered elsewhere (#1050). Central decides who calls by the key that
+    * verifies the token, so a key two parties hold would make one of them pass for the other.
+    *
+    * The configured `auth`'s keys are the cell's own when `auth.cell-id` names this very cell: that `auth` is the cell, and
+    * registering it is how it comes to be known as one. For any other cell they are another party's and refused.
+    *
+    * @param others every cell but this one
+    * @param configured `auth.public-keys`
+    * @param configuredCell `auth.cell-id`
+    * @param edges every registered edge, whose keys verify the tokens that carry an `edge_id`
+    */
+  private[topology] def keyProblems(
+      cell: CellRecord,
+      others: Vector[CellRecord],
+      configured: List[Json.Obj],
+      configuredCell: Option[CellId],
+      edges: Vector[EdgeRecord],
+  ): Option[String] =
+    val keys = cell.publicKeys
+    lazy val valid: List[Either[String, Json.Obj]] =
+      keys.zipWithIndex.map((key, index) => EdgeSigningKey.validate(key, s"publicKeys[$index]"))
+    lazy val prints = keys.map(EdgeSigningKey.thumbprint)
+    lazy val kids = keys.flatMap(key => key.fields.collectFirst { case ("kid", Json.Str(kid)) => kid })
+    lazy val configuredIsThisCell = configuredCell.contains(cell.id)
+    lazy val configuredPrints = if configuredIsThisCell then Nil else configured.map(EdgeSigningKey.thumbprint)
+    lazy val configuredKids =
+      if configuredIsThisCell then Nil else configured.flatMap(key => key.fields.collectFirst { case ("kid", Json.Str(kid)) => kid })
+    List(
+      Option.when(keys.isEmpty)("publicKeys must name at least one key: a cell with none cannot call central"),
+      Option.when(
+        keys.size > MaxCellKeys,
+      )(s"publicKeys names ${keys.size} keys, at most $MaxCellKeys: the second is only for as long as a key is being replaced"),
+      valid.collectFirst { case Left(reason) => reason },
+      Option.when(kids.distinct.size != kids.size)("publicKeys names a kid twice"),
+      Option.when(prints.distinct.size != prints.size)("publicKeys names a key twice"),
+      others.collectFirst:
+        case other if other.publicKeys.exists(known => prints.contains(EdgeSigningKey.thumbprint(known))) =>
+          s"a key of publicKeys is registered for cell '${other.id}'"
+      ,
+      others.collectFirst:
+        case other if other.publicKeys.exists(known => known.fields.collectFirst { case ("kid", Json.Str(kid)) => kid }.exists(kids.contains)) =>
+          s"a kid of publicKeys is used by a key of cell '${other.id}'"
+      ,
+      Option.when(prints.exists(configuredPrints.contains))("a key of publicKeys is one of the keys central is configured with for its auth"),
+      Option.when(kids.exists(configuredKids.contains))("a kid of publicKeys is the kid of a key central is configured with for its auth"),
+      edges.collectFirst:
+        case edge if (edge.publicKey.toVector ++ edge.oldPublicKey.toVector).exists(known => prints.contains(EdgeSigningKey.thumbprint(known))) =>
+          s"a key of publicKeys is registered for edge '${edge.id}'",
+    ).flatten.headOption
+
   private def address(name: String, value: String, httpsOnly: Boolean): Option[String] =
     URL.decode(value).toOption match
       case Some(url) if url.host.exists(_.nonEmpty) && url.scheme.contains(Scheme.HTTPS) => None
@@ -81,7 +146,13 @@ object TopologyService:
     pem.contains("-----BEGIN CERTIFICATE-----") &&
       Try(CertificateFactory.getInstance("X.509").generateCertificate(ByteArrayInputStream(pem.getBytes(StandardCharsets.US_ASCII)))).isSuccess
 
-  class Impl(repository: TopologyRepository, edges: EdgeService) extends TopologyService:
+  class Impl(
+      repository: TopologyRepository,
+      edges: EdgeService,
+      users: UserRepository,
+      config: CentralConfig,
+      registry: CellRegistry,
+  ) extends TopologyService:
     override def get: Task[Topology] =
       for
         partitions <- repository.getPartitions
@@ -119,8 +190,11 @@ object TopologyService:
         _ <- ZIO.foreachDiscard(problems(record))(reason => ZIO.fail(TopologyError.Invalid(reason)))
         regions <- repository.getRegions
         _ <- ZIO.fail(TopologyError.Invalid(s"region '${record.regionId}' does not exist")).unless(regions.exists(_.id == record.regionId))
+        _ <- checkKeys(record)
         created <- repository.createCell(record)
         _ <- ZIO.fail(TopologyError.Conflict(s"cell '${record.id}' already exists")).unless(created)
+        // seen by the next call of its auth, not at the next refresh
+        _ <- registry.refreshNow
       yield ()
 
     override def updateCell(record: CellRecord): IO[Throwable | TopologyError, Unit] =
@@ -131,17 +205,35 @@ object TopologyService:
         _ <-
           ZIO.fail(TopologyError.Invalid(s"cell '${record.id}' is in region '${current.regionId}' and stays there: a cell is where its database is"))
             .when(current.regionId != record.regionId)
+        _ <- checkKeys(record)
         updated <- repository.updateCell(record)
         _ <- ZIO.fail(TopologyError.Missing(s"cell '${record.id}' does not exist")).unless(updated)
+        _ <- registry.refreshNow
       yield ()
 
-    override def deleteCell(id: CellId): IO[Throwable | TopologyError, Unit] =
+    /** Against the stored cells, as they are now rather than as a cache last saw them (a key registered a moment ago is not to be
+      * registered again), and the registered edges. */
+    private def checkKeys(record: CellRecord): IO[Throwable | TopologyError, Unit] =
+      for
+        cells <- repository.getCells
+        registered <- edges.getAllEdges
+        _ <- ZIO.foreachDiscard(keyProblems(record, cells.filter(_.id != record.id), config.auth.publicKeys, config.auth.cellId, registered)):
+          reason =>
+            ZIO.fail(TopologyError.Invalid(reason))
+      yield ()
+
+    override def deleteCell(id: CellId, lost: Boolean): IO[Throwable | TopologyError, Unit] =
       for
         cells <- repository.getCells
         current <- ZIO.fromOption(cells.find(_.id == id)).orElseFail(TopologyError.Missing(s"cell '$id' does not exist"))
         _ <- ZIO.fail(TopologyError.Conflict(s"cell '$id' is ${current.state.code}: only a closed cell is deleted"))
           .when(current.state != CellState.Closed)
+        held <- if lost then ZIO.succeed(0L) else users.countInCell(id)
+        _ <- ZIO.fail(TopologyError.Conflict(s"cell '$id' still holds $held user(s) in the directory: they are moved out first"))
+          .when(held > 0)
         _ <- repository.deleteCell(id)
+        // its keys stop verifying at once
+        _ <- registry.refreshNow
       yield ()
 
     override def setEdgeRegion(edgeId: EdgeId, regionId: Option[RegionId]): IO[Throwable | TopologyError, Unit] =

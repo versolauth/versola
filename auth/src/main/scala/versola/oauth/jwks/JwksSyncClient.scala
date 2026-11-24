@@ -15,8 +15,8 @@ import java.security.{KeyFactory, PrivateKey}
   * the single source of truth; auth caches both for signing and verification.
   *
   * Two endpoints rather than one payload because edge reads the first and has no use for a
-  * private key. The private halves arrive encrypted under the shared transport secret
-  * `central.secretKey`, the same channel client secrets already travel on.
+  * private key. The private halves arrive encrypted to this auth's own key
+  * (`central.privateKey`), the same channel client secrets already travel on.
   */
 trait JwksSyncClient extends CacheSource[JwksSyncClient.Keys]:
   /** The published keys alone, without the signing-keys endpoint's private halves -- for a
@@ -68,7 +68,7 @@ object JwksSyncClient:
     private def decrypt(kid: String, encrypted: String): Task[PrivateKey] =
       (for
         bytes <- ZIO.attempt(Base64.urlDecode(encrypted))
-        pkcs8 <- securityService.decryptAes256(bytes, config.central.secretKey)
+        pkcs8 <- securityService.decryptRsaHybrid(bytes, config.central.privateKey)
         key <- ZIO.attempt {
           val spec = PKCS8EncodedKeySpec(pkcs8)
           // PKCS#8 carries the algorithm, but JCA still wants the factory named; both

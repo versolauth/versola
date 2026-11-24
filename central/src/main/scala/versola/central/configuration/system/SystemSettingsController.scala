@@ -3,13 +3,14 @@ package versola.central.configuration.system
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 object SystemSettingsController extends AuditedController:
-  type Env = Tracing & SystemSettingsService & CentralConfig & ResourceService & EdgeService
+  type Env = Tracing & SystemSettingsService & CentralConfig & ResourceService & EdgeService & CellRegistry
 
   def endpoints = List(
     getSystemSettingsEndpoint,

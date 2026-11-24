@@ -5,6 +5,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.*
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
@@ -25,16 +26,15 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val emailClaim = Claim("email")
   private val nameClaim = Claim("name")
   private val localeClaim = Claim("locale")
-  private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
   private val config = TestCentralConfig.config
   private val syncToken = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj("tenantId" -> Json.Str(tenantId.toString))),
+          JWT.Claims("auth", "auth", List("central"), Json.Obj("tenantId" -> Json.Str(tenantId.toString))),
           1.minute,
-          JWT.Signature.Symmetric(secretKey),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
@@ -117,7 +117,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ScopeController.routes.provideEnvironment(
               ZEnvironment[OAuthScopeService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
-                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++
+                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[ResourceService](resourceService),
             ),
           ),

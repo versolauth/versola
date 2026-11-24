@@ -4,6 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.{CellRecord, CellRegistry}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
@@ -15,11 +16,8 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
-import javax.crypto.spec.SecretKeySpec
-
 object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
-  private val secretKey = config.secretKey
 
   private val testJwks = Json.Obj(
     "keys" -> Json.Arr(
@@ -33,10 +31,16 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
         JWT.serialize(
           JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(secretKey),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
+  }
+
+  private val cellKeyPair = TestCentralConfig.newKeyPair("kz-1-key")
+
+  private val cellToken = Unsafe.unsafe { unsafe ?=>
+    Runtime.default.unsafe.run(TestCentralConfig.authTokenBy(cellKeyPair, cellId = Some("kz-1"))).getOrThrowFiberFailure()
   }
 
   private val tracingLayer: ULayer[Tracing] =
@@ -53,6 +57,7 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
       authHeader: Option[Header.Authorization] = Some(TestAdminAuth.basicAuthHeader),
       setup: Stub[JwksService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[JwksService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
+      cells: List[CellRecord] = Nil,
   ) =
     test(description) {
       for
@@ -65,7 +70,9 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             JwksController.routes.provideEnvironment(
               ZEnvironment[JwksService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](
+                  TestCentralConfig.registryOf(cells*),
+                ) ++ ZEnvironment[ResourceService](resourceService),
             ),
           ),
         )
@@ -317,11 +324,36 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.Ok,
       authHeader = None,
       setup = service => service.getSigningKeys.succeedsWith(Map("ps-kid" -> "encrypted")),
-      verify = (response, _) =>
+      verify = (response, service) =>
         for
           body <- response.body.asString
           payload <- ZIO.fromEither(body.fromJson[JwksController.SigningKeysResponse]).mapError(RuntimeException(_))
-        yield assertTrue(payload.privateKeys == Map("ps-kid" -> "encrypted")),
+        yield assertTrue(
+          payload.privateKeys == Map("ps-kid" -> "encrypted"),
+          // encrypted to the key the configured auth proved itself with
+          service.getSigningKeys.calls.map(_.getModulus) == List(TestCentralConfig.authKeyPair.publicKey.getModulus),
+        ),
+    ),
+    controllerTestCase(
+      description = "GET /configuration/jwks/signing-keys/sync of a registered cell is encrypted to that cell's key, not the configured auth's",
+      request = Request
+        .get(URL.empty / "configuration" / "jwks" / "signing-keys" / "sync")
+        .addHeader(Header.Authorization.Bearer(cellToken)),
+      expectedStatus = Status.Ok,
+      authHeader = None,
+      setup = service => service.getSigningKeys.succeedsWith(Map("ps-kid" -> "encrypted")),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.getSigningKeys.calls.map(_.getModulus) == List(cellKeyPair.publicKey.getModulus))),
+      cells = List(TestCentralConfig.cellRecord("kz-1", cellKeyPair)),
+    ),
+    controllerTestCase(
+      description = "GET /configuration/jwks/signing-keys/sync gives nothing to a token of a key that is neither a cell's nor the configured auth's",
+      request = Request
+        .get(URL.empty / "configuration" / "jwks" / "signing-keys" / "sync")
+        .addHeader(Header.Authorization.Bearer(cellToken)),
+      expectedStatus = Status.Unauthorized,
+      authHeader = None,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.getSigningKeys.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "GET /configuration/jwks/signing-keys/sync rejects request without service token",

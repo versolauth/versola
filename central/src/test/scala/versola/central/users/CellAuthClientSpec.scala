@@ -1,10 +1,12 @@
 package versola.central.users
 
+import com.nimbusds.jwt.SignedJWT
 import versola.central.antifraud.*
 import versola.central.configuration.topology.{CellId, CellRecord, CellState, RegionId, TopologyRepository}
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.UnitSpecBase
 import zio.*
-import zio.http.URL
+import zio.http.*
 import zio.json.ast.Json
 import zio.test.*
 
@@ -25,6 +27,7 @@ object CellAuthClientSpec extends UnitSpecBase:
       trustedCertificates = Nil,
       state = CellState.Open,
       weight = 100,
+      publicKeys = Nil,
     )
 
   private val kz1 = "http://kz-1.internal:9003"
@@ -57,12 +60,13 @@ object CellAuthClientSpec extends UnitSpecBase:
     val configured = stub[AuthClient]
     val ofCells = Map("http://kz-1.internal:9003" -> stub[AuthClient], "http://kz-2.internal:9003" -> stub[AuthClient])
     val asked: Ref[List[String]] = Unsafe.unsafe(u ?=> Ref.unsafe.make(List.empty[String])(using u))
+    val audiences: Ref[List[CellId]] = Unsafe.unsafe(u ?=> Ref.unsafe.make(List.empty[CellId])(using u))
     val users = stub[UserRepository]
     val topology = stub[TopologyRepository]
     val client = CellAuthClient(
       configured = configured,
-      at = (url: URL) =>
-        Unsafe.unsafe(u ?=> Runtime.default.unsafe.run(asked.update(_ :+ url.encode))(using summon, u).getOrThrow())
+      at = (url: URL, cell: CellId) =>
+        Unsafe.unsafe(u ?=> Runtime.default.unsafe.run(asked.update(_ :+ url.encode) *> audiences.update(_ :+ cell))(using summon, u).getOrThrow())
         ofCells(url.encode)
       ,
       users = users,
@@ -82,7 +86,10 @@ object CellAuthClientSpec extends UnitSpecBase:
         _ <- env.client.getUserClaims(userId)
         _ <- env.client.deleteUser(userId)
         asked <- env.asked.get
+        audiences <- env.audiences.get
       yield assertTrue(
+        // the client of a cell is made for that cell, which is who its token is for
+        audiences == List(CellId("kz-2")),
         env.ofCells("http://kz-2.internal:9003").getUserClaims.calls == List(userId),
         env.ofCells("http://kz-2.internal:9003").deleteUser.calls == List(userId),
         env.configured.getUserClaims.calls.isEmpty,
@@ -90,6 +97,31 @@ object CellAuthClientSpec extends UnitSpecBase:
         // One client for an address, however many calls go to it.
         asked == List("http://kz-2.internal:9003"),
       )
+    },
+    test("a deletion addressed to a registered cell goes to that cell, whatever the directory says of the user") {
+      val env = Env()
+      for
+        _ <- env.topology.getCells.succeedsWith(cells)
+        _ <- env.ofCells(kz2).deleteUser.succeedsWith(())
+        // The directory row is gone, as it is when the queued deletion is delivered.
+        _ <- env.users.find.succeedsWith(None)
+        _ <- env.client.deleteUserOf(Some(CellId("kz-2")), userId)
+      yield assertTrue(
+        env.ofCells(kz2).deleteUser.calls == List(userId),
+        env.ofCells(kz1).deleteUser.calls.isEmpty,
+        env.configured.deleteUser.calls.isEmpty,
+        env.users.find.calls.isEmpty,
+      )
+    },
+    test("a deletion addressed to a cell that is not registered any more, or to no cell, goes to the configured auth") {
+      val env = Env()
+      for
+        _ <- env.topology.getCells.succeedsWith(cells)
+        _ <- env.configured.deleteUser.succeedsWith(())
+        _ <- env.client.deleteUserOf(Some(CellId("local-1")), userId)
+        _ <- env.client.deleteUserOf(None, userId)
+        asked <- env.asked.get
+      yield assertTrue(env.configured.deleteUser.calls == List(userId, userId), env.ofCells.values.forall(_.deleteUser.calls.isEmpty), asked.isEmpty)
     },
     test("a user of no cell, of a cell that is not registered, and one the directory does not have go to the configured auth") {
       val env = Env()
@@ -338,5 +370,71 @@ object CellAuthClientSpec extends UnitSpecBase:
         _ <- env.topology.getCells.succeedsWith(Vector.empty)
         listed <- env.client.antifraudStatusOfCells
       yield assertTrue(listed == Nil)
+    },
+    test("every auth is sent a token made for it alone: the audience of a cell is its id, of the configured auth its cell id, or `auth`") {
+      val users = stub[UserRepository]
+      val topology = stub[TopologyRepository]
+      // answers every call, and keeps the host it was sent to with the bearer token it carried
+      def driver(seen: Ref[List[(String, String)]]) = new ZClient.Driver[Any, Scope, Throwable]:
+        override def request(
+            version: Version,
+            method: Method,
+            url: URL,
+            headers: Headers,
+            body: Body,
+            sslConfig: Option[ClientSSLConfig],
+            proxy: Option[Proxy],
+        )(using trace: Trace): ZIO[Scope, Throwable, Response] =
+          val bearer = headers.get(Header.Authorization).collect { case Header.Authorization.Bearer(token) => token.stringValue }
+          seen.update(_ :+ (url.host.getOrElse("") -> bearer.getOrElse(""))).as(Response.status(Status.NoContent))
+
+        override def socket[Env1 <: Any](
+            version: Version,
+            url: URL,
+            headers: Headers,
+            app: WebSocketApp[Env1],
+        )(using trace: Trace, ev: Scope =:= Scope): ZIO[Env1 & Scope, Throwable, Response] =
+          ZIO.dieMessage("WebSocket not used in AuthClient tests")
+
+      def audienceOf(token: String): (String, List[String]) =
+        val parsed = SignedJWT.parse(token)
+        (parsed.getHeader.getKeyID, parsed.getJWTClaimsSet.getAudience.toArray.toList.map(_.toString))
+
+      def run(config: CentralConfig) =
+        for
+          seen <- Ref.make(List.empty[(String, String)])
+          tokens <- ZIO.service[AuthTokenService].provide(ZLayer.succeed(config) >>> AuthTokenService.live)
+          http = ZClient.fromDriver(driver(seen))
+          _ <- topology.getCells.succeedsWith(cells)
+          client = CellAuthClient(
+            configured = AuthClient.Impl(http, config.auth.url, tokens, AuthTokenService.audienceOfConfigured(config)),
+            at = (url, cell) => AuthClient.Impl(http, url, tokens, cell),
+            users = users,
+            topology = topology,
+          )
+          // one to each cell by its id, one to the configured auth, then the nudge to every cell
+          _ <- client.deleteUserOf(Some(CellId("kz-1")), userId)
+          _ <- client.deleteUserOf(Some(CellId("kz-2")), userId)
+          _ <- client.deleteUserOf(None, userId)
+          _ <- client.syncConfiguration()
+          calls <- seen.get
+        yield calls.map((host, token) => host -> audienceOf(token))
+
+      val named = TestCentralConfig.config.copy(auth = TestCentralConfig.authConfig.copy(cellId = Some(CellId("eu-1"))))
+      for
+        plain <- run(TestCentralConfig.config)
+        namedCalls <- run(named)
+        service = TestCentralConfig.serviceKeyPair.keyId
+      yield assertTrue(
+        // to kz-1 only a token for kz-1, to kz-2 only one for kz-2, whichever call it is, and always under the service key
+        plain.filter(_._1 == "kz-1.internal").forall(_._2 == (service, List("kz-1"))),
+        plain.filter(_._1 == "kz-2.internal").forall(_._2 == (service, List("kz-2"))),
+        plain.count(_._1 == "kz-1.internal") == 2,
+        plain.count(_._1 == "kz-2.internal") == 2,
+        // the configured auth has no cell id: its audience is `auth`
+        plain.filter(_._1 == "localhost").map(_._2) == List((service, List("auth"))),
+        // with one, it is that
+        namedCalls.filter(_._1 == "localhost").map(_._2) == List((service, List("eu-1"))),
+      )
     },
   )

@@ -4,8 +4,9 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.{Observability, Unauthorized}
+import versola.central.configuration.topology.CellRegistry
+import versola.central.{CentralConfig, authorizeAuth, authorizeBasic}
+import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.{EncoderOps, JsonCodec}
@@ -21,7 +22,7 @@ import java.time.Instant
   * listener banks reach.
   */
 object ClientEstController extends AuditedController:
-  type Env = Tracing & ClientEstService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & ClientEstService & ResourceService & CentralConfig & EdgeService & CellRegistry
 
   def endpoints = List(
     createEnrollmentTokenEndpoint,
@@ -110,10 +111,6 @@ object ClientEstController extends AuditedController:
       yield Response.json(EstIssuedResponse(issued.chain, issued.chainEndsAt).toJson))
         .catchAll(failure)
     }
-
-  /** Auth's own token: one that names an edge is refused. */
-  private def authorizeAuth(request: Request) =
-    authorizeInternal(request).flatMap(edgeId => ZIO.fail(Unauthorized).when(edgeId.isDefined))
 
   private def statusOf(error: ClientEstService.Refused): Status = error.kind match
     case ClientEstService.Refusal.BadRequest => Status.BadRequest

@@ -141,6 +141,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
   private def payload(submission: Option[CellHandoff.Submission], superseded: Option[SupersededSession] = None) =
     CellHandoff.Payload(
       params = Map("client_id" -> List("test-client")),
+      from = "kz-2",
       to = "kz-1",
       expiresAt = 1000L,
       submission = submission,
@@ -217,6 +218,26 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           ),
       ),
       controllerTestCase(
+        description = "redirects to the home cell and sets no cookie when the hinted address belongs to a user of another cell",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.parser.parse.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(
+              AuthorizeResponse.HandedOff(URL.decode("/challenge/handoff?handoff=v1.kz-2.sealed").toOption.get),
+            )
+          yield (),
+        verify = resp =>
+          ZIO.succeed(
+            assertTrue(
+              resp.header(Header.Location).map(_.url.encode).contains("/challenge/handoff?handoff=v1.kz-2.sealed"),
+              resp.header(Header.SetCookie).isEmpty,
+            ),
+          ),
+      ),
+      controllerTestCase(
         description = "redirects to /challenge and sets cookie on Initialize response",
         request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.SeeOther,
@@ -242,6 +263,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
             _ <- services.handoff.open.succeedsWith(
               CellHandoff.Payload(
                 params = Map("client_id" -> List("test-client"), "login_hint" -> List("user@example.com")),
+                from = "kz-2",
                 to = "kz-1",
                 expiresAt = 0L,
                 submission = None,
@@ -298,6 +320,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         setup = services =>
           services.handoff.open.succeedsWith(CellHandoff.Payload(
             params = Map.empty,
+            from = "kz-2",
             to = "kz-1",
             expiresAt = 0L,
             submission = None,

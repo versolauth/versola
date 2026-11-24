@@ -536,6 +536,21 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         submitCalls.head._2 == EmailSubmission(emailHint, ProofInput.NoScript, "testcsrf1"),
       )
     },
+    test("answer with the redirect to the home cell when the login_hint belongs to a user of another cell") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val home = zio.http.URL.decode("/challenge/handoff?handoff=v1.kz-2.sealed").toOption.get
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        // What the router answers once it has sealed the request for the home cell and ended this conversation.
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.Handoff(home), dummyConversation))
+        result <- env.service.authorize(baseRequest.copy(loginHint = Some(Left(emailHint))))
+      yield assertTrue(result == AuthorizeResponse.HandedOff(home))
+    },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
       val env = Env()
       val uuid = UUID.randomUUID()

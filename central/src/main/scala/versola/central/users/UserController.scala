@@ -5,8 +5,10 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Observability
+import versola.central.configuration.topology.CellId
+import versola.central.configuration.topology.CellRegistry
+import versola.central.{Caller, CentralConfig, authorizeAuth, authorizeBasic, authorizeInternal}
+import versola.util.http.{Forbidden, Observability}
 import versola.util.{Email, EnvName, PageLimit, Phone, TemporaryPasswordTtl}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Status, handler}
@@ -16,7 +18,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import java.time.Instant
 
 object UserController extends AuditedController:
-  type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName & AuditReportService
+  type Env = Tracing & CentralConfig & EdgeService & CellRegistry & UserService & ResourceService & EnvName & AuditReportService
 
   def endpoints = List(
     findUsersEndpoint,
@@ -177,15 +179,43 @@ object UserController extends AuditedController:
   val registeredUserEndpoint =
     (Method.POST / "users" / "registrations").audited(Audit.Internal) -> handler { (request: Request) =>
       (for
-        _ <- authorizeInternal(request)
+        caller <- authorizeAuth(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[RegisteredUserRequest]
-        claim <- service.indexRegistered(body)
+        registered <- ZIO.serviceWithZIO[CellRegistry](_.all).map(_.map(_.id))
+        // the cell is the caller's: what the body says of it counts only where it agrees
+        cell <- claimCell(caller, body.cell, registered) match
+          case Right(cell) => ZIO.succeed(cell)
+          case Left(code) => Observability.setError(code) *> ZIO.fail(Forbidden)
+        claim <- service.indexRegistered(body.copy(cell = cell))
       yield Response.json(claim.toJson))
         .catchAll:
           case UserIndexConflict => ZIO.succeed(Response.status(Status.Conflict))
           case error: Throwable => ZIO.fail(error)
     }
+
+  /** The cell a new claim is made in (#1050), from who the caller is and not from what it says. `Cell(id)` is `id`, and a body
+    * that names another cell is refused: a cell cannot place a user in another's directory. The configured `auth` is the cell its
+    * body names while no registered cell has that id (it runs before its cell is registered), else it would be claiming in a
+    * cell it is not; it names none, none. The refusals are the error codes of the response.
+    *
+    * @param registered the ids of the registered cells
+    * @return the cell, or why not: `cell_mismatch`, `cell_registered`
+    */
+  private[users] def claimCell(caller: Caller, named: Option[CellId], registered: Vector[CellId]): Either[String, Option[CellId]] =
+    caller match
+      case Caller.Cell(id, _) =>
+        if named.forall(_ == id) then Right(Some(id)) else Left(CellMismatch)
+      case Caller.ConfiguredAuth(_) =>
+        if named.exists(registered.contains) then Left(CellRegistered) else Right(named)
+      // an edge is refused before this is asked
+      case _: Caller.Edge => Left(CellMismatch)
+
+  /** The body names a cell that is not the one the caller's key belongs to. */
+  private[users] val CellMismatch = "cell_mismatch"
+
+  /** The configured `auth` names a cell that is registered, and registered cells are known by their keys. */
+  private[users] val CellRegistered = "cell_registered"
 
   /** Who holds a credential (versolauth/versola#1046). Internal like the claim: only an `auth` asks, with its token. */
   val lookupUserEndpoint =

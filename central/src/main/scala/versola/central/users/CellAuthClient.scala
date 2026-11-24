@@ -5,7 +5,7 @@ import versola.central.audit.{AuthAuditError, UserAuditEventsQuery, UserAuditEve
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.topology.{CellRecord, TopologyRepository}
+import versola.central.configuration.topology.{CellId, CellRecord, TopologyRepository}
 import versola.util.{Email, Patch, Phone}
 import zio.http.URL
 import zio.json.ast.Json
@@ -26,16 +26,18 @@ import java.util.concurrent.ConcurrentHashMap
   *    answered by the configured `auth`; what an entry matched, how often it fired and a reset of the counters are each
   *    cell's own and go to every cell. The rule names and the status are those of the configured `auth`.
   *
-  * @param at the client of a cell at its internal address; one is kept for each address
+  * @param at the client of a cell at its internal address, which sends the cell, and the cell only, a token made for it
+  *   (the cell's id is the audience, #1050); one is kept for each cell and address
   */
-final class CellAuthClient(configured: AuthClient, at: URL => AuthClient, users: UserRepository, topology: TopologyRepository) extends AuthClient:
-  private val clients = ConcurrentHashMap[String, AuthClient]()
+final class CellAuthClient(configured: AuthClient, at: (URL, CellId) => AuthClient, users: UserRepository, topology: TopologyRepository)
+  extends AuthClient:
+  private val clients = ConcurrentHashMap[(CellId, String), AuthClient]()
 
   private def clientOf(cell: CellRecord): Task[AuthClient] =
     ZIO.fromEither(URL.decode(cell.internalUrl))
       .mapBoth(
         error => RuntimeException(s"cell '${cell.id}' has an invalid address: ${error.getMessage}"),
-        url => clients.computeIfAbsent(cell.internalUrl, _ => at(url)),
+        url => clients.computeIfAbsent((cell.id, cell.internalUrl), _ => at(url, cell.id)),
       )
 
   /** The `auth` that holds the user. */
@@ -61,6 +63,14 @@ final class CellAuthClient(configured: AuthClient, at: URL => AuthClient, users:
 
   override def deleteUser(userId: UserId): Task[Unit] =
     of(userId).flatMap(_.deleteUser(userId))
+
+  override def deleteUserOf(cell: Option[CellId], userId: UserId): Task[Unit] =
+    cell match
+      case None => configured.deleteUser(userId)
+      case Some(id) =>
+        topology.getCells.map(_.find(_.id == id)).flatMap:
+          case None => configured.deleteUser(userId)
+          case Some(registered) => clientOf(registered).flatMap(_.deleteUser(userId))
 
   override def getUser(id: UserId): Task[Option[AuthClient.UserDto]] =
     of(id).flatMap(_.getUser(id))

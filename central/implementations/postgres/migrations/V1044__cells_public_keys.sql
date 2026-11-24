@@ -1,0 +1,11 @@
+-- A cell has an identity of its own towards central (#1050): the public RSA keys its `auth` signs its calls with, a
+-- JSON array of public JWKs, each with a `kid`. One key, or two while a key is being replaced. Central looks the
+-- caller up by the key that verifies its token, so a cell with no key cannot call it; that a cell is registered
+-- with at least one key, at most two, each valid and none shared with another cell, with the configured `auth` or
+-- with an edge, is checked by central before it writes, not by the table.
+--
+-- DEFAULT '[]' because the table has rows (installations of our own) and the column is NOT NULL, and because the
+-- previous release's INSERTs do not name it while it keeps serving during `versola migrate`. The default can go once
+-- no release that inserts cells without naming the column runs; until a key is registered, that cell's `auth` is
+-- refused by central, which is the safe side.
+ALTER TABLE cells ADD COLUMN public_keys JSONB NOT NULL DEFAULT '[]'::jsonb;

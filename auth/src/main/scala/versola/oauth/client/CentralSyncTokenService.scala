@@ -17,6 +17,9 @@ object CentralSyncTokenService:
   private val TokenTtl = 10.minutes
   private val ReloadInterval = 9.minutes
 
+  /** The JOSE header that names the cell a token comes from (versolauth/versola#1050). */
+  val CellIdHeader = "cell_id"
+
   def live: ZLayer[Scope & CoreConfig & Client & ConfigSnapshot, Throwable, CentralSyncTokenService] =
     TokenSource >>>
       ZLayer(ReloadingCache.make[String](ReloadInterval)) >>>
@@ -26,12 +29,15 @@ object CentralSyncTokenService:
     JWT.serialize(
       claims = JWT.Claims(
         issuer = "auth",
-        subject = "auth",
+        subject = config.cellId.getOrElse("auth"),
         audience = List("central"),
         custom = Json.Obj(),
       ),
       ttl = TokenTtl,
-      signature = JWT.Signature.Symmetric(config.central.secretKey),
+      signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, config.central.keyId, config.central.privateKey),
+      // Informative only: central decides who calls from the key. It refuses a header that names another cell than the one
+      // the key belongs to.
+      headers = config.cellId.map(id => CellIdHeader -> (id: String)).toMap,
     )
 
   private val TokenSource: ZLayer[CoreConfig, Throwable, CacheSource[String]] = ZLayer:

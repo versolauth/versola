@@ -504,11 +504,19 @@ object ConversationRouter:
           homeElsewhere(credential).flatMap:
             case Left(unavailable) => ZIO.succeed(unavailable)
             case Right(Some(home)) =>
-              for
-                ticket <- handoff.seal(conversation, credential, home)
+              handoff.seal(conversation, credential, home).foldZIO(
+                {
+                  // The home cell has no key to seal for: the same as a directory that does not answer, and the conversation stays.
+                  case _: CellHandoff.NoKey =>
+                    ZIO.logWarning(s"No key for cell '$home': the handoff is refused") *>
+                      Observability.setError("directory_unavailable").as(ConversationResult.ServiceUnavailable)
+                  case _: CellHandoff.TooLarge =>
+                    Observability.setError("handoff_too_large").as(ConversationResult.ServiceUnavailable)
+                  case failure => ZIO.fail(failure)
+                },
                 // Gone whatever the browser does next: the sign-in continues in the other cell or not at all.
-                _ <- conversationRepository.delete(authId, conversation.version)
-              yield ConversationResult.Handoff(CellHandoff.location(ticket))
+                ticket => conversationRepository.delete(authId, conversation.version).as(ConversationResult.Handoff(CellHandoff.location(ticket))),
+              )
             case Right(None) => afterUnknownCredential(authId, conversation, credential, proof)
 
     /** The cell that holds the user of `credential`, when it is another than this one. An `auth` that is no cell asks

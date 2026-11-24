@@ -2,6 +2,7 @@ package versola.central.users
 
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.util.{Email, Patch, Phone}
 import zio.json.JsonCodec
 
@@ -34,6 +35,11 @@ enum OutboxEvent(val eventType: String) derives JsonCodec:
       remove: Set[RoleId],
   ) extends OutboxEvent("UpdateUserRoles")
 
+  /** The deletion of a user. The directory row is gone by the time it is delivered, so the event carries the cell that
+    * held the user (`None` for a user of no cell): it is the only place left that says which `auth` to tell.
+    * The default is the documented exception: an event stored before the field existed decodes as `None`.
+    */
   case DeleteUser(
       userId: UserId,
+      cell: Option[CellId] = None,
   ) extends OutboxEvent("DeleteUser")

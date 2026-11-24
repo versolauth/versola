@@ -15,6 +15,7 @@ import versola.central.configuration.partners.{
 }
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.topology.{RegionId, TopologyRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.http.RateLimitScope
@@ -90,7 +91,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
-              ZEnvironment[EdgeService](edgeService) ++
+              ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[EdgeGroupService](groupService) ++
                 ZEnvironment[EdgeIdentityService](identityService) ++
                 ZEnvironment[EdgeCertificateRepository](certificates) ++
@@ -142,7 +143,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
-              ZEnvironment[EdgeService](edgeService) ++
+              ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[EdgeGroupService](groupService) ++
                 ZEnvironment[EdgeIdentityService](identityService) ++
                 ZEnvironment[EdgeCertificateRepository](certificates) ++
@@ -172,7 +173,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     JWT.serialize(
       claims = JWT.Claims("auth", "auth", List("central"), Json.Obj()),
       ttl = 10.minutes,
-      signature = JWT.Signature.Symmetric(TestCentralConfig.config.secretKey),
+      signature = TestCentralConfig.authSignature,
     )
 
   /** What an edge presents: signed with its own registered key and naming itself. */

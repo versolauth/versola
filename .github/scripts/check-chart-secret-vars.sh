@@ -174,8 +174,9 @@ Update `versola.requiredSecretVars` in k8s/versola/templates/_helpers.tpl to
 match what the generator writes (and `versola-edge.secretVars` in k8s/versola-edge/templates/_helpers.tpl,
 which must equal the `edge` list). Check the key naming too: versola.secretKeyFor
 prefixes a var with its service unless the kebab-cased name already starts with
-it, and leaves CENTRAL_SECRET_KEY / CLIENT_SECRETS_SECRET bare because auth and
-central must read the identical value.
+it, and leaves CLIENT_SECRETS_SECRET bare because auth and central must read the
+identical value (the service keys are not shared by name: each half of a pair is
+held by one service).
 MSG
   exit 1
 fi

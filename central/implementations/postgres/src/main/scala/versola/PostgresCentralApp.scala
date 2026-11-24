@@ -78,7 +78,7 @@ import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService
 import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
-import versola.central.configuration.topology.{TopologyController, TopologyRepository, TopologyService}
+import versola.central.configuration.topology.{CellId, CellRegistry, TopologyController, TopologyRepository, TopologyService}
 import versola.central.users.{AuthClient, DirectoryKey, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
 import versola.central.{CentralConfig, refuseEdgeCallers}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
@@ -127,9 +127,8 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.lang.System as JavaSystem
 import java.net.InetAddress
+import java.security.PrivateKey
 import java.util.UUID
-import javax.crypto.SecretKey
-import javax.crypto.spec.SecretKeySpec
 import scala.util.Try
 
 object PostgresCentralApp extends VersolaApp("central"):
@@ -166,6 +165,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       PartnerService &
       EdgeService &
       EdgeGroupService &
+      CellRegistry &
       TopologyService &
       EdgeCertificateIssuer &
       EdgeIdentityService &
@@ -352,7 +352,7 @@ object PostgresCentralApp extends VersolaApp("central"):
     ZLayer.succeed(AuditEvents.Settings.standard) >++> auditWriter()
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
-    parseConfig[CentralConfig] >++>
+    (parseConfig[CentralConfig] >>> CentralConfig.validated) >++>
       repositories >++>
       auditEvents >++>
       SecurityService.live >++>
@@ -381,6 +381,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleService.live >++>
       EdgeService.live >++>
       EdgeGroupService.live >++>
+      CellRegistry.live >++>
       TopologyService.live >++>
       EdgeIdentityService.live >++>
       LocaleCompletenessValidator.live >++> LocaleService.live >++>
@@ -415,9 +416,12 @@ object PostgresCentralApp extends VersolaApp("central"):
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
-  given DeriveConfig[SecretKey] = DeriveConfig[String]
-    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
-    .map(bytes => SecretKeySpec(bytes, "AES"))
+  /** The private key of `service-key`, read the way an edge's `private-key` is: a base64-encoded PKCS#8 RSA key. */
+  given DeriveConfig[PrivateKey] = DeriveConfig[String]
+    .mapOrFail(SecretConfig.rsaPrivateKey)
+
+  given DeriveConfig[CellId] = DeriveConfig[String]
+    .mapOrFail(CellId.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))

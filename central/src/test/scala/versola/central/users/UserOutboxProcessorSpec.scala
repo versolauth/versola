@@ -4,6 +4,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.central.CentralConfig.UserOutboxConfig
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.util.{Email, Patch, Phone}
 import zio.json.ast.Json
 import zio.test.*
@@ -228,14 +229,17 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
       val tenantId = TenantId("tenant-a")
       val roleId = RoleId("admin")
       val rolesEvent = record.copy(event = OutboxEvent.UpdateUserRoles(userId, tenantId, Set(roleId), Set.empty))
-      val deleteEvent = record.copy(id = UUID.fromString("00000000-0000-0000-0000-000000000098"), event = OutboxEvent.DeleteUser(userId))
+      val deleteEvent = record.copy(
+        id = UUID.fromString("00000000-0000-0000-0000-000000000098"),
+        event = OutboxEvent.DeleteUser(userId = userId, cell = Some(CellId("kz-1"))),
+      )
       val repo = stub[UserRepository]
       val client = stub[AuthClient]
 
       for
         _ <- repo.claimDueEvents.succeedsWith(Vector(rolesEvent, deleteEvent))
         _ <- client.updateUserRoles.succeedsWith(())
-        _ <- client.deleteUser.succeedsWith(())
+        _ <- client.deleteUserOf.succeedsWith(())
         _ <- repo.deleteEvent.succeedsWith(())
 
         fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
@@ -244,8 +248,25 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- processor.processOnce
       yield assertTrue(
         client.updateUserRoles.calls == List((userId, tenantId, Set(roleId), Set.empty)),
-        client.deleteUser.calls == List(userId),
+        // Addressed to the cell the event names; the directory no longer says where the user was.
+        client.deleteUserOf.calls == List((Some(CellId("kz-1")), userId)),
+        client.deleteUser.calls.isEmpty,
       )
+    },
+    test("dispatch of a DeleteUser of a user of no cell is addressed to no cell") {
+      val deleteEvent = record.copy(event = OutboxEvent.DeleteUser(userId = userId, cell = None))
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector(deleteEvent))
+        _ <- client.deleteUserOf.succeedsWith(())
+        _ <- repo.deleteEvent.succeedsWith(())
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- processor.processOnce
+      yield assertTrue(client.deleteUserOf.calls == List((None, userId)))
     },
     // versolauth/versola#1041
     test("dispatch sends a PatchUser as a patch: what it names, and nothing of the identifiers it does not") {

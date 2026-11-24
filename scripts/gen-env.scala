@@ -685,7 +685,7 @@ object SecretSchema:
     * applied for a deployment (a deployment with no record is revision 1) and compare `since`
     * with that; this file only says what the current content is. Removing or renaming a secret
     * is not described by `since`. */
-  val Revision = 1
+  val Revision = 2
 
   /** `since` of everything the schema started with: the secrets that existed before it had a
     * revision at all. Deliberately a constant of its own and not `Revision`, which moves. */
@@ -749,7 +749,7 @@ object SecretSchema:
   val specs: List[SecretSpec] = List(
     // auth
     base64Url("ACCESS_TOKENS_SECRET", List("auth"), 32),
-    // The AES key central encrypts client secrets, JWKS signing keys, edge keys and resource secrets with.
+    // The AES key central encrypts client secrets, JWKS signing keys, edge keys and resource secrets with at rest.
     bound("CLIENT_SECRETS_SECRET", List("auth", "central"), 16),
     // The MAC key of every stored refresh token: a fresh one turns each of them, the long-lived
     // on-device offline_access ones included, into invalid_grant for good.
@@ -773,8 +773,67 @@ object SecretSchema:
     // usable `alg`. EC P-256 (ES256) from gen-env; an older deployment may still hold an RSA key.
     // (a fresh pair next to the real one leaves two kids in play -- develop.md, "Onboarding")
     grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.SigningPrivateKey, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
-    base64Url("CENTRAL_SECRET_KEY", List("auth", "central"), 32),
+    // The auth's service key (versolauth/versola#1050): the private half and its kid at auth (`central.private-key`,
+    // `central.key-id`), the public half at central (`auth.public-keys`). It signs auth's calls to central and opens
+    // what central encrypts to it; central already trusts the public half: a fresh pair makes every call 401.
+    grouped(
+      "AUTH_SERVICE_PRIVATE_KEY",
+      List("auth"),
+      SecretType.RsaPrivateKey,
+      None,
+      "auth-service-key",
+      onMissing = OnMissing.GenerateOnFirstInstallOnly,
+      since = 2,
+    ),
+    grouped(
+      "AUTH_SERVICE_KEY_ID",
+      List("auth"),
+      SecretType.KeyId,
+      None,
+      "auth-service-key",
+      onMissing = OnMissing.GenerateOnFirstInstallOnly,
+      since = 2,
+    ),
+    // The public half of central's service key, which signs central's calls to auth (`central.public-key-jwk`).
+    grouped(
+      "CENTRAL_SERVICE_PUBLIC_JWK",
+      List("auth"),
+      SecretType.PublicJwk,
+      None,
+      "central-service-key",
+      onMissing = OnMissing.GenerateOnFirstInstallOnly,
+      since = 2,
+    ),
     // central
+    // central's service key (`service-key.private-key`, `service-key.key-id`); auth holds the public half above.
+    grouped(
+      "CENTRAL_SERVICE_PRIVATE_KEY",
+      List("central"),
+      SecretType.RsaPrivateKey,
+      None,
+      "central-service-key",
+      onMissing = OnMissing.GenerateOnFirstInstallOnly,
+      since = 2,
+    ),
+    grouped(
+      "CENTRAL_SERVICE_KEY_ID",
+      List("central"),
+      SecretType.KeyId,
+      None,
+      "central-service-key",
+      onMissing = OnMissing.GenerateOnFirstInstallOnly,
+      since = 2,
+    ),
+    // The public half of auth's service key (`auth.public-keys`).
+    grouped(
+      "AUTH_SERVICE_PUBLIC_JWK",
+      List("central"),
+      SecretType.PublicJwk,
+      None,
+      "auth-service-key",
+      onMissing = OnMissing.GenerateOnFirstInstallOnly,
+      since = 2,
+    ),
     // central decodes it as a plain `Secret` (any length), and keeps the stored one once the
     // resource exists (seedAuthResource); auth reads it back by sync, so `generate` is harmless.
     opaque("ACCOUNT_RESOURCE_SECRET", List("central")),
@@ -1090,13 +1149,16 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // Edge key: central encrypts each edge's client secrets with the public half and
   // verifies the edge's sync tokens against it; the edge signs/decrypts with the private half.
   val generatedEdgeKey = genRsaKey(rng, s"edge-$today")
+  // Service keys (versolauth/versola#1050): auth signs its calls to central with `authServiceKey` and central
+  // verifies them with its public half; central signs its calls to auth with `centralServiceKey`. Every further
+  // cell of a deployment has a pair of its own: a run with --cell-id and --central-public-jwk-file (below).
+  val centralServiceKey = genRsaKey(rng, s"central-$today")
   val jwks = jwtJwks(jwtKey)
 
   // ── Admin user ID ─────────────────────────────────────────────────────────────
   val adminUserId = genUUIDv7(rng) // stable across restarts; seeded in both auth and central
 
   // ── Random secrets ────────────────────────────────────────────────────────────
-  val centralSecretKey = rand(rng, 32)    // shared: auth↔central (edge doesn't read it)
   val clientSecretsSecret = rand(rng, 16) // shared: auth + central (central: AES key of client secrets, signing keys, resource secrets at rest)
   val accessTokensSecret = rand(rng, 32)
   val refreshTokensSecret = rand(rng, 32)
@@ -1271,6 +1333,27 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       )
       // the public half is central's to hold: nothing of this run's central configuration uses it
       RsaKey(padded, "", keyId)
+
+  // A further cell of an installation that already runs (versolauth/versola#1050): its `auth` has a pair of its own (generated
+  // above like any other run's) and trusts the central that exists, whose service key this run did not generate -- its public half
+  // is the one `central.service-public-key.jwk` of the run that made that central. Given that file, this run writes the auth side
+  // (and the edge's) only, the way a remote edge's run does: a central.conf made here would carry a service key nobody trusts.
+  val extraCell = cliArgs.get("central-public-jwk-file").exists(_.nonEmpty)
+  // The cell this auth is (see cellIdLine below). Named in its key's kid: central refuses two cells with the same kid, and two
+  // runs on one day would otherwise both say `auth-<date>`.
+  val cellId: Option[String] = cliArgs.get("cell-id").filter(_.nonEmpty).orElse(if isLocal then Some("local-1") else None)
+  val authServiceKey = genRsaKey(rng, cellId.fold(s"auth-$today")(id => s"auth-$id-$today"))
+  val centralServicePublicJwk: String =
+    if !extraCell then centralServiceKey.jwk
+    else
+      val file = cliArgs("central-public-jwk-file")
+      val raw = scala.util.Try(java.nio.file.Files.readString(java.nio.file.Path.of(file))).fold(
+        e => throw RuntimeException(s"cannot read --central-public-jwk-file $file: ${e.getMessage}"),
+        identity,
+      ).trim
+      if !raw.startsWith("{") || !raw.contains("\"kid\"") || raw.contains("\"d\":") then
+        throw RuntimeException(s"$file does not hold a public JWK with a kid (the central.service-public-key.jwk of the run that made central)")
+      raw
 
   // central refuses to seed itself an admin API nobody can call: both blocks below are
   // always emitted (bootstrap.resource-secret and bootstrap.utility-client), never left
@@ -1971,11 +2054,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // stack so e2e exercises the prefixed values; every other target starts without one,
   // which leaves it exactly as it was (no prefix, no claim) until an operator names it.
   // `--cell-id` names it for any target; every cell of a deployment has its own and the same `jwt.issuer`.
-  val cellIdLine =
-    cliArgs.get("cell-id").filter(_.nonEmpty) match
-      case Some(id) => s"cell-id = \"$id\""
-      case None if isLocal => "cell-id = \"local-1\""
-      case None => "# cell-id = \"kz-1\""
+  val cellIdLine = cellId.fold("# cell-id = \"kz-1\"")(id => s"cell-id = \"$id\"")
 
   val authConf =
     s"""env = $env
@@ -2089,7 +2168,13 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |
        |central {
        |  url = "$centralUrl"
-       |  secret-key = ${secretField(useOpenBao, centralSecretKey, "CENTRAL_SECRET_KEY")}
+       |  # This auth's own key pair (versolauth/versola#1050): it signs the calls to central and opens what central
+       |  # encrypts to it. Placeholdered together, like edge's key-id and private-key: a kid derived from today's date
+       |  # must not drift from the private key an earlier run stored.
+       |  key-id = ${secretField(useOpenBao, authServiceKey.kid, "AUTH_SERVICE_KEY_ID")}
+       |  private-key = ${secretKeyField(useOpenBao, authServiceKey.privateB64, "AUTH_SERVICE_PRIVATE_KEY")}
+       |  # The public half of central's service key: central signs its calls to this auth with it.
+       |  public-key-jwk = ${secretKeyField(useOpenBao, centralServicePublicJwk, "CENTRAL_SERVICE_PUBLIC_JWK")}
        |}
        |$otpBlock$smtpBlock
        |postgres {
@@ -2256,6 +2341,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |""".stripMargin
     else ""
 
+  // The cell id that auth is configured with, when it has one: central addresses its calls to it by that audience.
+  val centralAuthCellIdLine = cellId.fold("")(id => s"  cell-id = \"$id\"\n")
   val centralConf =
     s"""env = $env
        |
@@ -2302,12 +2389,18 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  auth-resource-secret = ${secretField(useOpenBao, accountResourceSecret, "ACCOUNT_RESOURCE_SECRET")}
        |${centralAdminMtlsLines}${bootstrapUtilityClientLines}${bootstrapResourceSecretLine}|}
        |
-       |secret-key = ${secretField(useOpenBao, centralSecretKey, "CENTRAL_SECRET_KEY")}
+       |# central's own key pair, its service key (versolauth/versola#1050): it signs the calls to auth.
+       |service-key {
+       |  key-id = ${secretField(useOpenBao, centralServiceKey.kid, "CENTRAL_SERVICE_KEY_ID")}
+       |  private-key = ${secretKeyField(useOpenBao, centralServiceKey.privateB64, "CENTRAL_SERVICE_PRIVATE_KEY")}
+       |}
        |client-secrets-secret = ${secretField(useOpenBao, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
        |
        |auth {
        |  url = "$authInternalUrl"
-       |}
+       |  # The public half of the service key of the auth at `url` (the one it calls before any cell is registered).
+       |  public-keys = [${secretKeyField(useOpenBao, authServiceKey.jwk, "AUTH_SERVICE_PUBLIC_JWK")}]
+       |${centralAuthCellIdLine}}
        |$centralClientCertificateAuthorityBlock$centralClientIdentityBlock$centralMutualTlsBlock
        |user-outbox {
        |  poll-interval = 1 second
@@ -2522,7 +2615,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
     // They are not written.
     if !remoteEdge then
       writeFile(dir, "auth.conf", authConf)
-      writeFile(dir, "central.conf", centralConf)
+      if !extraCell then writeFile(dir, "central.conf", centralConf)
     // A remote edge's `central` block (url, pins, identity, group) comes from the chart's `central.conf`; including it last lets it
     // win, and means the operator adds nothing by hand.
     val remoteInclude = if remoteEdge then
@@ -2533,8 +2626,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
     // versola-cli resolves each of these against OpenBao (existing value
     // wins; a first-time value gets stored there) before starting any
     // container -- see the comment on secretField above. auth.conf and
-    // central.conf both reference CENTRAL_SECRET_KEY/CLIENT_SECRETS_SECRET,
-    // so both files carry them; versola-cli only needs to resolve each
+    // central.conf both reference CLIENT_SECRETS_SECRET,
+    // so both files carry it; versola-cli only needs to resolve each
     // shared value once; writing it into both is harmless.
     if useOpenBao then
       // vps and k8s additionally placeholder out Postgres's password and
@@ -2576,18 +2669,24 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
             "DPOP_NONCES_SECRET" -> dpopNoncesSecret,
             "ANTIFRAUD_SUBJECT_SECRET" -> antifraudSubjectSecret,
             "JWT_PRIVATE_KEY" -> jwtKey.privateB64,
-            "CENTRAL_SECRET_KEY" -> centralSecretKey,
+            "AUTH_SERVICE_PRIVATE_KEY" -> authServiceKey.privateB64,
+            // Travels with AUTH_SERVICE_PRIVATE_KEY, like EDGE_KEY_ID with EDGE_PRIVATE_KEY: see the comment on auth.conf's key-id.
+            "AUTH_SERVICE_KEY_ID" -> authServiceKey.kid,
+            "CENTRAL_SERVICE_PUBLIC_JWK" -> centralServicePublicJwk,
           ) ++ authExtras,
         )
 
       val centralExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> centralPgPass) else Seq.empty
-      if !remoteEdge then
+      if !remoteEdge && !extraCell then
         writeGeneratedSecrets(
           dir,
           secretTarget,
           "central",
           Seq(
-            "CENTRAL_SECRET_KEY" -> centralSecretKey,
+            "CENTRAL_SERVICE_PRIVATE_KEY" -> centralServiceKey.privateB64,
+            "CENTRAL_SERVICE_KEY_ID" -> centralServiceKey.kid,
+            // The public half of auth's service key: central trusts it for the auth at auth.url.
+            "AUTH_SERVICE_PUBLIC_JWK" -> authServiceKey.jwk,
             "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
             "ACCOUNT_RESOURCE_SECRET" -> accountResourceSecret,
             // Reached only when useOpenBao is true (isLocal, the only other target that ever
@@ -2635,6 +2734,18 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       if !remoteEdge then writeFile(dir, "secrets.schema.json", SecretSchema.toJson(secretTarget))
 
     if !remoteEdge then
+      // The public halves of the service keys (versolauth/versola#1050), for whoever must hand one to the other side. Public keys, so
+      // plain files outside the secret schema. auth.service-public-key.jwk is what a cell is registered with (`publicKeys` of
+      // POST /configuration/cells, the Cells screen of the console); central.service-public-key.jwk is what a further cell's run takes
+      // as --central-public-jwk-file. They are the keys of THIS run: a deployment whose store already held a key (versola-cli resolves
+      // it over the generated one) registers the public half of the stored key instead.
+      writeFile(dir, "auth.service-public-key.jwk", authServiceKey.jwk + "\n")
+      if !extraCell then writeFile(dir, "central.service-public-key.jwk", centralServiceKey.jwk + "\n")
+      println(
+        s"  Register this auth as a cell with its public key, the content of auth.service-public-key.jwk (`publicKeys` of POST /configuration/cells)." +
+          (if extraCell then ""
+           else " A further cell: run gen-env again with --cell-id=<its id> --central-public-jwk-file=<central.service-public-key.jwk of this run>."),
+      )
       // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
       // owner-readable only, written outside every *.generated-secrets.env on purpose. Written
       // whether or not secrets are placeholdered: an interactive prod run registers the public half
@@ -2658,6 +2769,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |${
           if remoteEdge then
             "  - edge.conf, edge.generated-secrets.env (this remote edge only: no auth or central file is written, since a key\n    generated here is not the edge's and central's public half of it is unknown)"
+          else if extraCell then
+            "  - auth.conf     (auth service of this cell)\n  - edge.conf     (edge service; not needed for a further cell)\n  (no central.conf: central already exists and keeps its own service key)"
           else "  - auth.conf     (auth service)\n  - central.conf  (central service)\n  - edge.conf     (edge service)"
         }
          |""".stripMargin,
