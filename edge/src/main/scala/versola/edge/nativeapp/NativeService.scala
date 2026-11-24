@@ -54,9 +54,9 @@ enum NativeError:
   case InvalidDpopProof(description: String)
   case InvalidGrant(description: String)
 
-  /** #423: the client's policy asks for app attestation and what the app sent was not accepted. Says what was wrong, never a
-    * value the app sent. */
-  case InvalidClientAttestation(description: String)
+  /** #423: the client's policy asks for app attestation and what the app sent was not accepted. `code` is the closed set
+    * `attestation_error` carries ([[versola.edge.attestation.AttestationFailure.Kind.code]]); which check failed is logged, not sent. */
+  case InvalidClientAttestation(code: String)
 
   /** RFC 9449 §9: this edge requires a nonce and the proof carried none it issued, or one
     * that has expired. Carries a fresh one for the retry, the same challenge shape as the
@@ -84,8 +84,12 @@ object NativeService:
     val Chain = "attestation_chain"
 
     /** Android, when the client's policy asks for Play Integrity of the build: the token the Play Integrity API returned for the
-      * nonce `SHA-256("versola-attest-v1\n" + clientId + "\n" + jkt + "\n" + jti)`, URL-safe base64 without padding. */
+      * nonce `SHA-256("versola-attest-v1\n" + clientId + "\n" + jkt + "\n" + jti)` (and `"\n" + nonce` when the proof carries a server nonce), URL-safe base64 without padding. */
     val IntegrityToken = "attestation_integrity_token"
+
+    /** Instead of evidence, when the app could not attest: `unsupported`, `service_unavailable` or `not_configured`. Counted as its own
+      * outcome, and refused under `enforce` like any request without evidence. */
+    val Unavailable = "attestation_unavailable"
 
   /** `/native/start`'s answer. `authorization_endpoint` plus `client_id` and `request_uri` is
     * the whole of what the system browser is opened on; `token_endpoint` and
@@ -272,6 +276,7 @@ object NativeService:
           attestationObject = firstOf(form, AttestationFields.Object)
           assertion = firstOf(form, AttestationFields.Assertion)
           integrityToken = firstOf(form, AttestationFields.IntegrityToken)
+          unavailable = firstOf(form, AttestationFields.Unavailable)
           // zio-http reads a field that repeats as one value with the occurrences joined by commas. Base64 has no comma, so a
           // certificate chain is the one list this can carry without ambiguity: sent repeated or comma-separated, it is the same.
           chain <- values(form, AttestationFields.Chain).map(_.flatMap(_.split(',')).map(_.trim).filter(_.nonEmpty))
@@ -280,9 +285,12 @@ object NativeService:
             policy = client.attestation,
             jkt = proof.jkt,
             jti = proof.jti,
-            evidence = AttestationEvidence(platform, keyId, attestationObject, assertion, chain, integrityToken),
-          ).tapError(failure => Observability.setError("invalid_client_attestation", Some(failure.kind.toString)))
-            .mapError(failure => NativeError.InvalidClientAttestation(failure.detail))
+            nonce = proof.nonce,
+            evidence = AttestationEvidence(platform, keyId, attestationObject, assertion, chain, integrityToken, unavailable),
+          ).tapError: failure =>
+            Observability.setError("invalid_client_attestation", Some(failure.kind.toString)) *>
+              ZIO.logInfo(s"app attestation of client ${client.id} was not accepted: ${failure.kind} (${failure.detail})")
+          .mapError(failure => NativeError.InvalidClientAttestation(failure.kind.code))
         yield ()
 
     /** What `/native/start` decides before auth is called. The three values only edge knows are

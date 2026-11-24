@@ -43,11 +43,11 @@ object NativeControllerSpec extends ZIOSpecDefault:
     },
     test("a refused attestation is an invalid_client_attestation, a 400, never cached") {
       for
-        refused <- call(NativeError.InvalidClientAttestation("the attestation is for an app this client does not accept"), "start")
+        refused <- call(NativeError.InvalidClientAttestation("app_not_accepted"), "start")
         body <- refused.body.asString
       yield assertTrue(
         refused.status == Status.BadRequest,
-        body == """{"error":"invalid_client_attestation","error_description":"the attestation is for an app this client does not accept"}""",
+        body == """{"error":"invalid_client_attestation","error_description":"the app attestation was not accepted","attestation_error":"app_not_accepted"}""",
         refused.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
       )
     },

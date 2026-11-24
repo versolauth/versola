@@ -21,4 +21,4 @@ Where they come from (downloaded 2026-11-13):
 a proof of origin.
 
 A platform that rotates a root before a release of edge carries it is met by `native.attestation.apple-roots` / `android-roots`, which
-name a PEM file that replaces the one here (see `deploy.md`).
+name a PEM file that replaces the one here (see the operator documentation, `Edge → Configuration`, `native.attestation`).

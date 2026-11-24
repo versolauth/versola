@@ -52,9 +52,30 @@ object AttestationFixtures:
     BigInteger.valueOf(serials)
 
   /** A certificate authority, self-signed or issued by `issuer`. */
-  def authority(subject: String, issuer: Option[Authority] = None): Authority =
+  def authority(
+      subject: String,
+      issuer: Option[Authority] = None,
+      notBefore: Date = Date(System.currentTimeMillis() - 3_600_000),
+      notAfter: Date = Date(System.currentTimeMillis() + 3 * 86_400_000),
+  ): Authority =
     val pair = p256()
-    Authority(issue(subject, pair, issuer, ca = true, serial = nextSerial(), extensions = Nil), pair.getPrivate)
+    Authority(issue(subject, pair, issuer, ca = true, serial = nextSerial(), extensions = Nil, notBefore = notBefore, notAfter = notAfter), pair.getPrivate)
+
+  /** Another certificate for the key of `root`, as a device that was issued an earlier copy of a root sends it: same subject and key,
+    * its own serial and validity. */
+  def copyOf(root: Authority, notBefore: Date, notAfter: Date): X509Certificate =
+    issue(
+      subject = root.certificate.getSubjectX500Principal.getName,
+      pair = KeyPair(root.certificate.getPublicKey, root.key),
+      issuer = None,
+      ca = true,
+      serial = nextSerial(),
+      extensions = Nil,
+      notBefore = notBefore,
+      notAfter = notAfter,
+    )
+
+  def days(count: Int): Date = Date(System.currentTimeMillis() + count * 86_400_000L)
 
   /** A certificate for `pair`'s public key, issued by `issuer`, or self-signed when there is none, which only an authority is. */
   def issue(
@@ -64,14 +85,16 @@ object AttestationFixtures:
       ca: Boolean,
       serial: BigInteger,
       extensions: List[(String, ASN1Encodable)],
+      notBefore: Date = Date(System.currentTimeMillis() - 3_600_000),
+      notAfter: Date = Date(System.currentTimeMillis() + 3 * 86_400_000),
   ): X509Certificate =
     val generator = X509V3CertificateGenerator()
     val principal = X500Principal(subject)
     generator.setSerialNumber(serial)
     generator.setIssuerDN(issuer.fold(principal)(_.certificate.getSubjectX500Principal))
     generator.setSubjectDN(principal)
-    generator.setNotBefore(Date(System.currentTimeMillis() - 3_600_000))
-    generator.setNotAfter(Date(System.currentTimeMillis() + 3 * 86_400_000))
+    generator.setNotBefore(notBefore)
+    generator.setNotAfter(notAfter)
     generator.setPublicKey(pair.getPublic)
     generator.setSignatureAlgorithm("SHA256withECDSA")
     if ca then generator.addExtension(Extension.basicConstraints, true, BasicConstraints(true))
@@ -177,9 +200,12 @@ object AttestationFixtures:
   final case class Google(root: Authority, intermediate: Authority):
     def roots: Set[X509Certificate] = Set(root.certificate)
 
-  def google(): Google =
-    val root = authority("CN=Test Key Attestation Root,O=Test")
-    Google(root, authority("CN=Test Key Attestation CA,O=Test", Some(root)))
+  def google(rootSubject: String = "CN=Test Key Attestation Root,O=Test", notBefore: Date = days(-1), notAfter: Date = days(3)): Google =
+    val root = authority(rootSubject, notBefore = notBefore, notAfter = notAfter)
+    Google(root, authority("CN=Test Key Attestation CA,O=Test", Some(root), notBefore = notBefore, notAfter = notAfter))
+
+  /** The root Google's factory-provisioned attestation keys chain to, as it names itself. */
+  val FactoryRootSubject = "SERIALNUMBER=f92009e853b6b045,CN=Test Key Attestation Root,O=Test"
 
   /** What can be made wrong about a key description. */
   final case class AndroidOptions(
@@ -233,7 +259,14 @@ object AttestationFixtures:
     )
 
   /** The chain an Android Keystore makes for `pair`: the leaf, the intermediate and, as Android sends it, the root last. */
-  def androidChain(chain: Google, pair: KeyPair, challenge: Array[Byte], options: AndroidOptions = AndroidOptions()): List[Array[Byte]] =
+  def androidChain(
+      chain: Google,
+      pair: KeyPair,
+      challenge: Array[Byte],
+      options: AndroidOptions = AndroidOptions(),
+      leafNotBefore: Date = days(-1),
+      leafNotAfter: Date = days(3),
+  ): List[Array[Byte]] =
     val leaf = issue(
       subject = "CN=Android Keystore Key",
       pair = pair,
@@ -241,5 +274,60 @@ object AttestationFixtures:
       ca = false,
       serial = options.serial,
       extensions = List("1.3.6.1.4.1.11129.2.1.17" -> keyDescription(challenge, options)),
+      notBefore = leafNotBefore,
+      notAfter = leafNotAfter,
     )
     List(leaf, chain.intermediate.certificate, chain.root.certificate).map(_.getEncoded)
+
+  val ProvisioningInfoOid = "1.3.6.1.4.1.11129.2.1.30"
+
+  /** A remotely provisioned chain: the intermediate right above the leaf says so, by its provisioning information. */
+  def provisionedChain(
+      chain: Google,
+      pair: KeyPair,
+      challenge: Array[Byte],
+      options: AndroidOptions = AndroidOptions(),
+      leafNotBefore: Date = days(-1),
+      leafNotAfter: Date = days(3),
+  ): List[Array[Byte]] =
+    val signer = p256()
+    val rkp = issue(
+      "CN=RKP Key",
+      signer,
+      Some(chain.intermediate),
+      ca = true,
+      serial = nextSerial(),
+      extensions = List(ProvisioningInfoOid -> DEROctetString(Array[Byte](1))),
+    )
+    val leaf = issue(
+      "CN=Android Keystore Key",
+      pair,
+      Some(Authority(rkp, signer.getPrivate)),
+      ca = false,
+      serial = options.serial,
+      extensions = List("1.3.6.1.4.1.11129.2.1.17" -> keyDescription(challenge, options)),
+      notBefore = leafNotBefore,
+      notAfter = leafNotAfter,
+    )
+    List(leaf, rkp, chain.intermediate.certificate, chain.root.certificate).map(_.getEncoded)
+
+  /** What an attacker who holds an attested key that may sign certificates sends: a leaf for `forged`, a key that never saw secure
+    * hardware, with the description of the attacker's choosing, issued by that attested key, and below the genuine chain of it. */
+  def extendedChain(chain: Google, genuine: KeyPair, forged: KeyPair, challenge: Array[Byte], options: AndroidOptions = AndroidOptions()): List[Array[Byte]] =
+    val genuineLeaf = issue(
+      subject = "CN=Genuine Keystore Key",
+      pair = genuine,
+      issuer = Some(chain.intermediate),
+      ca = true,
+      serial = nextSerial(),
+      extensions = List("1.3.6.1.4.1.11129.2.1.17" -> keyDescription(Array[Byte](9, 9, 9), AndroidOptions())),
+    )
+    val forgedLeaf = issue(
+      subject = "CN=Forged Key",
+      pair = forged,
+      issuer = Some(Authority(genuineLeaf, genuine.getPrivate)),
+      ca = false,
+      serial = options.serial,
+      extensions = List("1.3.6.1.4.1.11129.2.1.17" -> keyDescription(challenge, options)),
+    )
+    List(forgedLeaf, genuineLeaf, chain.intermediate.certificate, chain.root.certificate).map(_.getEncoded)

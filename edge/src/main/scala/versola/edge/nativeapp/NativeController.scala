@@ -15,6 +15,7 @@ object NativeController extends Controller:
   private case class ErrorBody(
       error: String,
       @jsonField("error_description") errorDescription: Option[String],
+      @jsonField("attestation_error") attestationError: Option[String] = None,
   ) derives JsonEncoder
 
   def routes: Routes[Env, Throwable] = Routes(
@@ -36,8 +37,8 @@ object NativeController extends Controller:
     }
 
   def render(error: NativeError): Response =
-    def oauth(code: String, description: Option[String]) =
-      Response.json(ErrorBody(code, description).toJson)
+    def oauth(code: String, description: Option[String], attestationError: Option[String] = None) =
+      Response.json(ErrorBody(code, description, attestationError).toJson)
         .status(Status.BadRequest)
         .addHeader(Header.CacheControl.NoStore)
     error match
@@ -49,7 +50,10 @@ object NativeController extends Controller:
         oauth("unsupported_grant_type", Some("only refresh_token is served here"))
       case NativeError.InvalidDpopProof(description) => oauth("invalid_dpop_proof", Some(description))
       case NativeError.InvalidGrant(description) => oauth("invalid_grant", Some(description))
-      case NativeError.InvalidClientAttestation(description) => oauth("invalid_client_attestation", Some(description))
+      // What was wrong goes in `attestation_error`, a closed set an SDK may act on; the description says nothing about which check failed,
+      // so that a refusal does not tell whoever is tuning a forgery what to change. The detail is in edge's log.
+      case NativeError.InvalidClientAttestation(code) =>
+        oauth("invalid_client_attestation", Some("the app attestation was not accepted"), Some(code))
       // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 here
       // (EdgeController's own comment on that case applies unchanged).
       case NativeError.NonceRequired(nonce) =>

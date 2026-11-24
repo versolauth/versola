@@ -127,9 +127,6 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
     launch(config.authLauncher, config.authEnvConf, ColdAuthPorts) <*>
       launch(config.edgeLauncher, config.edgeEnvConf, ColdEdgePorts)
 
-  private def env(name: String, default: String): Task[String] =
-    ZIO.attempt(Option(java.lang.System.getenv(name))).map(_.getOrElse(default))
-
   /** Replaces the recorded clients sync body of `table` with a forged one for the scope, and
     * puts the original back afterwards. The save time is moved ahead as well, which the HMAC
     * also covers: the running service only overwrites a record with a newer one, so this keeps
@@ -141,11 +138,9 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
   private def forgeClients(table: String, keyPattern: String): ZIO[Scope, Throwable, Unit] =
     def connect[A](f: java.sql.Connection => A): Task[A] =
       for
-        // `java.lang.System`, not ZIO's: inside a test that is the test environment, which has none of the real one's
-        // variables, so an override of the database would be ignored and this would forge the default one's records.
-        url <- env("E2E_DB_URL", "jdbc:postgresql://localhost:5432/auth")
-        user <- env("E2E_DB_USER", "dev")
-        password <- env("E2E_DB_PASSWORD", "1234")
+        url <- System.env("E2E_DB_URL").map(_.getOrElse("jdbc:postgresql://localhost:5432/auth"))
+        user <- System.env("E2E_DB_USER").map(_.getOrElse("dev"))
+        password <- System.env("E2E_DB_PASSWORD").map(_.getOrElse("1234"))
         result <- ZIO.attemptBlocking:
           val connection = DriverManager.getConnection(url, user, password).nn
           try f(connection)

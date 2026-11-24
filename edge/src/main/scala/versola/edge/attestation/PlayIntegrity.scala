@@ -47,6 +47,9 @@ object PlayIntegrity:
     override def verify(app: AndroidApp, token: String, nonce: String, now: Instant): IO[AttestationFailure, Unit] =
       decoder.decode(app.packageName, token).flatMap(payload => ZIO.fromEither(check(payload, app, nonce, now, maxAge)))
 
+  /** How far ahead of this edge's clock a verdict's time may be. */
+  private val ClockSkew = java.time.Duration.ofSeconds(30)
+
   private val PlayRecognized = "PLAY_RECOGNIZED"
   private val MeetsDeviceIntegrity = "MEETS_DEVICE_INTEGRITY"
 
@@ -69,8 +72,10 @@ object PlayIntegrity:
       )
       issued <- text(request, "timestampMillis").flatMap(_.toLongOption).map(Instant.ofEpochMilli)
         .toRight(malformed("the verdict has no time"))
+      // Old by at most `maxAge`, and from the future by no more than the clocks of two machines may differ.
+      age = java.time.Duration.between(issued, now)
       _ <- Either.cond(
-        java.time.Duration.between(issued, now).abs().compareTo(maxAge) <= 0,
+        if age.isNegative then age.negated().compareTo(ClockSkew) <= 0 else age.compareTo(maxAge) <= 0,
         (),
         AttestationFailure(Kind.Mismatch, "the verdict is not recent"),
       )
@@ -79,6 +84,13 @@ object PlayIntegrity:
         text(integrity, "appRecognitionVerdict").contains(PlayRecognized),
         (),
         AttestationFailure(Kind.AppNotAccepted, "Google Play does not recognise this app"),
+      )
+      // `requestPackageName` is what the request said and can be spoofed in transit (Google's own caution); the package the verdict
+      // recognised is `appIntegrity.packageName`, and it is that one the policy is held to.
+      _ <- Either.cond(
+        text(integrity, "packageName").contains(app.packageName),
+        (),
+        AttestationFailure(Kind.AppNotAccepted, "the verdict recognised another package"),
       )
       // Google gives the digests in URL-safe base64; the policy has them as hex.
       digests = strings(integrity, "certificateSha256Digest").flatMap(digest => scala.util.Try(Base64.getUrlDecoder.decode(digest)).toOption).map(hex)

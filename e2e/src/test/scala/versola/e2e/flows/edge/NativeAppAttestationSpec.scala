@@ -131,7 +131,7 @@ object NativeAppAttestationSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeA
       val json = text.fromJson[Json.Obj].toOption
       (
         json.flatMap(_.get("error")).collect { case Json.Str(value) => value },
-        json.flatMap(_.get("error_description")).collect { case Json.Str(value) => value },
+        json.flatMap(_.get("attestation_error")).collect { case Json.Str(value) => value },
       )
 
   def spec = suite("Native app attestation through edge (#423)")(
@@ -157,10 +157,11 @@ object NativeAppAttestationSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeA
       yield assertTrue(
         bare.status == Status.BadRequest,
         bareError._1.contains("invalid_client_attestation"),
+        bareError._2.contains("absent"),
         rubbish.status == Status.BadRequest,
         rubbishError._1.contains("invalid_client_attestation"),
-        // The SDK acts on this sentence: it forgets the key and attests a new one.
-        rubbishError._2.exists(_.contains("has not been attested")),
+        // The SDK acts on this code: it forgets the key and attests a new one.
+        rubbishError._2.contains("unknown_key"),
       )
     },
     test("putting the client back to off lifts the refusal") {

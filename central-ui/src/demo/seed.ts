@@ -114,6 +114,20 @@ const clients: ClientDto[] = [
     createdAt: daysAgo(33),
   },
   {
+    // A native client edge fronts (it authenticates with a certificate): the one whose page has the App attestation card.
+    id: 'acme-field-app',
+    kind: 'device' as const,
+    clientName: { en: 'Acme Field App', ru: 'Приложение для выездных сотрудников' },
+    redirectUris: ['kz.acme.field:/callback'],
+    scope: ['openid', 'profile', 'offline_access'],
+    permissions: ['orders:read'],
+    secretRotation: false,
+    authMethod: 'tls_client_auth' as const,
+    refreshTokenTtl: 30 * 24 * 60 * 60,
+    authFlow: smsLogin,
+    createdAt: daysAgo(12),
+  },
+  {
     id: 'backoffice',
     kind: 'web' as const,
     clientName: { en: 'Back Office', ru: 'Бэк-офис' },
@@ -359,6 +373,13 @@ const challenge = (tenantId: string) => ({
 });
 
 export const demoSeed: Partial<MockConfigState> = {
+  // Report first, as a policy is set: edge counts what the app sends and refuses nothing.
+  attestation: {
+    'acme-field-app': {
+      mode: 'report',
+      android: [{ packageName: 'kz.acme.field', certificateDigests: ['3f'.repeat(32)] }],
+    },
+  },
   tenants: [
     { id: tenant, description: 'Acme Retail: production', edgeId: 'edge-main', securityProfile: 'fapi2' },
     { id: staging, description: 'Acme Retail: staging', edgeId: null, securityProfile: 'fapi2' },

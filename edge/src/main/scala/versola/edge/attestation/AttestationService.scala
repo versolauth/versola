@@ -3,7 +3,7 @@ package versola.edge.attestation
 import versola.edge.attestation.AttestationCrypto.{malformed, sha256}
 import versola.edge.attestation.AttestationFailure.Kind
 import zio.metrics.{Metric, MetricLabel}
-import zio.{Clock, IO, URLayer, UIO, ZIO, ZLayer}
+import zio.{Clock, IO, Ref, URLayer, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.util.Base64
@@ -17,6 +17,8 @@ final case class AttestationEvidence(
     chain: List[String],
     /** Android, when the policy of the app asks for it: the Play Integrity token, as the Play Integrity API returned it. */
     integrityToken: Option[String] = None,
+    /** Why the app could not attest, when it says so instead of sending evidence: one of [[AttestationService.UnavailableReasons]]. */
+    unavailable: Option[String] = None,
 )
 
 /** App attestation of `/native/start` (#423): what the policy of the client asks, what the app sent, and the outcome.
@@ -35,6 +37,7 @@ trait AttestationService:
       policy: AttestationPolicy,
       jkt: String,
       jti: String,
+      nonce: Option[String],
       evidence: AttestationEvidence,
   ): IO[AttestationFailure, Unit]
 
@@ -43,13 +46,24 @@ object AttestationService:
   private val Domain = "versola-attest-v1"
 
   /** What an iOS app hands App Attest as its client data hash, so that an attestation or assertion is for one request of one client
-    * by one DPoP key. The SDK builds the same bytes. */
-  def clientDataHash(clientId: String, jkt: String, jti: String): Array[Byte] =
-    sha256(s"$Domain\n$clientId\n$jkt\n$jti".getBytes(StandardCharsets.UTF_8))
+    * by one DPoP key. The SDK builds the same bytes.
+    *
+    * `nonce` is the server nonce of the proof, when the proof carries one (RFC 9449 §8: this edge asked for it): it is the one value in
+    * what the app signs that the server chose, so an assertion cannot be made ahead of time for a `jti` the app picks. A proof without
+    * a nonce hashes as it always did, so a client that does not ask for nonces is unchanged. */
+  def clientDataHash(clientId: String, jkt: String, jti: String, nonce: Option[String] = None): Array[Byte] =
+    sha256(s"$Domain\n$clientId\n$jkt\n$jti${nonce.fold("")("\n" + _)}".getBytes(StandardCharsets.UTF_8))
 
   /** What an Android app gives the Keystore as the attestation challenge, so that a chain made for one client is not presented to
-    * another. A server-chosen challenge would need a round trip before the key exists; the key's own possession, shown by the
-    * proof, is what keeps a chain from being replayed. */
+    * another.
+    *
+    * A deliberate deviation from Google's advice of a server-provided challenge ("reuse allows replay of older certificates"). The
+    * challenge is fixed when the Keystore makes the key, which is before any round trip to this edge; and what replay would need is
+    * the hardware key itself, whose possession the DPoP proof shows on every request: the attested key is the proof's key. A chain
+    * therefore does nothing in the hands of anyone else, which two specs hold: a chain made for another client's challenge is refused
+    * (`AndroidKeyAttestationSpec`, "a chain made for another client"), and so is the same chain with a proof by another key
+    * (`AndroidKeyAttestationSpec`, "a key that is not the DPoP key of the request"). An app made before the SDK that sets this
+    * challenge cannot pass whatever chain it has, and takes a new key at its next `/native/start` (see `edge.yaml`). */
   def androidChallenge(clientId: String): Array[Byte] =
     sha256(s"$Domain\n$clientId".getBytes(StandardCharsets.UTF_8))
 
@@ -60,6 +74,17 @@ object AttestationService:
   private val MaxCertificateLength = 12 * 1024
 
   private val Platforms = Set("ios", "android")
+
+  /** How long a request under `report` waits for its attestation to be checked. */
+  private val ReportBound = 2.seconds
+
+  /** Why an app that could not attest says so (`attestation_unavailable`): a closed set, so that the metric can tell an old device from
+    * Apple's service being down, which "the app sent nothing" cannot. Under `enforce` such a request is still refused. */
+  val UnavailableReasons: Map[String, Kind] = Map(
+    "unsupported" -> Kind.DeclaredUnsupported,
+    "service_unavailable" -> Kind.DeclaredServiceUnavailable,
+    "not_configured" -> Kind.DeclaredNotConfigured,
+  )
 
   private val requests = Metric.counter("attestation_requests_total")
 
@@ -73,8 +98,8 @@ object AttestationService:
 
   /** What an Android app hands Play Integrity as its nonce, so that a verdict is for one request of one client by one DPoP key: the
     * client data hash, in the URL-safe base64 without padding that Play Integrity requires of a nonce. */
-  def integrityNonce(clientId: String, jkt: String, jti: String): String =
-    Base64.getUrlEncoder.withoutPadding.encodeToString(clientDataHash(clientId, jkt, jti))
+  def integrityNonce(clientId: String, jkt: String, jti: String, nonce: Option[String] = None): String =
+    Base64.getUrlEncoder.withoutPadding.encodeToString(clientDataHash(clientId, jkt, jti, nonce))
 
   private val MaxIntegrityTokenLength = 24 * 1024
 
@@ -88,35 +113,71 @@ object AttestationService:
         policy: AttestationPolicy,
         jkt: String,
         jti: String,
+        nonce: Option[String],
         evidence: AttestationEvidence,
     ): IO[AttestationFailure, Unit] =
       if policy.mode == AttestationMode.off then ZIO.unit
       else
         // A metric label is a closed set: what the app wrote is not one, and every value it could choose would be a series of its own.
         val platform = evidence.platform.filter(Platforms.contains).getOrElse("none")
-        val checked = run(clientId, policy, jkt, jti, evidence).tapBoth(
-          failure => count(clientId, platform, policy.mode, failure.kind.toString),
-          _ => count(clientId, platform, policy.mode, "verified"),
-        )
-        policy.mode match
-          case AttestationMode.enforce => checked
-          // A report is only ever a report: a refusal is counted and logged above, and a fault of the store the attestation needs
-          // (a defect here, a failed request under `enforce`, which the caller can retry) is no reason to fail the request either.
-          case _ =>
-            checked.catchAll(_ => ZIO.unit).catchAllDefect: error =>
-              count(clientId, platform, policy.mode, "Unavailable") *> ZIO.logWarning(s"attestation of client '$clientId' could not be checked: $error")
+        // A request under `report` that was given up on (see below) is counted as `Timeout` and not again by the check that was left behind.
+        Ref.make(false).flatMap: gaveUp =>
+          def counted(result: String) = gaveUp.get.flatMap(given_ => count(clientId, platform, policy.mode, result).unless(given_))
+          val checked = run(clientId, policy, jkt, jti, nonce, evidence).tapBoth(failure => counted(failure.kind.toString), _ => counted("verified"))
+          decide(clientId, policy, platform, checked, gaveUp)
+
+    private def decide(
+        clientId: String,
+        policy: AttestationPolicy,
+        platform: String,
+        checked: IO[AttestationFailure, Unit],
+        gaveUp: Ref[Boolean],
+    ): IO[AttestationFailure, Unit] =
+      policy.mode match
+        case AttestationMode.enforce => checked
+        // A report is only ever a report: a refusal is counted and logged above, and a fault of the store the attestation needs
+        // (a defect here, a failed request under `enforce`, which the caller can retry) is no reason to fail the request either.
+        case _ =>
+          val quietly = checked.catchAll(_ => ZIO.unit).catchAllDefect: error =>
+            count(clientId, platform, policy.mode, "Unavailable") *> ZIO.logWarning(s"attestation of client '$clientId' could not be checked: $error")
+          // A mode that promises to change nothing must not slow the sign-in either: the first Android request can wait for Google's
+          // revocation list, and a Play Integrity decode for Google. The caller waits for `ReportBound` at most; past it the check is
+          // given up (not waited for), the request goes on, and the outcome is counted as `Timeout`. Interrupting is safe for the list
+          // of Google's: its first fetch does not run in the request that asked for it (see `AttestationTrust.make`).
+          quietly.disconnect.timeout(ReportBound).flatMap:
+            case Some(_) => ZIO.unit
+            case None =>
+              gaveUp.set(true) *> count(clientId, platform, policy.mode, "Timeout") *>
+                ZIO.logWarning(s"attestation of client '$clientId' took longer than $ReportBound under report: the request goes on")
 
     private def run(
         clientId: String,
         policy: AttestationPolicy,
         jkt: String,
         jti: String,
+        nonce: Option[String],
+        evidence: AttestationEvidence,
+    ): IO[AttestationFailure, Unit] =
+      val sentMaterial = evidence.keyId.isDefined || evidence.attestationObject.isDefined || evidence.assertion.isDefined || evidence.chain.nonEmpty
+      evidence.unavailable.filter(_ => !sentMaterial) match
+        case Some(reason) =>
+          ZIO.fail(UnavailableReasons.get(reason).fold(malformed("attestation_unavailable is unsupported, service_unavailable or not_configured"))(
+            AttestationFailure(_, s"the app could not attest: $reason"),
+          ))
+        case None => attestationOf(clientId, policy, jkt, jti, nonce, evidence)
+
+    private def attestationOf(
+        clientId: String,
+        policy: AttestationPolicy,
+        jkt: String,
+        jti: String,
+        nonce: Option[String],
         evidence: AttestationEvidence,
     ): IO[AttestationFailure, Unit] =
       evidence.platform match
         case None => ZIO.fail(AttestationFailure(Kind.Absent, "the app sent no attestation"))
-        case Some("ios") => ios(clientId, policy, jkt, jti, evidence)
-        case Some("android") => android(clientId, policy, jkt, jti, evidence)
+        case Some("ios") => ios(clientId, policy, jkt, jti, nonce, evidence)
+        case Some("android") => android(clientId, policy, jkt, jti, nonce, evidence)
         case Some(_) => ZIO.fail(malformed("attestation_platform is ios or android"))
 
     private def ios(
@@ -124,6 +185,7 @@ object AttestationService:
         policy: AttestationPolicy,
         jkt: String,
         jti: String,
+        nonce: Option[String],
         evidence: AttestationEvidence,
     ): IO[AttestationFailure, Unit] =
       for
@@ -133,7 +195,7 @@ object AttestationService:
         keyBytes <- ZIO.fromEither(decode(keyId, MaxKeyIdLength))
         // One form for the key id however the app wrote it, so that the same key is the same row.
         key = Base64.getUrlEncoder.withoutPadding.encodeToString(keyBytes)
-        clientData = clientDataHash(clientId, jkt, jti)
+        clientData = clientDataHash(clientId, jkt, jti, nonce)
         now <- Clock.instant
         _ <- (evidence.attestationObject, evidence.assertion) match
           case (Some(_), Some(_)) => ZIO.fail(malformed("send an attestation or an assertion, not both"))
@@ -165,6 +227,7 @@ object AttestationService:
         policy: AttestationPolicy,
         jkt: String,
         jti: String,
+        nonce: Option[String],
         evidence: AttestationEvidence,
     ): IO[AttestationFailure, Unit] =
       for
@@ -185,7 +248,7 @@ object AttestationService:
             token <- ZIO.fromOption(evidence.integrityToken)
               .orElseFail(AttestationFailure(Kind.Absent, "attestation_integrity_token is required"))
             _ <- ZIO.fail(malformed("a value is larger than an integrity token is")).when(token.length > MaxIntegrityTokenLength)
-            _ <- integrity.verify(verified.app, token, integrityNonce(clientId, jkt, jti), now)
+            _ <- integrity.verify(verified.app, token, integrityNonce(clientId, jkt, jti, nonce), now)
           yield ()
       yield ()
 

@@ -41,12 +41,22 @@ private[attestation] object AttestationCrypto:
         .left.map(_ => malformed("a certificate of the chain does not parse"))
 
   /** Whether `chain` (leaf first) leads to one of `roots`, as it stood at `now`. The root itself may or may not be the last
-    * element: Android sends it, Apple does not, and a path is validated from the certificate below the anchor. Revocation is
-    * not asked of the JDK -- it would fetch a CRL from an address the app chose -- and is the caller's, by serial. */
-  def validate(chain: List[X509Certificate], roots: Set[X509Certificate], now: Instant): Either[AttestationFailure, Unit] =
+    * element: Android sends it, Apple does not, and a path is validated from the certificate below the anchor. A trailing
+    * self-signed certificate is the root when it carries the key of one of `roots`, whatever else it says: a device sends the copies
+    * of the root issued over the years (same key, other serial and validity), and a copy that has expired must not take the path
+    * down with it. Revocation is not asked of the JDK -- it would fetch a CRL from an address the app chose -- and is the caller's,
+    * by serial.
+    *
+    * `ignoreValidity` is for Android's factory-provisioned chains, whose attestation keys outlive their certificates (devices launched
+    * before 2021 carry expired ones, which Google says to keep trusting): the validity periods are then required only to agree with
+    * each other, that is to share a moment, and not to contain `now`. */
+  def validate(chain: List[X509Certificate], roots: Set[X509Certificate], now: Instant, ignoreValidity: Boolean = false): Either[AttestationFailure, Unit] =
     val untrusted = AttestationFailure(Kind.UntrustedChain, "the certificate chain does not lead to the platform's root")
-    val path = chain.takeWhile(certificate => !roots.exists(_.equals(certificate)))
+    val path = withoutRoot(chain, roots)
     if path.isEmpty || roots.isEmpty then Left(untrusted)
+    else if ignoreValidity then
+      val from = path.map(_.getNotBefore).maxBy(_.getTime)
+      Either.cond(path.forall(!_.getNotAfter.before(from)) && linked(path, roots, from), (), untrusted)
     else
       Try:
         val factory = CertificateFactory.getInstance("X.509")
@@ -55,6 +65,30 @@ private[attestation] object AttestationCrypto:
         parameters.setDate(Date.from(now))
         CertPathValidator.getInstance("PKIX").validate(factory.generateCertPath(path.asJava), parameters)
       .toEither.left.map(_ => untrusted).map(_ => ())
+
+  /** Whether each certificate of `path` was issued by the next one, by name and by signature, the last by one of `roots`, and all were
+    * valid at `at`. What the JDK's path validation adds is left out on purpose: the certificates of the older factory-provisioned chains
+    * (Pixel 2, 2017) are intermediates that are not marked as authorities and carry no `keyCertSign`, which the JDK refuses and which
+    * real devices send. Nothing here lets a key sign that did not: a certificate that does not chain by signature to the root is not
+    * accepted, and the one place an attacker's key could be inserted -- below the attested key -- is closed by the position of the key
+    * description (`AndroidKeyAttestation.extensionsInPlace`). */
+  private def linked(path: List[X509Certificate], roots: Set[X509Certificate], at: Date): Boolean =
+    def signedBy(child: X509Certificate, parent: X509Certificate): Boolean =
+      child.getIssuerX500Principal == parent.getSubjectX500Principal && Try(child.verify(parent.getPublicKey)).isSuccess
+    path.forall(certificate => Try(certificate.checkValidity(at)).isSuccess) &&
+      path.zip(path.tail).forall(signedBy) &&
+      roots.exists(root => signedBy(path.last, root))
+
+  /** `chain` without its last certificate when that is a self-signed copy of one of `roots`. */
+  def withoutRoot(chain: List[X509Certificate], roots: Set[X509Certificate]): List[X509Certificate] =
+    chain.lastOption match
+      case Some(last) if last.getSubjectX500Principal == last.getIssuerX500Principal && roots.exists(_.getPublicKey == last.getPublicKey) =>
+        chain.init
+      case _ => chain
+
+  /** The root of `roots` that `chain` is issued under, by name; the path validation is what proves it. */
+  def anchorOf(chain: List[X509Certificate], roots: Set[X509Certificate]): Option[X509Certificate] =
+    withoutRoot(chain, roots).lastOption.flatMap(last => roots.find(_.getSubjectX500Principal == last.getIssuerX500Principal))
 
   /** The value of an extension of the certificate, as the DER of what it holds. */
   def extensionValue(certificate: X509Certificate, oid: String): Option[Array[Byte]] =

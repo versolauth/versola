@@ -26,6 +26,13 @@ private[attestation] object AndroidKeyAttestation:
 
   private val KeyDescriptionExtension = "1.3.6.1.4.1.11129.2.1.17"
 
+  /** The extension of a remotely provisioned (RKP) chain's intermediate, which says that the certificate below it is the key attestation. */
+  private val ProvisioningInfoExtension = "1.3.6.1.4.1.11129.2.1.30"
+
+  /** The subject serial number of the root that factory-provisioned attestation keys chain to. Google: keep trusting chains to it
+    * "regardless of certificate validity period", since devices launched before 2021 carry expired attestation certificates. */
+  private val FactoryRootSerialNumber = "f92009e853b6b045"
+
   /** `KeyDescription` members by position: the security levels are `Software` (0), `TrustedEnvironment` (1) and `StrongBox` (2). */
   private val AttestationSecurityLevel = 1
   private val KeyMintSecurityLevel = 3
@@ -61,7 +68,8 @@ private[attestation] object AndroidKeyAttestation:
   ): Either[AttestationFailure, Verified] =
     for
       certificates <- certificates(chain)
-      _ <- validate(certificates, roots, now)
+      _ <- extensionsInPlace(certificates)
+      _ <- validate(certificates, roots, now, ignoreValidity = factoryProvisioned(certificates, roots))
       _ <- Either.cond(
         !certificates.exists(certificate => revoked(certificate.getSerialNumber)),
         (),
@@ -101,6 +109,31 @@ private[attestation] object AndroidKeyAttestation:
       application <- applicationId(software).orElse(applicationId(hardware)).toRight(malformed("the attestation names no app"))
       app <- accepted(application, apps)
     yield Verified(strongBox = enumerated(description, AttestationSecurityLevel).contains(2), app = app)
+
+  /** Google: "only the first occurrence of the extension in the chain can be trusted. Any further instances have not been issued by the
+    * secure hardware and might have been issued by an attacker extending the chain". The first one, counted from the root, is the leaf
+    * when the chain has one only, and a chain with a second is refused rather than guessed at: an app that holds an attested key able
+    * to sign could issue a leaf for a software key, with a description of its choosing, under it. A provisioning-info extension (RKP)
+    * says that the certificate right below it is the one that carries the key description, which is the leaf's place.
+    *
+    * A chain made with an attest key the app holds (the description one certificate up) is refused by this, on purpose: it is the shape
+    * of the forgery, and the SDK does not use attest keys.
+    */
+  private def extensionsInPlace(certificates: List[X509Certificate]): Either[AttestationFailure, Unit] =
+    val descriptions = certificates.indices.filter(index => certificates(index).getExtensionValue(KeyDescriptionExtension) != null)
+    val provisioning = certificates.indices.filter(index => certificates(index).getExtensionValue(ProvisioningInfoExtension) != null)
+    if descriptions.isEmpty then Left(malformed("the leaf certificate has no key description"))
+    else if descriptions != Seq(0) then Left(malformed("the key description is not in the leaf certificate alone"))
+    else if provisioning.exists(_ != 1) then Left(malformed("the provisioning information is not right above the leaf certificate"))
+    else Right(())
+
+  /** A chain made at the factory (no provisioning information) to Google's older root: its certificates may have expired. */
+  private def factoryProvisioned(certificates: List[X509Certificate], roots: Set[X509Certificate]): Boolean =
+    !certificates.exists(_.getExtensionValue(ProvisioningInfoExtension) != null) &&
+      anchorOf(certificates, roots).exists: root =>
+        org.bouncycastle.asn1.x500.X500Name.getInstance(root.getSubjectX500Principal.getEncoded)
+          .getRDNs(org.bouncycastle.asn1.x500.style.BCStyle.SERIALNUMBER)
+          .exists(rdn => rdn.getFirst.getValue.toString == FactoryRootSerialNumber)
 
   private def list(description: ASN1Sequence, index: Int): Either[AttestationFailure, ASN1Sequence] =
     Try(ASN1Sequence.getInstance(description.getObjectAt(index))).toEither.left.map(_ => malformed("the key description has no authorization list"))

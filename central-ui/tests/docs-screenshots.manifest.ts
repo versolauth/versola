@@ -796,7 +796,8 @@ const consoleShots: DocsShot[] = [
     before: async page => {
       await openClient('storefront-mobile')(page);
       const card = page.getByRole('region', { name: 'App attestation' });
-      await expect(card).toContainText('com.example.storefront · 2 certificates');
+      await expect(card).toContainText('com.example.storefront');
+      await expect(card.getByText('abababab…abababab')).toBeVisible();
       await card.scrollIntoViewIfNeeded();
     },
   },
