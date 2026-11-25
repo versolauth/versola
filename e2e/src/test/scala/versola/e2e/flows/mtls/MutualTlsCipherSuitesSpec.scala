@@ -28,6 +28,8 @@ import scala.util.Using
   */
 object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
 
+  // Not `E2ESpec`: that bootstrap registers clients and users in the stack first, and nothing here needs a registered client.
+
   override val bootstrap: ZLayer[Any, Any, E2EConfig & Client] = E2EConfig.live ++ Client.default
 
   /** RFC 9325 §4.2: the TLS 1.2 suites it recommends. */
@@ -65,18 +67,22 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
     */
   private final case class Target(host: String, port: Int, trusted: String, diagnosticsUrl: String)
 
-  private def target(config: E2EConfig, listener: Listener): Task[Target] =
+  private def resolve(config: E2EConfig, listener: Listener): Task[Target] =
     val (url, trusted, diagnostics) = listener match
       case Listener.Auth => (config.authMutualTlsUrl, config.authMutualTlsTrustedCertificates, config.authDiagnosticsUrl)
       case Listener.Central => (config.centralMutualTlsUrl, config.centralMutualTlsServerCertificate, config.centralDiagnosticsUrl)
       case Listener.Edge => (config.edgeMutualTlsUrl, config.edgeMutualTlsTrustedCertificates, config.edgeDiagnosticsUrl)
     ZIO.attempt:
       val uri = URI.create(url)
+      // Checked here, so that a URL without a host or port is not read later as a suite this JVM cannot offer.
+      if uri.getHost == null || uri.getPort < 0 then
+        throw IllegalArgumentException(s"the ${listener.label} mutual-TLS URL '$url' names no host or no port")
       Target(host = uri.getHost, port = uri.getPort, trusted = trusted, diagnosticsUrl = diagnostics)
 
   /** Trusts what `trusted` holds, and notes that the server's certificate reached it. The certificate follows the server's
     * choice of suite, so seeing it means the suite was agreed, whichever alert the server then sends for the missing client
-    * certificate (OpenSSL and the JDK differ there).
+    * certificate (OpenSSL and the JDK differ there). It is noted before the check, so a wrong trust file still counts as an
+    * agreed suite: what is asked here is the suite, not the chain.
     */
   private final class NotingTrustManager(delegate: X509ExtendedTrustManager, certificateSeen: AtomicBoolean) extends X509ExtendedTrustManager:
     def checkServerTrusted(chain: Array[X509Certificate], authType: String, socket: Socket): Unit =
@@ -107,6 +113,7 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
       val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm)
       factory.init(store)
       val managers = factory.getTrustManagers.collect { case manager: X509ExtendedTrustManager => NotingTrustManager(manager, certificateSeen) }
+      if managers.isEmpty then throw IllegalStateException("the JDK's default trust manager factory gave no X509ExtendedTrustManager")
       val context = SSLContext.getInstance("TLSv1.2")
       context.init(null, managers.toArray[TrustManager], null)
       context
@@ -132,22 +139,25 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
         tls <- socket match
           case tls: SSLSocket => ZIO.succeed(tls)
           case other => ZIO.fail(IllegalStateException(s"expected an SSLSocket, got ${other.getClass.getName}"))
-        result <- ZIO.attemptBlocking:
-          tls.setEnabledProtocols(Array("TLSv1.2"))
-          tls.setEnabledCipherSuites(Array(suite))
-          tls.setSoTimeout(10000)
-          tls.connect(InetSocketAddress(target.host, target.port), 10000)
-          tls.startHandshake()
-        .either
-        classified <- result match
-          case _ if certificateSeen.get => ZIO.succeed(Probe.Agreed)
-          case Right(_) => ZIO.succeed(Probe.Agreed)
-          case Left(error: SSLHandshakeException) if Option(error.getMessage).exists(_.contains("Received fatal alert: handshake_failure")) =>
-            ZIO.succeed(Probe.Refused)
-          case Left(_: IllegalArgumentException) => ZIO.succeed(Probe.NotOffered)
-          case Left(error: SSLHandshakeException) if Option(error.getMessage).exists(_.contains("No appropriate protocol")) =>
-            ZIO.succeed(Probe.NotOffered)
-          case Left(error) => ZIO.fail(error)
+        // Only this call can mean "this JVM does not know the suite"; any other IllegalArgumentException is a wrong address.
+        offered <- ZIO.attemptBlocking(tls.setEnabledCipherSuites(Array(suite))).as(true).catchSome:
+          case _: IllegalArgumentException => ZIO.succeed(false)
+        classified <-
+          if !offered then ZIO.succeed(Probe.NotOffered)
+          else
+            ZIO.attemptBlocking:
+              tls.setEnabledProtocols(Array("TLSv1.2"))
+              tls.setSoTimeout(10000)
+              tls.connect(InetSocketAddress(target.host, target.port), 10000)
+              tls.startHandshake()
+            .either.flatMap:
+              case _ if certificateSeen.get => ZIO.succeed(Probe.Agreed)
+              case Right(_) => ZIO.succeed(Probe.Agreed)
+              case Left(error: SSLHandshakeException) if Option(error.getMessage).exists(_.contains("Received fatal alert: handshake_failure")) =>
+                ZIO.succeed(Probe.Refused)
+              case Left(error: SSLHandshakeException) if Option(error.getMessage).exists(_.contains("No appropriate protocol")) =>
+                ZIO.succeed(Probe.NotOffered)
+              case Left(error) => ZIO.fail(error)
       yield classified
 
   private def metrics(target: Target, client: Client): Task[(Status, String)] =
@@ -166,21 +176,21 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
         test(s"a client offering only $cbcSuite is refused with handshake_failure") {
           for
             config <- ZIO.service[E2EConfig]
-            target <- target(config, listener)
+            target <- resolve(config, listener)
             outcome <- probe(target, cbcSuite)
           yield assertTrue(outcome == Probe.Refused)
             .label(
-              s"$outcome: Refused is the only answer that shows the listener turned CBC down ($cbcSuite NotOffered means this JVM cannot offer it)",
+              s"${listener.label} ${target.host}:${target.port}, $cbcSuite: expected Refused, got $outcome (Refused is the only answer that shows the listener turned CBC down; NotOffered means this JVM cannot offer it)",
             )
         },
         test(s"a client offering only $gcmSuite gets past the suite negotiation") {
           for
             config <- ZIO.service[E2EConfig]
-            target <- target(config, listener)
+            target <- resolve(config, listener)
             outcome <- probe(target, gcmSuite)
           yield assertTrue(outcome == Probe.Agreed)
             .label(
-              s"expected the GCM suite to be taken (it then fails on the missing client certificate, with an alert that is not handshake_failure), got $outcome",
+              s"${listener.label} ${target.host}:${target.port}, $gcmSuite: expected the suite to be taken (the server then asks for the client certificate), got $outcome",
             )
         },
         // The static-RSA suites (TLS_RSA_*) are in Netty's default list and out of RFC 9325 §4.2; the JDK disables them by
@@ -188,21 +198,23 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
         test("every TLS 1.2 suite this JVM supports is refused or one of the four of RFC 9325 §4.2") {
           for
             config <- ZIO.service[E2EConfig]
-            target <- target(config, listener)
+            target <- resolve(config, listener)
             suites <- clientSuites(target.trusted)
             outcomes <- ZIO.foreach(suites)(suite => probe(target, suite).map(suite -> _))
             agreed = outcomes.collect { case (suite, Probe.Agreed) => suite }
           yield assertTrue(outcomes.contains(cbcSuite -> Probe.Refused), agreed.contains(gcmSuite))
-            .label(s"the control: this JVM offered the CBC suite and the listener refused it, and took the GCM one; outcomes: $outcomes") &&
+            .label(
+              s"${listener.label} ${target.host}:${target.port}: expected the control to hold (the CBC suite offered and refused, the GCM one taken), outcomes: $outcomes",
+            ) &&
             assertTrue(agreed.toSet.subsetOf(recommended))
               .label(
-                s"suites the listener agreed to: ${agreed.mkString(", ")}; the ones outside RFC 9325 §4.2: ${agreed.filterNot(recommended).mkString(", ")}",
+                s"${listener.label} ${target.host}:${target.port} agreed to ${agreed.mkString(", ")}; outside RFC 9325 §4.2: ${agreed.filterNot(recommended).mkString(", ")}",
               )
         },
         test("its /metrics says the policy is in force: tls_cbc_refused 1") {
           for
             config <- ZIO.service[E2EConfig]
-            target <- target(config, listener)
+            target <- resolve(config, listener)
             client <- ZIO.service[Client]
             (status, body) <- metrics(target, client)
           yield assertTrue(status == Status.Ok)
