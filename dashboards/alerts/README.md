@@ -123,3 +123,26 @@ A renewal that never reaches `central` (an edge that cannot connect to it) is no
 `CertificateRenewalOverdue` are what show it. The listener gauges are set once, when a service starts: they are the end of the certificate it serves now, so a
 renewed file counts only after the restart. Certificates that an edge generates for an enrolled client (`enrollEdgeClientCertificate`) are not tracked: `central`
 stores only their last serial, not their end.
+
+## `versola-attestation.rules.yaml`
+
+The app attestation of native apps, served by `edge` (#423, #1042): the same format, loaded the same way. The rules group by `namespace`
+and, where the thing is per pod (the revocation list), by `pod`, the label the scrape copies from the pod. The thresholds are placeholders
+until the release checks (#1019) have numbers from real devices. The board `versola`, row "edge — App attestation", draws each of these signals.
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `AttestationRevocationListStale` | a pod that verifies Android attestations has never fetched Google's list of revoked certificates, or fetched it more than two of its own refresh intervals ago (a pod with the list switched off publishes no interval and is left out) | 15m | warning |
+| `AttestationRefusalsUnderEnforceUp` | under `enforce`, a client's refusals are above 5 % of its sign-ins and more than three times its own level of the last day (a client with no enforce traffic a day ago has no baseline) | 1h | warning |
+| `AttestationPlayIntegrityFailing` | calls to Google's `decodeIntegrityToken` end as `error` or `quota` (a spent quota, a failing credential) | 5m | critical |
+
+The rules have unit tests with synthetic faults (a list that stops refreshing, a pod that never fetched it, a list switched off, refusals that
+jump to twenty times the level of the last day, a steady one percent, refusals under `report`, a spent quota). They are run with `promtool`,
+which is not in the repository; the official image carries it:
+
+```bash
+docker run --rm --entrypoint promtool -v "$PWD/dashboards/alerts":/a -w /a prom/prometheus:latest check rules versola-attestation.rules.yaml
+docker run --rm --entrypoint promtool -v "$PWD/dashboards/alerts":/a -w /a prom/prometheus:latest test rules tests/versola-attestation.rules.test.yaml
+```
+
+The file passes `promtool check rules` (3 rules) and the 9 cases of the test file.

@@ -4,6 +4,19 @@ import com.nimbusds.jose.crypto.ECDSASigner
 import com.nimbusds.jose.jwk.{Curve, ECKey}
 import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import versola.edge.attestation.{
+  AttestationEvidence,
+  AttestationFailure,
+  AttestationMode,
+  AttestationFixtures,
+  AttestationPolicy,
+  AttestationService,
+  AttestationTrust,
+  AttestedKeyRepository,
+  AndroidApp,
+  IosApps,
+  IosEnvironment,
+}
 import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard}
 import versola.edge.model.{ApplicationType, AuthorizationPreset, ClientCredential, ClientId, EdgeId, OAuthClient, PresetId}
 import versola.edge.{EdgeConfig, OAuthClientService}
@@ -40,6 +53,7 @@ object NativeServiceSpec extends ZIOSpecDefault:
       val generator = java.security.KeyPairGenerator.getInstance("EC").nn
       generator.initialize(Curve.P_256.toECParameterSpec)
       generator.generateKeyPair().nn
+    val keyPair: java.security.KeyPair = pair
     private val jwk = ECKey.Builder(Curve.P_256, pair.getPublic.asInstanceOf[ECPublicKey]).build()
     val jkt: String = jwk.computeThumbprint().toString
 
@@ -135,12 +149,18 @@ object NativeServiceSpec extends ZIOSpecDefault:
     case "token" => json(Status.Ok, """{"access_token":"at","token_type":"DPoP","expires_in":3600,"refresh_token":"rt"}""")
     case _ => NativeAuthClient.Relayed(Status.Ok, Headers.empty, Chunk.empty)
 
+  /** For every client whose policy is `off`, which is every client of the specs that are not about attestation: it is never asked. */
+  private val unreachableAttestation: AttestationService = new AttestationService:
+    def verify(clientId: String, policy: AttestationPolicy, jkt: String, jti: String, nonce: Option[String], evidence: AttestationEvidence) =
+      ZIO.die(IllegalStateException("attestation was consulted for a client whose policy is off"))
+
   private final case class Harness(service: NativeService, calls: Ref[List[Call]], answer: Ref[String => NativeAuthClient.Relayed])
 
   private def harness(
       clients: List[OAuthClient] = List(nativeClient, webClient),
       native: Boolean = true,
       requireNonce: Boolean = false,
+      attestation: AttestationService = unreachableAttestation,
   ) =
     for
       calls <- Ref.make(List.empty[Call])
@@ -166,6 +186,7 @@ object NativeServiceSpec extends ZIOSpecDefault:
         DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries),
         secureRandom,
         securityService,
+        attestation,
       )
     yield Harness(service, calls, answer)
 
@@ -520,5 +541,168 @@ object NativeServiceSpec extends ZIOSpecDefault:
     },
   )
 
-  def spec = suite("NativeService")(startSuite, completeSuite, refreshSuite)
+  private type Asked = (String, AttestationPolicy, String, String, AttestationEvidence)
+
+  /** The attestation service as the policy of a client sees it: records what it was asked, and answers as the test says. */
+  private final class RecordingAttestation(val asked: Ref[List[Asked]], answer: Option[AttestationFailure]) extends AttestationService:
+    def verify(clientId: String, policy: AttestationPolicy, jkt: String, jti: String, nonce: Option[String], evidence: AttestationEvidence) =
+      asked.update(_ :+ ((clientId, policy, jkt, jti, evidence))) *> answer.fold(ZIO.unit)(ZIO.fail(_))
+
+  private def recording(answer: Option[AttestationFailure] = None): UIO[RecordingAttestation] =
+    Ref.make(List.empty[Asked]).map(RecordingAttestation(_, answer))
+
+  private val attestedPolicy = AttestationPolicy(
+    mode = AttestationMode.enforce,
+    ios = Some(IosApps(Set("ABCDE12345.com.example.app"), IosEnvironment.production)),
+    android = Nil,
+  )
+
+  private val attestedClient = nativeClient.copy(attestation = attestedPolicy)
+
+  private val attestationSuite = suite("start: app attestation (#423)")(
+    test("a client whose policy asks for attestation hands what the app sent, and the proof's key and jti, to the service") {
+      val device = DeviceKey()
+      val path = s"/native/start/$NativeClientId"
+      val form = Form(
+        List(
+          "attestation_platform" -> "android",
+          "attestation_key_id" -> "key",
+          "attestation_object" -> "object",
+          "attestation_assertion" -> "assertion",
+          "attestation_chain" -> "leaf",
+          "attestation_chain" -> "intermediate",
+          "scope" -> "openid",
+        ).map(FormField.simpleField(_, _))*,
+      )
+      val proof = device.proof(s"$EdgeUrl$path")
+      val http = Request.post(URL.decode(s"$EdgeUrl$path").toOption.get, Body.fromURLEncodedForm(form))
+        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+        .addHeader(Header.Custom("DPoP", proof))
+      for
+        attestation <- recording()
+        h <- harness(clients = List(attestedClient), attestation = attestation)
+        response <- h.service.start(NativeClientId, http)
+        asked <- attestation.asked.get
+        calls <- h.calls.get
+        (clientId, policy, jkt, jti, evidence) = asked.head
+      yield assertTrue(
+        response.status == Status.Ok,
+        asked.size == 1,
+        clientId == NativeClientId,
+        policy == attestedPolicy,
+        jkt == device.jkt,
+        jti.nonEmpty,
+        evidence == AttestationEvidence(Some("android"), Some("key"), Some("object"), Some("assertion"), List("leaf", "intermediate")),
+        // The attestation fields are edge's: none reaches auth.
+        !calls.head.form.keys.exists(_.startsWith("attestation_")),
+        calls.map(_.endpoint) == List("par"),
+      )
+    },
+    test("a refusal is an invalid_client_attestation carrying a code, and nothing is pushed to auth") {
+      val device = DeviceKey()
+      for
+        attestation <- recording(Some(AttestationFailure(AttestationFailure.Kind.Absent, "the app sent no attestation")))
+        h <- harness(clients = List(attestedClient), attestation = attestation)
+        error <- failure(h.service.start(NativeClientId, startRequest(device)))
+        calls <- h.calls.get
+      yield assertTrue(
+        error == Some(NativeError.InvalidClientAttestation("absent")),
+        calls.isEmpty,
+      )
+    },
+    test("the proof is spent by a start that attestation refused, so the same request cannot be tried again") {
+      val device = DeviceKey()
+      val path = s"/native/start/$NativeClientId"
+      val proof = device.proof(s"$EdgeUrl$path")
+      for
+        attestation <- recording(Some(AttestationFailure(AttestationFailure.Kind.Absent, "no")))
+        h <- harness(clients = List(attestedClient), attestation = attestation)
+        _ <- failure(h.service.start(NativeClientId, request(path, Map.empty, Some(proof))))
+        second <- failure(h.service.start(NativeClientId, request(path, Map.empty, Some(proof))))
+      yield assertTrue(second.exists(_.isInstanceOf[NativeError.InvalidDpopProof]))
+    },
+    test("a policy that only reports does not refuse a request for how the attestation fields were written") {
+      val device = DeviceKey()
+      val path = s"/native/start/$NativeClientId"
+      val form = Form(List("attestation_platform" -> "ios", "attestation_platform" -> "android").map(FormField.simpleField(_, _))*)
+      val http = Request.post(URL.decode(s"$EdgeUrl$path").toOption.get, Body.fromURLEncodedForm(form))
+        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+        .addHeader(Header.Custom("DPoP", device.proof(s"$EdgeUrl$path")))
+      for
+        attestation <- recording()
+        h <- harness(clients = List(attestedClient.copy(attestation = attestedPolicy.copy(mode = AttestationMode.report))), attestation = attestation)
+        response <- h.service.start(NativeClientId, http)
+        asked <- attestation.asked.get
+      yield assertTrue(response.status == Status.Ok, asked.size == 1)
+    },
+    test("a client with no policy is not looked at, and its form is read as it always was") {
+      val device = DeviceKey()
+      for
+        h <- harness()
+        response <- h.service.start(
+          NativeClientId,
+          startRequest(device, Map("attestation_chain" -> "x", "attestation_platform" -> "ios")),
+        )
+      yield assertTrue(response.status == Status.Ok)
+    },
+  )
+
+  /** The path the feature exists for, with nothing stubbed on the way to the answer: the proof of a device key is verified, the
+    * attestation chain the Keystore made for that key is read out of the form and checked against the client's policy by the real
+    * service, and only then is auth asked. What it does not have is a chain a device made. */
+  private val acceptedSuite =
+    import AttestationFixtures.{AndroidOptions, androidChain, google, hex, sha256, utf8}
+
+    val signing = sha256(utf8("signing certificate"))
+    val build = AndroidApp(packageName = "com.example.app", certificateDigests = Set(hex(signing)))
+    val androidClient = nativeClient.copy(attestation = AttestationPolicy(AttestationMode.enforce, ios = None, android = List(build)))
+    val google_ = google()
+    val noKeys = new AttestedKeyRepository:
+      def register(client: String, keyId: String, publicKey: Array[Byte], environment: IosEnvironment, at: Instant) = ZIO.dieMessage("iOS only")
+      def find(client: String, keyId: String) = ZIO.dieMessage("iOS only")
+      def advance(client: String, keyId: String, counter: Long, at: Instant) = ZIO.dieMessage("iOS only")
+    val real: AttestationService =
+      AttestationService.Impl(AttestationTrust.fixed(apple = Set.empty, android = google_.roots), noKeys, versola.edge.attestation.PlayIntegrity.unconfigured)
+
+    def startWith(device: DeviceKey, chain: List[Array[Byte]]) =
+      val path = s"/native/start/$NativeClientId"
+      val form = Form(
+        (List("attestation_platform" -> "android", "scope" -> "openid") ++ chain.map(der => "attestation_chain" -> java.util.Base64.getEncoder.encodeToString(der)))
+          .map(FormField.simpleField(_, _))*,
+      )
+      Request.post(URL.decode(s"$EdgeUrl$path").toOption.get, Body.fromURLEncodedForm(form))
+        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+        .addHeader(Header.Custom("DPoP", device.proof(s"$EdgeUrl$path")))
+
+    suite("start: an attestation that is accepted (#423)")(
+      test("a chain the Keystore made for the key that signs the proof, for an accepted build, starts the sign-in") {
+        val device = DeviceKey()
+        val chain = androidChain(google_, device.keyPair, AttestationService.androidChallenge(NativeClientId), AndroidOptions())
+        for
+          h <- harness(clients = List(androidClient), attestation = real)
+          response <- h.service.start(NativeClientId, startWith(device, chain))
+          calls <- h.calls.get
+        yield assertTrue(response.status == Status.Ok, calls.map(_.endpoint) == List("par"))
+      },
+      test("the same chain under another key's proof is refused, and auth is not asked") {
+        val device = DeviceKey()
+        val someoneElse = DeviceKey()
+        val chain = androidChain(google_, device.keyPair, AttestationService.androidChallenge(NativeClientId), AndroidOptions())
+        for
+          h <- harness(clients = List(androidClient), attestation = real)
+          error <- failure(h.service.start(NativeClientId, startWith(someoneElse, chain)))
+          calls <- h.calls.get
+        yield assertTrue(error == Some(NativeError.InvalidClientAttestation("mismatch")), calls.isEmpty)
+      },
+      test("a chain for a build the client does not accept is refused with its code, not with a sentence an app has to read") {
+        val device = DeviceKey()
+        val chain = androidChain(google_, device.keyPair, AttestationService.androidChallenge(NativeClientId), AndroidOptions(packages = List("com.attacker.app")))
+        for
+          h <- harness(clients = List(androidClient), attestation = real)
+          error <- failure(h.service.start(NativeClientId, startWith(device, chain)))
+        yield assertTrue(error == Some(NativeError.InvalidClientAttestation("app_not_accepted")))
+      },
+    )
+
+  def spec = suite("NativeService")(startSuite, attestationSuite, acceptedSuite, completeSuite, refreshSuite)
     .provideShared(SecureRandom.live >+> SecurityService.live) @@ TestAspect.withLiveClock

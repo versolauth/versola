@@ -7880,7 +7880,7 @@
     {
       "id": 149,
       "type": "row",
-      "title": "edge — Token revocation",
+      "title": "edge — App attestation",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -7888,6 +7888,409 @@
         "w": 24,
         "x": 0,
         "y": 316
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Attestation — share not verified under report, by client and platform (last 24 h)",
+      "description": "Of the sign-ins of a client in report mode, the share that did not verify, split by why, over the last 24 hours. The decision it serves: below the threshold you agreed for several days, switch the client to enforce. One reason that dominates (UntrustedChain, AppNotAccepted, Absent) is to be fixed first, in the app or in the policy. Empty means no client is in report mode.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (client, platform, result) (increase(attestation_requests_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", mode=\"report\", result!=\"verified\"}[24h])) / on (client, platform) group_left sum by (client, platform) (increase(attestation_requests_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", mode=\"report\"}[24h]))",
+          "legendFormat": "{{client}} {{platform}} {{result}}"
+        }
+      ],
+      "id": 150,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 317
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Attestation — refusals under enforce / s, by client and reason",
+      "description": "Sign-ins turned away under enforce. A step right after an app release is a build or a policy that does not match: a new signing certificate digest, another App ID. Correct the policy, or put the client back to report while you do. Empty is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (client, result) (rate(attestation_requests_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", mode=\"enforce\", result!=\"verified\"}[$__rate_interval]))",
+          "legendFormat": "{{client}} {{result}}"
+        }
+      ],
+      "id": 151,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 317
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Attestation — revocation list age",
+      "description": "Seconds since each edge pod last fetched Google's list of revoked Android attestation certificates, against two refresh intervals. A pod above the second line is not refreshing: check the edge's outbound access to android.googleapis.com. A pod missing here has never fetched the list (the list is first fetched when an Android attestation needs it).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - min by (pod) (attestation_revocation_list_refreshed_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "{{pod}} age"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "2 * max(attestation_revocation_refresh_interval_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "two refresh intervals"
+        }
+      ],
+      "id": 152,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 325
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Attestation — revocation list entries",
+      "description": "How many certificates the list in force names. A pod that stays at 0 while the age above is fresh is reading a list with nothing on it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (pod) (attestation_revocation_list_entries{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 153,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 325
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Attestation — verification latency by platform",
+      "description": "How long a verification takes, also under report, where it can make a sign-in wait. A p99 in seconds points at Google (the revocation list, or a Play Integrity decode), not at the app.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, platform) (rate(attestation_verification_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
+          "legendFormat": "{{platform}} p50"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, platform) (rate(attestation_verification_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
+          "legendFormat": "{{platform}} p99"
+        }
+      ],
+      "id": 154,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 333
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Attestation — new App Attest keys per day, by client",
+      "description": "Keys attested for the first time in the last 24 hours. Growth with no app release or campaign behind it is a farm of devices or a mass reinstall: look at the limits per device (#1040).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (client) (increase(attestation_keys_registered_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[1d]))",
+          "legendFormat": "{{client}}"
+        }
+      ],
+      "id": 155,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 333
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Attestation — Play Integrity calls by result",
+      "description": "Calls to Google's decode endpoint: ok; refused (Google could not decode the token, the app's); quota (the Cloud project's quota is spent, the default is 10,000 a day, and every sign-in that needs a verdict fails with it under enforce); error (the service account's credential, the network, Google). quota or error is the edge's, not the app's.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(attestation_play_integrity_calls_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "id": 156,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 341
+      }
+    },
+    {
+      "id": 157,
+      "type": "row",
+      "title": "edge — Token revocation",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 349
       }
     },
     {
@@ -7933,12 +8336,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 150,
+      "id": 158,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 317
+        "y": 350
       }
     },
     {
@@ -8001,12 +8404,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 151,
+      "id": 159,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 317
+        "y": 350
       }
     },
     {
@@ -8068,12 +8471,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 152,
+      "id": 160,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 325
+        "y": 358
       }
     },
     {
@@ -8128,16 +8531,16 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 153,
+      "id": 161,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 325
+        "y": 358
       }
     },
     {
-      "id": 154,
+      "id": 162,
       "type": "row",
       "title": "edge — Rate limits",
       "collapsed": false,
@@ -8146,7 +8549,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 333
+        "y": 366
       }
     },
     {
@@ -8193,12 +8596,12 @@
           "legendFormat": "{{policy}}"
         }
       ],
-      "id": 155,
+      "id": 163,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 334
+        "y": 367
       }
     },
     {
@@ -8245,12 +8648,12 @@
           "legendFormat": "{{policy}}"
         }
       ],
-      "id": 156,
+      "id": 164,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 334
+        "y": 367
       }
     },
     {
@@ -8314,12 +8717,12 @@
           "legendFormat": "{{policy}}"
         }
       ],
-      "id": 157,
+      "id": 165,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 342
+        "y": 375
       }
     },
     {
@@ -8382,12 +8785,12 @@
           "legendFormat": "{{policy}}"
         }
       ],
-      "id": 158,
+      "id": 166,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 342
+        "y": 375
       }
     },
     {
@@ -8434,12 +8837,12 @@
           "legendFormat": "{{policy}}"
         }
       ],
-      "id": 159,
+      "id": 167,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 350
+        "y": 383
       }
     },
     {
@@ -8495,12 +8898,12 @@
           "legendFormat": "pods serving traffic"
         }
       ],
-      "id": 160,
+      "id": 168,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 350
+        "y": 383
       }
     },
     {
@@ -8547,16 +8950,16 @@
           "legendFormat": "{{source}}"
         }
       ],
-      "id": 161,
+      "id": 169,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 358
+        "y": 391
       }
     },
     {
-      "id": 162,
+      "id": 170,
       "type": "row",
       "title": "edge — Overload protection",
       "collapsed": true,
@@ -8623,12 +9026,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 163,
+          "id": 171,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 367
+            "y": 400
           }
         },
         {
@@ -8675,12 +9078,12 @@
               "legendFormat": "{{tier}} ({{mode}})"
             }
           ],
-          "id": 164,
+          "id": 172,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 367
+            "y": 400
           }
         },
         {
@@ -8748,12 +9151,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 165,
+          "id": 173,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 375
+            "y": 408
           }
         },
         {
@@ -8809,12 +9212,12 @@
               "legendFormat": "{{pod}} executor lag"
             }
           ],
-          "id": 166,
+          "id": 174,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 375
+            "y": 408
           }
         }
       ],
@@ -8822,11 +9225,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 366
+        "y": 399
       }
     },
     {
-      "id": 167,
+      "id": 175,
       "type": "row",
       "title": "edge — Calls to other services",
       "collapsed": true,
@@ -8874,12 +9277,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 168,
+          "id": 176,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 368
+            "y": 401
           }
         },
         {
@@ -8926,12 +9329,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 169,
+          "id": 177,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 368
+            "y": 401
           }
         },
         {
@@ -8977,12 +9380,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 170,
+          "id": 178,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 376
+            "y": 409
           }
         },
         {
@@ -9038,12 +9441,12 @@
               "legendFormat": "{{peer}} limit"
             }
           ],
-          "id": 171,
+          "id": 179,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 376
+            "y": 409
           }
         },
         {
@@ -9099,12 +9502,12 @@
               "legendFormat": "{{peer}} wait"
             }
           ],
-          "id": 172,
+          "id": 180,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 384
+            "y": 417
           }
         },
         {
@@ -9151,12 +9554,12 @@
               "legendFormat": "{{peer}} {{reason}} ({{mode}})"
             }
           ],
-          "id": 173,
+          "id": 181,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 384
+            "y": 417
           }
         },
         {
@@ -9224,12 +9627,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 174,
+          "id": 182,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 392
+            "y": 425
           }
         },
         {
@@ -9276,12 +9679,12 @@
               "legendFormat": "{{peer}} ({{mode}})"
             }
           ],
-          "id": 175,
+          "id": 183,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 392
+            "y": 425
           }
         },
         {
@@ -9328,12 +9731,12 @@
               "legendFormat": "{{pod}} {{cache}}"
             }
           ],
-          "id": 176,
+          "id": 184,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 400
+            "y": 433
           }
         }
       ],
@@ -9341,11 +9744,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 367
+        "y": 400
       }
     },
     {
-      "id": 177,
+      "id": 185,
       "type": "row",
       "title": "edge — Saturation",
       "collapsed": false,
@@ -9354,7 +9757,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 368
+        "y": 401
       }
     },
     {
@@ -9401,12 +9804,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 178,
+      "id": 186,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 369
+        "y": 402
       }
     },
     {
@@ -9470,12 +9873,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 179,
+      "id": 187,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 369
+        "y": 402
       }
     },
     {
@@ -9522,12 +9925,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 180,
+      "id": 188,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 369
+        "y": 402
       }
     },
     {
@@ -9591,16 +9994,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 181,
+      "id": 189,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 369
+        "y": 402
       }
     },
     {
-      "id": 182,
+      "id": 190,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -9658,12 +10061,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 183,
+          "id": 191,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 378
+            "y": 411
           }
         },
         {
@@ -9709,12 +10112,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 184,
+          "id": 192,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 378
+            "y": 411
           }
         }
       ],
@@ -9722,7 +10125,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 377
+        "y": 410
       }
     }
   ]

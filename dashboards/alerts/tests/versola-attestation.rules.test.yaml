@@ -1,0 +1,154 @@
+# Unit tests of versola-attestation.rules.yaml with synthetic faults, for `promtool test rules` (see dashboards/alerts/README.md):
+#
+#   promtool test rules dashboards/alerts/tests/versola-attestation.rules.test.yaml
+#
+# Each case feeds the rule what the fault looks like on a pod and what a healthy one looks like.
+rule_files:
+  - ../versola-attestation.rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # --- the revocation list ---------------------------------------------------------------------------------------------------------
+  - name: a list not fetched for more than two intervals, while Android attestations are verified, fires
+    interval: 1m
+    input_series:
+      # fetched once at t=0, never again; the pod fetches every hour
+      - series: 'attestation_revocation_list_refreshed_timestamp_seconds{namespace="prod", pod="edge-1"}'
+        values: '0+0x400'
+      - series: 'attestation_revocation_refresh_interval_seconds{namespace="prod", pod="edge-1"}'
+        values: '3600+0x400'
+      - series: 'attestation_requests_total{namespace="prod", pod="edge-1", client="mobile", platform="android", mode="report", result="verified"}'
+        values: '0+10x400'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: AttestationRevocationListStale
+        exp_alerts: []
+      - eval_time: 200m
+        alertname: AttestationRevocationListStale
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: prod, pod: edge-1}
+            exp_annotations:
+              summary: "Edge pod edge-1 in prod has no fresh list of revoked Android attestation certificates"
+              description: "The pod verifies Android attestations and either has never fetched Google's revocation list or last fetched it more than two refresh intervals ago, so a revoked certificate is still accepted. A failing fetch is counted in attestation_revocation_refresh_failures_total. Check the edge's outbound access to android.googleapis.com. Dashboard: 'edge — App attestation'."
+
+  - name: a list that keeps being fetched does not fire
+    interval: 1m
+    input_series:
+      # the timestamp follows the clock: the last fetch was a minute ago, every minute
+      - series: 'attestation_revocation_list_refreshed_timestamp_seconds{namespace="prod", pod="edge-1"}'
+        values: '0+60x400'
+      - series: 'attestation_revocation_refresh_interval_seconds{namespace="prod", pod="edge-1"}'
+        values: '3600+0x400'
+      - series: 'attestation_requests_total{namespace="prod", pod="edge-1", client="mobile", platform="android", mode="report", result="verified"}'
+        values: '0+10x400'
+    alert_rule_test:
+      - eval_time: 300m
+        alertname: AttestationRevocationListStale
+        exp_alerts: []
+
+  - name: a pod that verifies Android attestations and has never fetched the list fires, one with the list switched off does not
+    interval: 1m
+    input_series:
+      # edge-1: no timestamp series at all, the interval is published because the list is on
+      - series: 'attestation_revocation_refresh_interval_seconds{namespace="prod", pod="edge-1"}'
+        values: '3600+0x100'
+      - series: 'attestation_requests_total{namespace="prod", pod="edge-1", client="mobile", platform="android", mode="report", result="verified"}'
+        values: '0+10x100'
+      # edge-2: the list is off (no interval, no timestamp) and Android attestations are verified all the same
+      - series: 'attestation_requests_total{namespace="prod", pod="edge-2", client="mobile", platform="android", mode="report", result="verified"}'
+        values: '0+10x100'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AttestationRevocationListStale
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: prod, pod: edge-1}
+            exp_annotations:
+              summary: "Edge pod edge-1 in prod has no fresh list of revoked Android attestation certificates"
+              description: "The pod verifies Android attestations and either has never fetched Google's revocation list or last fetched it more than two refresh intervals ago, so a revoked certificate is still accepted. A failing fetch is counted in attestation_revocation_refresh_failures_total. Check the edge's outbound access to android.googleapis.com. Dashboard: 'edge — App attestation'."
+
+  - name: no Android attestation, no alert, whatever the list's age
+    interval: 1m
+    input_series:
+      - series: 'attestation_revocation_list_refreshed_timestamp_seconds{namespace="prod", pod="edge-1"}'
+        values: '0+0x400'
+      - series: 'attestation_revocation_refresh_interval_seconds{namespace="prod", pod="edge-1"}'
+        values: '3600+0x400'
+      - series: 'attestation_requests_total{namespace="prod", pod="edge-1", client="mobile", platform="ios", mode="report", result="verified"}'
+        values: '0+10x400'
+    alert_rule_test:
+      - eval_time: 300m
+        alertname: AttestationRevocationListStale
+        exp_alerts: []
+
+  # --- refusals under enforce ------------------------------------------------------------------------------------------------------
+  - name: refusals that jump to twenty times the level of the last day, for an hour, fire
+    interval: 1m
+    input_series:
+      # one sign-in a second; 1 % refused for the first 24 hours, then 20 %
+      - series: 'attestation_requests_total{namespace="prod", client="mobile", platform="ios", mode="enforce", result="verified"}'
+        values: '0+59.4x1440 85536+48x300'
+      - series: 'attestation_requests_total{namespace="prod", client="mobile", platform="ios", mode="enforce", result="UntrustedChain"}'
+        values: '0+0.6x1440 864+12x300'
+    alert_rule_test:
+      - eval_time: 24h30m
+        alertname: AttestationRefusalsUnderEnforceUp
+        exp_alerts: []
+      - eval_time: 25h45m
+        alertname: AttestationRefusalsUnderEnforceUp
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: prod, client: mobile}
+            exp_annotations:
+              summary: "Client mobile in prod: attestation refusals under enforce are several times their level of the last day"
+              description: "20% of this client's sign-ins are refused for a missing or failing attestation. A step after an app release is a build or a policy that does not match (a new signing certificate digest, another App ID): correct the policy, or put the client back to report while you do. Dashboard: 'edge — App attestation', refusals under enforce by reason."
+
+  - name: a steady one percent of refusals does not fire
+    interval: 1m
+    input_series:
+      - series: 'attestation_requests_total{namespace="prod", client="mobile", platform="ios", mode="enforce", result="verified"}'
+        values: '0+59.4x1800'
+      - series: 'attestation_requests_total{namespace="prod", client="mobile", platform="ios", mode="enforce", result="UntrustedChain"}'
+        values: '0+0.6x1800'
+    alert_rule_test:
+      - eval_time: 28h
+        alertname: AttestationRefusalsUnderEnforceUp
+        exp_alerts: []
+
+  - name: refusals under report are not this alert's, however high
+    interval: 1m
+    input_series:
+      - series: 'attestation_requests_total{namespace="prod", client="mobile", platform="ios", mode="report", result="verified"}'
+        values: '0+10x1800'
+      - series: 'attestation_requests_total{namespace="prod", client="mobile", platform="ios", mode="report", result="UntrustedChain"}'
+        values: '0+50x1800'
+    alert_rule_test:
+      - eval_time: 28h
+        alertname: AttestationRefusalsUnderEnforceUp
+        exp_alerts: []
+
+  # --- Play Integrity --------------------------------------------------------------------------------------------------------------
+  - name: a spent Play Integrity quota fires, a healthy decode does not
+    interval: 1m
+    input_series:
+      - series: 'attestation_play_integrity_calls_total{namespace="prod", result="quota"}'
+        values: '0+5x60'
+      - series: 'attestation_play_integrity_calls_total{namespace="prod", result="ok"}'
+        values: '0+100x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AttestationPlayIntegrityFailing
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: prod, result: quota}
+            exp_annotations:
+              summary: "Play Integrity calls of edge in prod are failing: quota"
+              description: "Calls to Google's decodeIntegrityToken ended as quota for 5 minutes. quota: the Cloud project's quota is spent and every sign-in of a build that needs a verdict fails under enforce; raise the quota or move the client to report. error: the service account's credential, the network or Google; the edge log names the status. Dashboard: 'edge — App attestation', Play Integrity calls by result."
+
+  - name: Play Integrity calls that all succeed do not fire
+    interval: 1m
+    input_series:
+      - series: 'attestation_play_integrity_calls_total{namespace="prod", result="ok"}'
+        values: '0+100x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AttestationPlayIntegrityFailing
+        exp_alerts: []

@@ -1,6 +1,7 @@
 package versola.central.configuration
 
 import versola.central.configuration.challenges.SecurityProfile
+import versola.central.configuration.clients.attestation.ClientAttestation
 import versola.central.configuration.clients.est.ClientEstService
 import versola.central.configuration.clients.{
   ApplicationType,
@@ -432,6 +433,9 @@ case class OAuthClientResponse(
     partnerId: Option[PartnerId],
     /** Where a partner-owned client stands with the operator; `approved` for a first-party client. */
     approval: ClientApproval,
+    /** The mode of the client's app attestation policy (#423), when it has one that is on: what the list shows as a chip, so that finding
+      * the clients in `enforce` does not mean opening each. Absent when the client has none or it is `off`. */
+    attestationMode: Option[versola.central.configuration.clients.attestation.AttestationMode],
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -832,6 +836,10 @@ case class SyncOAuthClientRecord(
     edgeCertificateSubject: Option[CertificateSubject],
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
+    /** #423: how an edge treats the app attestation sent on `/native/start`. Present for an edge only, and only for an
+      * edge-fronted native client whose mode is not `off`; absent is `off`. Last and defaulted, so an edge reading a central
+      * that predates it, and one that does not know the field reading a newer central, both see no policy. */
+    attestation: Option[ClientAttestation] = None,
 ) derives JsonCodec, Schema
 
 /** An edge's request for a certificate for a client it holds the key of (#463). */

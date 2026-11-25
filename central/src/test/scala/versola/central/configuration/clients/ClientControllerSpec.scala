@@ -395,6 +395,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus: Status,
       setup: Stub[OAuthClientService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[OAuthClientService], SecurityService) => Task[TestResult] = (_, _, _) => ZIO.succeed(assertTrue(true)),
+      // Only the list reads the policies that are on (to show their mode); a call from anything else still fails the request.
+      activeAttestations: Option[Map[ClientId, versola.central.configuration.clients.attestation.ClientAttestation]] = None,
   ) =
     test(description) {
       for
@@ -403,7 +405,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         resourceService = stub[versola.central.configuration.resources.ResourceService]
         edgeService = stub[versola.central.configuration.edges.EdgeService]
         estService = stub[versola.central.configuration.clients.est.ClientEstService]
+        // Never configured: auth's sync must not ask for attestation policies (#423), and a call would fail the request.
+        attestationService = stub[versola.central.configuration.clients.attestation.ClientAttestationService]
         _ <- estService.states.succeedsWith(Map.empty)
+        _ <- ZIO.foreachDiscard(activeAttestations)(active => attestationService.active.succeedsWith(active))
         tracing <- tracingLayer.build
         security <- securityLayer.build
         securityService = security.get[SecurityService]
@@ -414,7 +419,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 versola.central.configuration.resources.ResourceService,
               ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
                 ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++
-                ZEnvironment[versola.central.configuration.clients.est.ClientEstService](estService),
+                ZEnvironment[versola.central.configuration.clients.est.ClientEstService](estService) ++
+                ZEnvironment[versola.central.configuration.clients.attestation.ClientAttestationService](attestationService),
             ),
           ),
         )
@@ -474,6 +480,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "5", "limit" -> "10")),
       ),
       expectedStatus = Status.Ok,
+      activeAttestations = Some(Map.empty),
       setup = service =>
         service.getTenantClients.succeedsWith(clients),
       verify = (response, service, _) =>
@@ -527,6 +534,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 est = None,
                 partnerId = None,
                 approval = ClientApproval.Approved,
+                attestationMode = None,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -564,6 +572,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 est = None,
                 partnerId = None,
                 approval = ClientApproval.Approved,
+                attestationMode = None,
               ),
             ),
           ),
@@ -576,6 +585,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           .addQueryParam("tenantId", tenantId.toString),
       ),
       expectedStatus = Status.Ok,
+      activeAttestations = Some(Map.empty),
       setup = service =>
         service.getTenantClients.succeedsWith(Vector.empty),
       verify = (response, service, _) =>
@@ -645,12 +655,34 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "list a client's theme overrides",
       request = Request.get((URL.empty / "configuration" / "clients").addQueryParam("tenantId", tenantId.toString)),
       expectedStatus = Status.Ok,
+      activeAttestations = Some(Map.empty),
       setup = service =>
         service.getTenantClients.succeedsWith(Vector(clients.head.copy(themeOverrides = Some(partnerTheme)))),
       verify = (response, _, _) =>
         for
           payload <- response.body.asJson[GetAllClientsResponse]
         yield assertTrue(payload.clients.map(_.themeOverrides) == List(Some(partnerTheme))),
+    ),
+    controllerTestCase(
+      description = "list the mode of a client's attestation policy that is on, and nothing for the others",
+      request = Request.get((URL.empty / "configuration" / "clients").addQueryParam("tenantId", tenantId.toString)),
+      expectedStatus = Status.Ok,
+      setup = service => service.getTenantClients.succeedsWith(clients),
+      activeAttestations = Some(
+        Map(
+          clients.head.id -> versola.central.configuration.clients.attestation.ClientAttestation(
+            mode = versola.central.configuration.clients.attestation.AttestationMode.enforce,
+            ios = None,
+            android = Nil,
+          ),
+        ),
+      ),
+      verify = (response, _, _) =>
+        for payload <- response.body.asJson[GetAllClientsResponse]
+        yield assertTrue(
+          payload.clients.head.attestationMode.contains(versola.central.configuration.clients.attestation.AttestationMode.enforce),
+          payload.clients.tail.forall(_.attestationMode.isEmpty),
+        ),
     ),
     controllerTestCase(
       description = "reject synced tenant clients request without service token",
