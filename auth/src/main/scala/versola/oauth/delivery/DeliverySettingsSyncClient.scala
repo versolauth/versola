@@ -52,9 +52,7 @@ object DeliverySettingsSyncClient:
       ZIO.scoped:
         centralSyncTokenService.syncRequest(Request.get(SyncURL))
           .catchSome { case CentralSyncTokenService.UnexpectedStatus(Status.NotFound, _) => ZIO.fail(EndpointMissing()) }
-          .flatMap: response =>
-            if response.status == Status.NotFound then ZIO.fail(EndpointMissing())
-            else response.bodyAs[SyncWire].flatMap(toFetched)
+          .flatMap(_.bodyAs[SyncWire].flatMap(toFetched))
 
     private def toFetched(wire: SyncWire): Task[Fetched] =
       for

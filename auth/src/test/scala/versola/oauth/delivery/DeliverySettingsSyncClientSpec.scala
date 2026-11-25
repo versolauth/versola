@@ -15,7 +15,11 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
 
   private def tokenService(client: Client): CentralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
-    override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
+    // As the real service answers a configuration sync: a status that is not a success is a failure, not a response.
+    override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
+      client.request(request).flatMap: response =>
+        if response.status.isSuccess then ZIO.succeed(response)
+        else ZIO.fail(CentralSyncTokenService.UnexpectedStatus(response.status, request.url.path.encode))
 
   /** What central sends: a password is encrypted under the secret the two services share and encoded base64url. */
   private def transportEncrypted(plaintext: String): ZIO[SecurityService, Throwable, String] =
@@ -110,16 +114,6 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
       for
         _ <- serve(Status.NotFound, """{"message":"not found"}""")
         result <- fetch.either
-      yield assertTrue(result.left.exists(_.isInstanceOf[DeliverySettingsSyncClient.EndpointMissing]))
-    },
-    test("says so too when the sync service reports the 404 itself, as it does for every configuration sync") {
-      for
-        security <- ZIO.service[SecurityService]
-        refusing = new CentralSyncTokenService:
-          override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
-          override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
-            ZIO.fail(CentralSyncTokenService.UnexpectedStatus(Status.NotFound, "/configuration/delivery-settings/sync"))
-        result <- DeliverySettingsSyncClient.Impl(config = config, centralSyncTokenService = refusing, securityService = security).getAll.either
       yield assertTrue(result.left.exists(_.isInstanceOf[DeliverySettingsSyncClient.EndpointMissing]))
     },
     test("fails, rather than treating it as empty, when central refuses the sync token") {

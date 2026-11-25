@@ -106,7 +106,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
       TestClient.layer,
       Scope.default,
     ),
-      suite("a configuration sync that is not answered with a success")(
+    suite("a configuration sync that is not answered with a success")(
       // The body is valid JSON for what a sync client decodes, as a gateway's or a proxy's error answer can be.
       List(Status.BadRequest, Status.Forbidden, Status.NotFound, Status.TooManyRequests, Status.MovedPermanently).map: status =>
         test(s"fails on ${status.code}, naming the status and the path and nothing of the body or the query") {
