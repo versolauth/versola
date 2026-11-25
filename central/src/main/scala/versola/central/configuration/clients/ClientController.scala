@@ -43,6 +43,8 @@ object ClientController extends AuditedController:
         _ <- authorizeBasic(request)
         clientService <- ZIO.service[OAuthClientService]
         estStates <- ZIO.serviceWithZIO[ClientEstService](_.states)
+        // From the same cache the sync an edge makes is answered from: one read for the page, not one per client.
+        attestations <- ZIO.serviceWithZIO[ClientAttestationService](_.active)
 
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         offset <- request.url.queryZIO[Option[Int]]("offset").someOrElse(0)
@@ -86,6 +88,7 @@ object ClientController extends AuditedController:
               est = estStates.get(client.id),
               partnerId = client.partnerId,
               approval = client.approval,
+              attestationMode = attestations.get(client.id).map(_.mode),
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)

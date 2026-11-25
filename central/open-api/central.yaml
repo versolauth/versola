@@ -4458,6 +4458,12 @@ components:
           description: |
             Where a partner-owned client stands with the operator; `approved` for a first-party client. A client that is
             not `approved` is synced to nobody and issues no token.
+        attestationMode:
+          type: string
+          enum: [report, enforce]
+          description: |
+            The mode of the client's app attestation policy (#423) when it has one that is on, so that a list can show which
+            clients are in `report` or `enforce` without a call per client. Absent when the client has no policy or it is `off`.
       required:
         - id
         - clientName

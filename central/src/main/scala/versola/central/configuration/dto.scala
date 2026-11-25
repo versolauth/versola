@@ -433,6 +433,9 @@ case class OAuthClientResponse(
     partnerId: Option[PartnerId],
     /** Where a partner-owned client stands with the operator; `approved` for a first-party client. */
     approval: ClientApproval,
+    /** The mode of the client's app attestation policy (#423), when it has one that is on: what the list shows as a chip, so that finding
+      * the clients in `enforce` does not mean opening each. Absent when the client has none or it is `off`. */
+    attestationMode: Option[versola.central.configuration.clients.attestation.AttestationMode],
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(

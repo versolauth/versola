@@ -72,6 +72,12 @@ export class VersolaClientAttestation extends LitElement {
     }
   }
 
+  /** Tells the page the card is on what the mode is now, for the chip of the list; `null` when the policy is off. */
+  private announceMode() {
+    const mode = this.policy && this.policy.mode !== 'off' ? this.policy.mode : null;
+    this.dispatchEvent(new CustomEvent('attestation-mode', { detail: { mode }, bubbles: true, composed: true }));
+  }
+
   private get hasPolicy(): boolean {
     const policy = this.policy;
     return !!policy && (policy.mode !== 'off' || !!policy.ios || policy.android.length > 0);
@@ -136,6 +142,7 @@ export class VersolaClientAttestation extends LitElement {
     try {
       this.policy = await saveClientAttestation(this.clientId, policyFromDraft(this.draft));
       this.draft = null;
+      this.announceMode();
     } catch (error) {
       this.saveError = error instanceof Error ? error.message : 'The policy was not saved.';
     } finally {
@@ -158,6 +165,7 @@ export class VersolaClientAttestation extends LitElement {
       await deleteClientAttestation(this.clientId);
       this.policy = { mode: 'off', android: [] };
       this.draft = null;
+      this.announceMode();
     } catch (error) {
       this.saveError = error instanceof Error ? error.message : 'The policy was not removed.';
     } finally {

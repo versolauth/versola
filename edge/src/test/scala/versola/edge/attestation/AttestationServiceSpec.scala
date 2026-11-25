@@ -385,6 +385,8 @@ object AttestationServiceSpec extends ZIOSpecDefault:
         !base.sameElements(AttestationService.clientDataHash("a", "k", "j", Some("n"))),
         !AttestationService.clientDataHash("a", "k", "j", Some("n")).sameElements(AttestationService.clientDataHash("a", "k", "j", Some("m"))),
         base.sameElements(AttestationService.clientDataHash("a", "k", "j", None)),
+        // An empty nonce is no nonce, as the SDKs read it.
+        base.sameElements(AttestationService.clientDataHash("a", "k", "j", Some(""))),
       )
     },
     test("an assertion made ahead of time, before the server's nonce was known, is refused once the proof carries one") {

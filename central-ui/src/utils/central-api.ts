@@ -160,6 +160,7 @@ type ClientsResponse = {
     authMethod?: AuthMethod;
     applicationType?: 'web' | 'native';
     kind?: 'web' | 'device' | 'service';
+    attestationMode?: 'report' | 'enforce' | null;
     accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
@@ -782,6 +783,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         kind: client.kind,
         authMethod: client.authMethod ?? 'client_secret',
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
+        attestationMode: client.attestationMode ?? null,
         // The backend now returns the real value directly (previously it didn't, and this
         // fell back to a page-memory-only cache that was empty — and silently wrong — after
         // every reload; see clientSupplementStore below).

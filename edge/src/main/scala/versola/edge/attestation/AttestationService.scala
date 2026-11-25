@@ -52,7 +52,7 @@ object AttestationService:
     * what the app signs that the server chose, so an assertion cannot be made ahead of time for a `jti` the app picks. A proof without
     * a nonce hashes as it always did, so a client that does not ask for nonces is unchanged. */
   def clientDataHash(clientId: String, jkt: String, jti: String, nonce: Option[String] = None): Array[Byte] =
-    sha256(s"$Domain\n$clientId\n$jkt\n$jti${nonce.fold("")("\n" + _)}".getBytes(StandardCharsets.UTF_8))
+    sha256(s"$Domain\n$clientId\n$jkt\n$jti${nonce.filter(_.nonEmpty).fold("")("\n" + _)}".getBytes(StandardCharsets.UTF_8))
 
   /** What an Android app gives the Keystore as the attestation challenge, so that a chain made for one client is not presented to
     * another.

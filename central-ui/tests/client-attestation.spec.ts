@@ -305,3 +305,26 @@ test('removes the policy through the confirm dialog, and the client reads as off
   await expect(card(page)).toContainText('Off');
   await expect(card(page).getByRole('button', { name: 'Set a policy' })).toBeVisible();
 });
+
+test('the client list shows the mode of a policy that is on, and follows a change made on the client page', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [edgeNativeClient, { ...edgeNativeClient, id: 'acme-other', clientName: { en: 'Acme Other' } }, webClient] },
+      attestation: { 'acme-mobile': { ...reporting, mode: 'enforce' as const } },
+    },
+  });
+
+  const row = (id: string) => page.getByRole('row').filter({ has: page.getByRole('button', { name: new RegExp(`${id}$`) }) });
+  await expect(row('acme-mobile')).toContainText('Attestation: enforce');
+  await expect(row('acme-other')).not.toContainText('Attestation');
+  await expect(row('acme-web')).not.toContainText('Attestation');
+
+  // A policy removed on the client's page leaves the list as it is shown when the page is closed.
+  await openClientPage(page, 'acme-mobile');
+  await expect(page.locator('versola-record-header')).toContainText('Attestation: enforce');
+  await card(page).getByRole('button', { name: 'Edit' }).click();
+  await card(page).getByRole('button', { name: 'Remove policy' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Remove policy' }).click();
+  await expect(page.locator('versola-record-header')).not.toContainText('Attestation');
+});
