@@ -1,6 +1,8 @@
 package versola.central.configuration.clients.attestation
 
+import versola.central.CentralConfig
 import versola.central.configuration.clients.{ClientId, OAuthClientService}
+import versola.util.ReloadingCache
 import zio.*
 
 import java.sql.SQLException
@@ -39,10 +41,19 @@ object ClientAttestationService:
 
   case class Refused(kind: Refusal, reason: String) extends RuntimeException(reason)
 
-  val live: URLayer[ClientAttestationRepository & OAuthClientService, ClientAttestationService] =
-    ZLayer.fromFunction(Impl(_, _))
+  /** The policies an edge is told are read from a cache like the rest of what the sync serves: every edge syncs on its own interval,
+    * and a read of every policy from the database on each of those is not what rarely changing configuration should cost. A change made
+    * on this replica is in the cache at once; one made on another reaches it with the next reload, as it does for the clients, and an edge
+    * then has its own sync to wait for: taking a client from `enforce` back to `off` can take the reload interval plus the edge's sync interval. */
+  val live: ZLayer[ClientAttestationRepository & OAuthClientService & CentralConfig & Scope, Throwable, ClientAttestationService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Map[ClientId, ClientAttestation]](config.configurationCacheRefreshInterval),
+      )
+    ) >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
+      cache: ReloadingCache[Map[ClientId, ClientAttestation]],
       repository: ClientAttestationRepository,
       clients: OAuthClientService,
   ) extends ClientAttestationService:
@@ -60,15 +71,16 @@ object ClientAttestationService:
         // word, and the operator is told the client is gone rather than that central failed.
         _ <- repository.put(clientId, validated, now).catchSome:
           case error if isForeignKeyViolation(error) => ZIO.fail(Refused(Refusal.UnknownClient, s"client '$clientId' does not exist"))
+        _ <- cache.update(_.updated(clientId, validated))
       yield validated
 
     override def delete(clientId: ClientId): Task[Unit] =
       // A client that is no longer a native one still lets its policy go: refusing would leave the row for good.
       clients.findClient(clientId).someOrFail(Refused(Refusal.UnknownClient, s"client '$clientId' does not exist")) *>
-        repository.delete(clientId).unit
+        repository.delete(clientId) *> cache.update(_ - clientId)
 
     override def active: Task[Map[ClientId, ClientAttestation]] =
-      repository.all.map(_.filter((_, attestation) => attestation.mode != AttestationMode.off))
+      cache.get.map(_.filter((_, attestation) => attestation.mode != AttestationMode.off))
 
     private def isForeignKeyViolation(error: Throwable): Boolean =
       error match

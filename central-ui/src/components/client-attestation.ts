@@ -4,8 +4,8 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, chipStyles, formStyles, recordStyles, segmentedStyles } from '../styles/components';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import {
-  MODES, MODE_LABEL, MODE_TEXT, MAX_APPS, describePolicy, draftFromPolicy, hasErrors, policyFromDraft, validateDraft,
-  type AttestationDraft, type AttestationErrors, type ClientAttestationPolicy, type IosEnvironment,
+  MODES, MODE_LABEL, MODE_TEXT, MAX_APPS, describePolicy, draftFromPolicy, hasErrors, narrows, policyFromDraft, validateDraft,
+  type AndroidRowErrors, type AttestationDraft, type AttestationErrors, type ClientAttestationPolicy, type IosEnvironment,
 } from '../utils/client-attestation';
 import { deleteClientAttestation, fetchClientAttestation, saveClientAttestation } from '../utils/central-api';
 import './record-card';
@@ -43,9 +43,12 @@ export class VersolaClientAttestation extends LitElement {
       .editor textarea, .editor input[type='text'], .editor select { width: 100%; max-width: none; box-sizing: border-box; }
       .editor textarea { min-height: 4.5rem; font-family: var(--font-mono, monospace); font-size: var(--text-sm); }
       .text-line { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
-      .android-row { display: grid; gap: 0.5rem; padding: var(--spacing-sm) 0; border-top: 1px solid var(--border-default); }
-      .android-row:first-of-type { border-top: 0; }
-      .check-row { display: flex; align-items: center; gap: 0.4rem; font-size: var(--text-sm); color: var(--text-primary); cursor: pointer; }
+      .android-row { display: grid; gap: 0.5rem; padding: var(--spacing-md); border: 1px solid var(--border-default); border-radius: var(--radius-md, 6px); }
+      .android-rows { display: grid; gap: var(--spacing-sm); }
+      .platforms { display: flex; flex-wrap: wrap; gap: var(--spacing-lg); }
+      /* A label of the form is a small upper-case heading; a check box's is a sentence. */
+      label.check-row { display: flex; align-items: center; gap: 0.4rem; font-size: var(--text-sm); color: var(--text-primary); cursor: pointer;
+        text-transform: none; font-weight: 400; letter-spacing: normal; }
       .check-row input[type='checkbox'] { cursor: pointer; }
       .actions { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); align-items: center; }
       .actions .spacer { flex: 1; }
@@ -69,6 +72,12 @@ export class VersolaClientAttestation extends LitElement {
     }
   }
 
+  /** Tells the page the card is on what the mode is now, for the chip of the list; `null` when the policy is off. */
+  private announceMode() {
+    const mode = this.policy && this.policy.mode !== 'off' ? this.policy.mode : null;
+    this.dispatchEvent(new CustomEvent('attestation-mode', { detail: { mode }, bubbles: true, composed: true }));
+  }
+
   private get hasPolicy(): boolean {
     const policy = this.policy;
     return !!policy && (policy.mode !== 'off' || !!policy.ios || policy.android.length > 0);
@@ -89,6 +98,11 @@ export class VersolaClientAttestation extends LitElement {
     if (this.draft) this.draft = { ...this.draft, ...patch };
   }
 
+  private setAndroid(on: boolean) {
+    if (!this.draft) return;
+    this.patch({ androidOn: on, android: on && this.draft.android.length === 0 ? [{ packageName: '', digests: '' }] : this.draft.android });
+  }
+
   private patchAndroid(index: number, patch: Partial<AttestationDraft['android'][number]>) {
     if (this.draft) this.patch({ android: this.draft.android.map((row, i) => i === index ? { ...row, ...patch } : row) });
   }
@@ -101,11 +115,34 @@ export class VersolaClientAttestation extends LitElement {
       void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>('[aria-invalid="true"], .builds-error')?.focus());
       return;
     }
+    // Enforce turns away every sign-in that carries no attestation, and apps that do not send one yet are among them: asked first,
+    // as removing the policy, the safer action, is.
+    const previous = this.policy?.mode ?? 'off';
+    const narrowed = this.draft.mode === 'enforce' && previous === 'enforce' && !!this.policy && narrows(this.policy, policyFromDraft(this.draft));
+    if (this.draft.mode === 'enforce' && (previous !== 'enforce' || narrowed)) {
+      const policy = policyFromDraft(this.draft);
+      const untried = previous !== 'report' && previous !== 'enforce';
+      const needsPlay = policy.android.some(app => app.playIntegrity);
+      const confirmed = await confirmDestructiveAction({
+        title: narrowed ? 'Narrow the enforced builds' : 'Enforce app attestation',
+        messagePrefix: narrowed ? 'Edge already enforces attestation for ' : 'Edge will turn away every sign-in of ',
+        messageSubject: this.clientId,
+        messageSuffix: narrowed
+          ? ': a build, App ID or signing certificate that is accepted today is not in the policy any more, and the apps that carry it are turned away. Save?'
+          : ' that does not carry a verifiable attestation of an accepted build, including apps that do not send one yet.' +
+            (untried ? ' This client has not been in Report, so nothing shows how many installs would pass.' : '') +
+            (needsPlay ? ' A build that needs a Play Integrity verdict is refused as well on an edge that is not set up for Play Integrity.' : '') +
+            ' Enforce?',
+        confirmLabel: narrowed ? 'Save' : 'Enforce',
+      });
+      if (!confirmed) return;
+    }
     this.saving = true;
     this.saveError = '';
     try {
       this.policy = await saveClientAttestation(this.clientId, policyFromDraft(this.draft));
       this.draft = null;
+      this.announceMode();
     } catch (error) {
       this.saveError = error instanceof Error ? error.message : 'The policy was not saved.';
     } finally {
@@ -128,6 +165,7 @@ export class VersolaClientAttestation extends LitElement {
       await deleteClientAttestation(this.clientId);
       this.policy = { mode: 'off', android: [] };
       this.draft = null;
+      this.announceMode();
     } catch (error) {
       this.saveError = error instanceof Error ? error.message : 'The policy was not removed.';
     } finally {
@@ -158,10 +196,11 @@ export class VersolaClientAttestation extends LitElement {
     const summary = describePolicy(policy);
     return html`
       <versola-record-row .label=${'Mode'} .value=${html`<span class="chip ${policy.mode === 'enforce' ? 'warn' : ''}">${MODE_LABEL[policy.mode]}</span> ${MODE_TEXT[policy.mode]}`}></versola-record-row>
-      <versola-record-row .label=${'iOS'} .value=${summary.ios}></versola-record-row>
-      <versola-record-row .label=${'Android'} .value=${summary.android.length > 0
-        ? html`<ul class="lines">${summary.android.map(line => html`<li>${line}</li>`)}</ul>` : 'None accepted'}></versola-record-row>
-      <versola-record-row .value=${html`<span class="text-line">Edge picks a change up with its next client sync.</span>`}></versola-record-row>`;
+      ${summary.ios ? html`<versola-record-row .label=${'iOS'} .value=${summary.ios}></versola-record-row>` : nothing}
+      ${summary.android.length > 0 ? html`<versola-record-row .label=${'Android'} .value=${html`
+        <ul class="lines">${summary.android.map(app => html`<li>${app.packageName} ·
+          ${app.digests.map((digest, index) => html`${index > 0 ? ', ' : ''}<span title=${digest.full}>${digest.short}</span>`)}${app.playIntegrity ? ' · Play Integrity' : ''}</li>`)}</ul>`}></versola-record-row>` : nothing}
+      <versola-record-row .value=${html`<span class="text-line">Applies to sign-ins that start from now on; sessions that already exist end by their own lifetime or by revocation. A change reaches edge with central's next reload and edge's next client sync, so it can take a few minutes.</span>`}></versola-record-row>`;
   }
 
   private renderEditor(draft: AttestationDraft) {
@@ -177,36 +216,58 @@ export class VersolaClientAttestation extends LitElement {
                   @click=${() => this.patch({ mode })}>${MODE_LABEL[mode]}</button>`)}
             </div>
             <p class="text-line">${MODE_TEXT[draft.mode]}</p>
-          </div>
-
-          <div class="form-group">
-            <label for="attestation-ios-ids">iOS App IDs</label>
-            <textarea id="attestation-ios-ids" class=${errors.ios ? 'input-error' : ''} spellcheck="false" autocomplete="off" placeholder="ABCDE12345.com.example.app"
-              aria-invalid=${errors.ios ? 'true' : nothing} aria-describedby="attestation-ios-hint" .value=${draft.iosAppIds}
-              @input=${(e: Event) => this.patch({ iosAppIds: (e.target as HTMLTextAreaElement).value })}></textarea>
-            ${errors.ios ? html`<div class="error-message" role="alert">${errors.ios}</div>` : nothing}
-            <div class="hint" id="attestation-ios-hint">One per line: your Team ID, a dot, the bundle id. Leave empty to accept no iOS build.</div>
-          </div>
-
-          <div class="form-group">
-            <label for="attestation-ios-environment">App Attest environment</label>
-            <select id="attestation-ios-environment" .value=${draft.iosEnvironment}
-              @change=${(e: Event) => this.patch({ iosEnvironment: (e.target as HTMLSelectElement).value as IosEnvironment })}>
-              <option value="production" ?selected=${draft.iosEnvironment === 'production'}>Production</option>
-              <option value="development" ?selected=${draft.iosEnvironment === 'development'}>Development</option>
-            </select>
-            <div class="hint">Development keys come from builds signed for development and prove nothing about an App Store build.</div>
-          </div>
-
-          <div class="form-group">
-            <span class="ctrl-label" id="attestation-android-label">Android apps</span>
-            ${draft.android.map((row, index) => this.renderAndroid(row, index, errors.android[index]))}
             ${errors.builds ? html`<div class="error-message builds-error" role="alert" tabindex="-1">${errors.builds}</div>` : nothing}
-            <div>
-              <button type="button" class="btn btn-secondary btn-sm" ?disabled=${draft.android.length >= MAX_APPS}
-                @click=${() => this.patch({ android: [...draft.android, { packageName: '', digests: '' }] })}>Add Android app</button>
-            </div>
           </div>
+
+          <div class="form-group">
+            <span class="ctrl-label" id="attestation-platforms-label">Platforms</span>
+            <div class="platforms" role="group" aria-labelledby="attestation-platforms-label">
+              <label class="check-row">
+                <input type="checkbox" id="attestation-ios-on" .checked=${draft.ios}
+                  @change=${(e: Event) => this.patch({ ios: (e.target as HTMLInputElement).checked })} />
+                iOS
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="attestation-android-on" .checked=${draft.androidOn}
+                  @change=${(e: Event) => this.setAndroid((e.target as HTMLInputElement).checked)} />
+                Android
+              </label>
+            </div>
+            <div class="hint">Switch on the platforms the app is built for. What was typed for one that is switched off is kept until you save, and is not part of the policy.</div>
+          </div>
+
+          ${draft.ios ? html`
+            <div class="form-group">
+              <label for="attestation-ios-ids">iOS App IDs</label>
+              <textarea id="attestation-ios-ids" class=${errors.ios ? 'input-error' : ''} spellcheck="false" autocomplete="off" placeholder="ABCDE12345.com.example.app"
+                aria-invalid=${errors.ios ? 'true' : nothing} aria-describedby="attestation-ios-hint" .value=${draft.iosAppIds}
+                @input=${(e: Event) => this.patch({ iosAppIds: (e.target as HTMLTextAreaElement).value })}></textarea>
+              ${errors.ios ? html`<div class="error-message" role="alert">${errors.ios}</div>` : nothing}
+              <div class="hint" id="attestation-ios-hint">One per line: your Team ID, a dot, the bundle id.</div>
+            </div>
+
+            <div class="form-group">
+              <label for="attestation-ios-environment">App Attest environment</label>
+              <select id="attestation-ios-environment" .value=${draft.iosEnvironment}
+                @change=${(e: Event) => this.patch({ iosEnvironment: (e.target as HTMLSelectElement).value as IosEnvironment })}>
+                <option value="production" ?selected=${draft.iosEnvironment === 'production'}>Production</option>
+                <option value="development" ?selected=${draft.iosEnvironment === 'development'}>Development</option>
+              </select>
+              <div class="hint">Development keys come from builds signed for development and prove nothing about an App Store build.</div>
+            </div>` : nothing}
+
+          ${draft.androidOn ? html`
+            <div class="form-group">
+              <span class="ctrl-label" id="attestation-android-label">Android apps</span>
+              <div class="android-rows">
+                ${draft.android.map((row, index) => this.renderAndroid(row, index, errors.android[index]))}
+              </div>
+              ${errors.androidApps ? html`<div class="error-message builds-error" role="alert" tabindex="-1">${errors.androidApps}</div>` : nothing}
+              <div>
+                <button type="button" class="btn btn-secondary btn-sm" ?disabled=${draft.android.length >= MAX_APPS}
+                  @click=${() => this.patch({ android: [...draft.android, { packageName: '', digests: '' }] })}>Add Android app</button>
+              </div>
+            </div>` : nothing}
         </fieldset>
 
         ${this.saveError ? html`<div class="banner" role="alert"><span class="banner-text">${this.saveError}</span></div>` : nothing}
@@ -219,22 +280,23 @@ export class VersolaClientAttestation extends LitElement {
       </form>`;
   }
 
-  private renderAndroid(row: AttestationDraft['android'][number], index: number, error: string | undefined) {
+  private renderAndroid(row: AttestationDraft['android'][number], index: number, error: AndroidRowErrors | undefined) {
     const nameId = `attestation-android-${index}-package`;
     const digestsId = `attestation-android-${index}-digests`;
     return html`
       <div class="android-row" role="group" aria-label=${`Android app ${index + 1}`}>
         <div class="form-group">
           <label for=${nameId}>Package name</label>
-          <input type="text" id=${nameId} class=${error ? 'input-error' : ''} spellcheck="false" autocomplete="off" placeholder="com.example.app"
-            aria-invalid=${error ? 'true' : nothing} .value=${row.packageName}
+          <input type="text" id=${nameId} class=${error?.packageName ? 'input-error' : ''} spellcheck="false" autocomplete="off" placeholder="com.example.app"
+            aria-invalid=${error?.packageName ? 'true' : nothing} .value=${row.packageName}
             @input=${(e: Event) => this.patchAndroid(index, { packageName: (e.target as HTMLInputElement).value })} />
+          ${error?.packageName ? html`<div class="error-message" role="alert">${error.packageName}</div>` : nothing}
         </div>
         <div class="form-group">
           <label for=${digestsId}>Signing certificate SHA-256</label>
-          <textarea id=${digestsId} class=${error ? 'input-error' : ''} spellcheck="false" autocomplete="off" aria-invalid=${error ? 'true' : nothing}
+          <textarea id=${digestsId} class=${error?.digests ? 'input-error' : ''} spellcheck="false" autocomplete="off" aria-invalid=${error?.digests ? 'true' : nothing}
             .value=${row.digests} @input=${(e: Event) => this.patchAndroid(index, { digests: (e.target as HTMLTextAreaElement).value })}></textarea>
-          ${error ? html`<div class="error-message" role="alert">${error}</div>` : nothing}
+          ${error?.digests ? html`<div class="error-message" role="alert">${error.digests}</div>` : nothing}
           <div class="hint">One per line, 64 hexadecimal digits; colons are fine. List the old and the new one while a signing key rotates.</div>
         </div>
         <div class="form-group">
@@ -243,7 +305,7 @@ export class VersolaClientAttestation extends LitElement {
               @change=${(e: Event) => this.patchAndroid(index, { playIntegrity: (e.target as HTMLInputElement).checked })} />
             Require a Play Integrity verdict
           </label>
-          <div class="hint">The Play Store's word that this is the genuine app on a genuine device. Needs an edge set up for Play Integrity and an app configured with a Google Cloud project number; without them, requests for this build are refused.</div>
+          <div class="hint">The Play Store's word that this is the genuine app on a genuine device. Needs an edge set up for Play Integrity and an app configured with a Google Cloud project number; without them, requests for this build are refused, and under Enforce so are all of its sign-ins.</div>
         </div>
         <div>
           <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Remove Android app ${index + 1}`}

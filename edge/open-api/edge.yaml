@@ -617,20 +617,39 @@ paths:
         verifies and counts the outcome and answers as if it had not. A client with no policy
         is not asked: the `attestation_*` fields are ignored for it.
 
+        What attestation covers: the start of a sign-in. A refresh (`/native/token`) is not attested, and a refresh token
+        outlives the sign-in that issued it, so switching a client to `enforce` does not end the sessions that
+        already exist: they end by their own lifetime or by revocation. Whether a refresh should carry an assertion is open
+        in #423.
+
+        Under `report` the verification can never delay a start by more than two seconds: past that the check is given up and
+        the request goes on, counted as `Timeout`.
+
         The attestation is tied to the DPoP key the request is signed with:
 
         - **Android.** The key that signs the proof is the key the Keystore attested, so the
           certificate chain's leaf has the proof's key. The attestation challenge is
-          `SHA-256("versola-attest-v1\n" + clientId)`.
+          `SHA-256("versola-attest-v1\n" + clientId)`. This is a deliberate deviation from "a
+          server-provided challenge": the challenge is fixed when the Keystore makes the key, before any
+          round trip, and replaying a chain needs the hardware key, which the DPoP proof of the same key
+          shows on every request. A DPoP key made by an SDK that did not set this challenge cannot pass,
+          whatever chain it has: the SDK makes a new key with the challenge at the next `/native/start`
+          (a new sign-in, so no token is bound to the old key yet) and drops the old one.
         - **iOS.** App Attest signs only what it is handed, so the app hands it
           `clientDataHash = SHA-256("versola-attest-v1\n" + clientId + "\n" + jkt + "\n" + jti)`,
           where `jkt` and `jti` are the RFC 7638 thumbprint of the proof's key and the proof's
-          `jti`. The first request of a key carries its attestation object (`attestKey` over that
+          `jti`. When the proof carries a `nonce` (RFC 9449 §8, which edge asks for with
+          `use_dpop_nonce`, where central has this edge require nonces), it follows:
+          `... + "\n" + jti + "\n" + nonce`, so that an assertion cannot be made ahead of time
+          for a `jti` the app chose. Where no nonce is required the proof's `nonce` is whatever the
+          app wrote and adds no protection. The nonce is checked before the attestation is looked
+          at, and the `use_dpop_nonce` challenge consumes no key: an app gets the challenge first,
+          and only then calls `attestKey` over the hash that includes the nonce. A proof without a
+          nonce hashes as above. The first request of a key carries its attestation object (`attestKey` over that
           hash); every later one carries an assertion (`generateAssertion` over that hash). An
           assertion is good for exactly one proof, and its counter must move forward. A key edge
-          has not been shown is refused as `invalid_client_attestation` with the description
-          `this key has not been attested: send the attestation object`; the app then attests a
-          new key and tries again. An attestation object is made for one request's proof and App
+          has not been shown is refused as `invalid_client_attestation` with
+          `attestation_error: unknown_key`; the app then attests a new key and tries again. An attestation object is made for one request's proof and App
           Attest attests a key once, so it is never resent: if the request failed after edge
           accepted it, the key is known and the app asserts with it next; if edge refused it, the
           app attests a new key.
@@ -1002,6 +1021,31 @@ components:
           type: string
         error_description:
           type: string
+        attestation_error:
+          type: string
+          description: |
+            Only with `error: invalid_client_attestation`: why the app attestation was not accepted, a closed set an
+            SDK may act on (the description is for people and may be reworded). `unknown_key` is the one an SDK acts on:
+            forget the key and attest a new one. The others are `absent`, `malformed`, `untrusted_chain`, `revoked`,
+            `mismatch`, `app_not_accepted`, `device_not_accepted`, `replay`, `bad_signature`, `unsupported` and the three
+            `declared_*` that answer an `attestation_unavailable` (see the request): the
+            attestation will not be accepted by sending it again, and the app tells its user or tries without.
+          enum:
+            - absent
+            - malformed
+            - untrusted_chain
+            - revoked
+            - mismatch
+            - app_not_accepted
+            - device_not_accepted
+            - unknown_key
+            - replay
+            - bad_signature
+            - unsupported
+            - declared_unsupported
+            - declared_service_unavailable
+            - declared_not_configured
+          example: unknown_key
 
     PermissionsResponse:
       type: object
@@ -1057,6 +1101,15 @@ components:
           description: |
             Android. The certificates of the Key Attestation chain, leaf first, each base64 DER.
             Repeat the field, or separate the certificates with commas.
+        attestation_unavailable:
+          type: string
+          enum: [unsupported, service_unavailable, not_configured]
+          description: |
+            Instead of evidence, when the app could not attest: the device does not support the platform's attestation
+            (`unsupported`), the platform's service could not be reached (`service_unavailable`), or the app is not set up
+            for it (`not_configured`). Counted as an outcome of its own, so that an operator can tell these from an old SDK
+            sending nothing; under `enforce` it is refused like any request without evidence. Ignored when the request carries
+            evidence.
         redirect_uri:
           type: string
           description: |

@@ -112,6 +112,8 @@ export interface OAuthClient {
    *  rotate - see AuthMethod. */
   authMethod: AuthMethod;
   hasPreviousSecret: boolean;
+  /** The mode of the client's app attestation policy (#423) when it is on: shown as a chip in the list. */
+  attestationMode?: 'report' | 'enforce' | null;
   accessTokenTtl: number;
   refreshTokenTtl?: number;
   permissions: string[];

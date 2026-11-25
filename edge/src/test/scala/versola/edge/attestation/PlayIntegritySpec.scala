@@ -25,6 +25,7 @@ object PlayIntegritySpec extends ZIOSpecDefault:
 
   private def verdict(
       pkg: String = "com.example.app",
+      recognisedPackage: Option[String] = None,
       nonce: String = nonce,
       at: Instant = now,
       recognition: String = "PLAY_RECOGNIZED",
@@ -33,7 +34,7 @@ object PlayIntegritySpec extends ZIOSpecDefault:
   ): Json.Obj =
     s"""{
        |  "requestDetails": {"requestPackageName": "$pkg", "nonce": "$nonce", "timestampMillis": "${at.toEpochMilli}"},
-       |  "appIntegrity": {"appRecognitionVerdict": "$recognition", "packageName": "$pkg",
+       |  "appIntegrity": {"appRecognitionVerdict": "$recognition", "packageName": "${recognisedPackage.getOrElse(pkg)}",
        |                   "certificateSha256Digest": [${digests.map(d => "\"" + b64(d) + "\"").mkString(",")}]},
        |  "deviceIntegrity": {"deviceRecognitionVerdict": [${device.map("\"" + _ + "\"").mkString(",")}]}
        |}""".stripMargin.fromJson[Json.Obj].toOption.get
@@ -114,11 +115,22 @@ object PlayIntegritySpec extends ZIOSpecDefault:
         refused(check(verdict(device = Nil))).contains(Kind.DeviceNotAccepted),
       )
     },
-    test("a verdict that is old, or from the future, is refused; one within the window is not") {
+    test("the package Play recognised is held to the policy too: the one the request names can be changed on the way") {
+      assertTrue(
+        refused(check(verdict(recognisedPackage = Some("com.other.app")))).contains(Kind.AppNotAccepted),
+        refused(check(verdict().copy(fields = verdict().fields.map {
+          case ("appIntegrity", Json.Obj(fields)) => "appIntegrity" -> Json.Obj(fields.filterNot(_._1 == "packageName"))
+          case other => other
+        }))).contains(Kind.AppNotAccepted),
+      )
+    },
+    test("a verdict that is old is refused, and one dated ahead by more than the clocks may differ; one within the window is not") {
       assertTrue(
         check(verdict(at = now.minusSeconds(299))).isRight,
         refused(check(verdict(at = now.minusSeconds(301)))).contains(Kind.Mismatch),
-        refused(check(verdict(at = now.plusSeconds(301)))).contains(Kind.Mismatch),
+        check(verdict(at = now.plusSeconds(29))).isRight,
+        refused(check(verdict(at = now.plusSeconds(31)))).contains(Kind.Mismatch),
+        refused(check(verdict(at = now.plusSeconds(299)))).contains(Kind.Mismatch),
       )
     },
     test("a verdict missing its parts is malformed or refused, never accepted") {

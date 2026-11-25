@@ -27,6 +27,9 @@ import java.util.{Base64, Date, UUID}
   */
 final class DpopProver private (algorithm: JWSAlgorithm, signer: JWSSigner, publicJwk: JWK):
 
+  /** The public half of an `ES256` key, for a test that needs something made for it (an attestation chain). */
+  def ecPublicKey: ECPublicKey = publicJwk.asInstanceOf[ECKey].toECPublicKey
+
   /** The JWK thumbprint that ends up in a bound token's `cnf.jkt`. */
   val jkt: String = publicJwk.computeThumbprint().toString
 

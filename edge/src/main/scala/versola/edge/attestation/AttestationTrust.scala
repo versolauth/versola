@@ -5,7 +5,7 @@ import zio.http.{Client, Request}
 import zio.json.*
 import zio.json.ast.Json
 import zio.metrics.Metric
-import zio.{Clock, Duration, Ref, Scope, UIO, ZIO, ZLayer, durationInt}
+import zio.{Clock, Duration, Promise, Ref, Scope, UIO, ZIO, ZLayer, durationInt}
 
 import java.io.{ByteArrayInputStream, FileInputStream, InputStream}
 import java.math.BigInteger
@@ -99,18 +99,23 @@ object AttestationTrust:
         refreshFailures.increment *>
           ZIO.logWarningCause("could not refresh Google's list of revoked Android attestation certificates", cause).as(false)
       // The first fetch is shared by everyone who asks while it runs, so that no attestation is checked against a list that is empty
-      // only because another request was first. Then the list is kept fresh -- and one that could not be fetched is tried again
-      // soon, not after the whole interval, since until it arrives nothing is known to be revoked.
-      start <- (refresh.timeout(FirstFetchWait).map(_.getOrElse(false)).flatMap: fetched =>
-        ZIO.iterate(fetched)(_ => true)(fetched => ZIO.sleep(if fetched then settings.revocationRefreshInterval else retryAfterFailure) *> refresh)
-          .forkIn(scope).unit).memoize
+      // only because another request was first. It runs in a fiber of the scope, not in the request that happened to ask first: that
+      // request can be interrupted (a client that went away, the bound a request under `report` has), and an interrupted fetch would
+      // leave nothing that ever fetches the list again. Everyone, the first included, only waits for `firstFetched`. Then the list is
+      // kept fresh -- and one that could not be fetched is tried again soon, not after the whole interval, since until it arrives
+      // nothing is known to be revoked.
+      firstFetched <- Promise.make[Nothing, Unit]
+      keepFresh = refresh.timeout(FirstFetchWait).map(_.getOrElse(false)).flatMap: fetched =>
+        firstFetched.succeed(()) *>
+          ZIO.iterate(fetched)(_ => true)(fetched => ZIO.sleep(if fetched then settings.revocationRefreshInterval else retryAfterFailure) *> refresh).unit
+      start <- keepFresh.forkIn(scope).unit.memoize
     yield new AttestationTrust:
       override def appleRoots: Set[X509Certificate] = apple
       override def androidRoots: Set[X509Certificate] = android
       override def androidRevocation: UIO[BigInteger => Boolean] =
         // Google's list names a serial in hex or, for the older 64-bit ones, in decimal; a serial is matched in both forms. The two
         // are told apart by length in what Google serves (17 to 20 digits against 30 to 32), so no serial reads as another's.
-        start.when(settings.androidRevocationEnabled) *>
+        (start *> firstFetched.await).when(settings.androidRevocationEnabled) *>
           list.get.map(entries => serial => entries.contains(serial.toString) || entries.contains(serial.toString(16)))
 
   private def roots(path: Option[String], resource: String): ZIO[Any, Throwable, Set[X509Certificate]] =

@@ -120,6 +120,70 @@ object AndroidKeyAttestationSpec extends ZIOSpecDefault:
         kind(verify(chainOf = Some(List(Array[Byte](1, 2, 3))))) == Some(Kind.Malformed),
       )
     },
+    suite("where the key description is, and how long the chain is valid")(
+      test("a second certificate with a key description, below an attested key that may sign, is refused: only the first one is the hardware's") {
+        val chain = google()
+        val genuine = p256()
+        val forged = p256()
+        val extended = extendedChain(chain, genuine, forged, challenge)
+        assertTrue(kind(verify(chain = chain, pair = forged, chainOf = Some(extended))) == Some(Kind.Malformed))
+      },
+      test("the same forged leaf is not accepted for being the only one with a description either: the description must be the leaf's and alone") {
+        // the attested key's own certificate without a description: the forged leaf is then the only one that has it, but it is not under the root's chain
+        val chain = google()
+        val genuine = p256()
+        val forged = p256()
+        val extended = extendedChain(chain, genuine, forged, challenge)
+        assertTrue(kind(verify(chain = chain, pair = forged, chainOf = Some(extended.take(1) ++ extended.drop(2)))) == Some(Kind.UntrustedChain))
+      },
+      test("a remotely provisioned chain, with the provisioning information right above the leaf, is accepted") {
+        val chain = google()
+        val pair = p256()
+        assertTrue(verify(chain = chain, pair = pair, chainOf = Some(provisionedChain(chain, pair, challenge))).isRight)
+      },
+      test("an expired remotely provisioned chain is refused: its validity is checked") {
+        val chain = google()
+        val pair = p256()
+        val expired = provisionedChain(chain, pair, challenge, leafNotBefore = days(-30), leafNotAfter = days(-10))
+        assertTrue(kind(verify(chain = chain, pair = pair, chainOf = Some(expired))) == Some(Kind.UntrustedChain))
+      },
+      test("a factory-provisioned chain to the root with Google's serial number is accepted though its attestation certificate has expired") {
+        val chain = google(rootSubject = FactoryRootSubject, notBefore = days(-4000), notAfter = days(4000))
+        val pair = p256()
+        val expired = androidChain(chain, pair, challenge, leafNotBefore = days(-3000), leafNotAfter = days(-10))
+        assertTrue(verify(chain = chain, pair = pair, chainOf = Some(expired)).isRight)
+      },
+      test("the same expired chain to a root that does not carry that serial number is refused") {
+        val chain = google(notBefore = days(-4000), notAfter = days(4000))
+        val pair = p256()
+        val expired = androidChain(chain, pair, challenge, leafNotBefore = days(-3000), leafNotAfter = days(-10))
+        assertTrue(kind(verify(chain = chain, pair = pair, chainOf = Some(expired))) == Some(Kind.UntrustedChain))
+      },
+      test("an attestation certificate that was never valid with the chain above it is refused whatever the root") {
+        val chain = google(rootSubject = FactoryRootSubject, notBefore = days(-1), notAfter = days(400))
+        val pair = p256()
+        val before = androidChain(chain, pair, challenge, leafNotBefore = days(-3000), leafNotAfter = days(-2000))
+        assertTrue(kind(verify(chain = chain, pair = pair, chainOf = Some(before))) == Some(Kind.UntrustedChain))
+      },
+      test("a copy of the root that the device sends, with the same key and another validity, is taken for the root, expired or not") {
+        val chain = google()
+        val pair = p256()
+        val genuine = androidChain(chain, pair, challenge).take(2)
+        val expiredCopy = copyOf(chain.root, notBefore = days(-4000), notAfter = days(-5)).getEncoded
+        val laterCopy = copyOf(chain.root, notBefore = days(-1), notAfter = days(3000)).getEncoded
+        assertTrue(
+          verify(chain = chain, pair = pair, chainOf = Some(genuine :+ expiredCopy)).isRight,
+          verify(chain = chain, pair = pair, chainOf = Some(genuine :+ laterCopy)).isRight,
+        )
+      },
+      test("a self-signed certificate with another key is not a copy of the root, whatever it is called") {
+        val chain = google()
+        val pair = p256()
+        val genuine = androidChain(chain, pair, challenge).take(2)
+        val impostor = authority("CN=Test Key Attestation Root,O=Test").certificate.getEncoded
+        assertTrue(kind(verify(chain = chain, pair = pair, chainOf = Some(genuine :+ impostor))) == Some(Kind.UntrustedChain))
+      },
+    ),
     test("a leaf with no key description is refused") {
       val chain = google()
       val pair = p256()

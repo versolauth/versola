@@ -40,4 +40,15 @@ object AttestationFailure:
     /** The client accepts no build of the platform the app sent. */
     case Unsupported
 
+    /** The app says it could not attest, instead of sending evidence: the device does not support the platform's attestation, the
+      * platform's service was not reachable, or the app is not set up for it. Refused under `enforce` like the absence it otherwise is,
+      * but counted apart, since an operator deciding on `enforce` reads these as different things from an old SDK sending nothing. */
+    case DeclaredUnsupported
+    case DeclaredServiceUnavailable
+    case DeclaredNotConfigured
+
+    /** What `attestation_error` carries on the wire: the name of the kind, in snake case. A closed set that the SDKs may act on, which
+      * the wording of a description is not (`unknown_key` is the one they do act on: forget the key and attest a new one). */
+    def code: String = toString.replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase
+
   def apply(kind: Kind, detail: String): AttestationFailure = new AttestationFailure(kind, detail)

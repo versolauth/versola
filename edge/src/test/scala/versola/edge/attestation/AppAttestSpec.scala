@@ -33,6 +33,31 @@ object AppAttestSpec extends ZIOSpecDefault:
 
   def spec = suite("AppAttest")(
     suite("an attestation")(
+      test("the launch category and the bundle version Apple adds in the extensions are read, and an attestation without them is as good") {
+        val withExtensions = attest(options = AppleOptions(category = Some(4), bundleVersion = Some("1.2.3"))).toOption.get
+        val without = attest().toOption.get
+        assertTrue(
+          withExtensions.category.contains(4L),
+          withExtensions.bundleVersion.contains("1.2.3"),
+          without.category.isEmpty,
+          without.bundleVersion.isEmpty,
+        )
+      },
+      test("extensions that do not read are no reason to refuse: the category is not what an attestation is accepted for") {
+        val result = attest(options = AppleOptions(brokenExtensions = true))
+        assertTrue(result.isRight, result.exists(_.category.isEmpty))
+      },
+      test("the category is a closed label, by Apple's table, whatever number arrives") {
+        assertTrue(
+          AppAttest.Category.label(None) == "none",
+          AppAttest.Category.label(Some(2)) == "testflight",
+          AppAttest.Category.label(Some(3)) == "development",
+          AppAttest.Category.label(Some(4)) == "app_store",
+          AppAttest.Category.label(Some(5)) == "enterprise_or_ad_hoc",
+          AppAttest.Category.label(Some(8)) == "restricted",
+          AppAttest.Category.label(Some(4_000_000_000L)) == "other",
+        )
+      },
       test("by a key Apple vouches for, made for this request and an accepted app, is accepted, and gives the key to keep") {
         val pair = p256()
         val result = attest(pair = pair)

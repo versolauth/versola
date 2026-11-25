@@ -108,6 +108,19 @@ object AttestationTrustSpec extends ZIOSpecDefault:
         count <- asked.get
       yield assertTrue(results.forall(identity), count == 1)
     },
+    test("a request that asked first and was given up on does not take the list with it: the fetch goes on and the next one is served") {
+      for
+        asked <- Ref.make(0)
+        slow = Handler.fromZIO(asked.update(_ + 1) *> ZIO.sleep(600.millis).as(Response.json(list))).toRoutes
+        _ <- TestClient.addRoutes(slow)
+        client <- ZIO.service[Client]
+        trust <- AttestationTrust.make(settings(), client)
+        // The first to ask is interrupted while Google is still answering, as a request under report is when it has waited long enough.
+        given_up <- trust.androidRevocation.timeout(100.millis)
+        later <- trust.androidRevocation.map(_(BigInteger("6681152659205225093"))).timeout(5.seconds)
+        count <- asked.get
+      yield assertTrue(given_up.isEmpty, later.contains(true), count == 1)
+    },
     test("a first fetch that failed is tried again soon, not after the whole interval") {
       for
         asked <- Ref.make(0)

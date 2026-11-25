@@ -945,7 +945,12 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
     const typedKind = KIND_BY_PATH[pathname.match(/^\/configuration\/clients\/(web|native|service)$/)?.[1] ?? ''];
     if (pathname === '/configuration/clients' || (typedKind && (method === 'POST' || method === 'PUT'))) {
       if (method === 'GET') {
-        await route.fulfill(json({ clients: pageSlice(state.clients[tenantId] ?? [], url) }));
+        // Central tells the list the mode of a policy that is on (#423), as it is held.
+        const withMode = (state.clients[tenantId] ?? []).map(client => {
+          const mode = state.attestation?.[client.id]?.mode;
+          return mode && mode !== 'off' ? { ...client, attestationMode: mode } : client;
+        });
+        await route.fulfill(json({ clients: pageSlice(withMode, url) }));
         return;
       }
 
