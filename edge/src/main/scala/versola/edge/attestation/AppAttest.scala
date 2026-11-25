@@ -36,8 +36,27 @@ private[attestation] object AppAttest:
   private val ProductionAaguid = "appattest".getBytes(StandardCharsets.US_ASCII) ++ Array.fill[Byte](7)(0)
   private val DevelopmentAaguid = "appattestdevelop".getBytes(StandardCharsets.US_ASCII)
 
-  /** An attested key, as it is kept to check its assertions with. */
-  final case class Attested(keyId: Array[Byte], publicKey: Array[Byte])
+  /** What a verified attestation says of the key: its identity and public key, and what Apple adds in the authenticator data's
+    * `extensions` -- the launch category of the app (`apple_validation_category_01`, a UInt32: see [[Category]]) and the version of the
+    * distributed app (`apple_bundle_version_01`). Both are optional in what Apple sends, and neither is used to refuse: the category
+    * is counted (see [[AttestationService]]) until it has been read from real devices. */
+  final case class Attested(keyId: Array[Byte], publicKey: Array[Byte], category: Option[Long], bundleVersion: Option[String])
+
+  /** Apple's `apple_validation_category_01` values, from "Validating apps that connect to your server", as the label of a metric. A
+    * closed set: what is outside the table is `other`, and an attestation without the value is `none`. */
+  object Category:
+    def label(category: Option[Long]): String = category match
+      case None => "none"
+      case Some(0) => "invalid"
+      case Some(1) => "operating_system"
+      case Some(2) => "testflight"
+      case Some(3) => "development"
+      case Some(4) => "app_store"
+      case Some(5) => "enterprise_or_ad_hoc"
+      case Some(6) => "developer_id"
+      case Some(7 | 8 | 9) => "restricted"
+      case Some(_) => "other"
+
 
   /** The attestation of a key, held to everything Apple documents: the chain, the nonce, the key's identity, the app and the
     * environment. `clientDataHash` is the one the app handed `attestKey`; the key is attested for exactly the request that carried it. */
@@ -95,7 +114,7 @@ private[attestation] object AppAttest:
         (),
         AttestationFailure(Kind.Mismatch, "the credential id is not the key id"),
       )
-    yield Attested(keyId = keyId, publicKey = credential.getPublicKey.getEncoded)
+    yield Attested(keyId, credential.getPublicKey.getEncoded, parsed.category, parsed.bundleVersion)
 
   /** An assertion by a key that was attested: the signature, the app, and the counter it carries. The caller then moves the stored
     * counter to it, atomically, and refuses the assertion if that does not move it forward -- that is what makes it single use. */
@@ -157,10 +176,21 @@ private[attestation] object AppAttest:
       counter: Long,
       aaguid: Option[Array[Byte]],
       credentialId: Option[Array[Byte]],
+      category: Option[Long],
+      bundleVersion: Option[String],
   )
 
   private object AuthData:
     private val Fixed = 37
+
+    /** The `ED` flag: the authenticator data ends with a CBOR map of extensions. */
+    private val ExtensionsFlag = 0x80
+
+    /** The attested credential's public key, as Apple writes it (a COSE EC2 P-256 map: 77 bytes when canonical), which sits between the
+      * credential id and the extensions. Taken from Apple's documentation ("Encoded key (77 bytes)") and not yet checked against a real
+      * attestation: if it were not right, every iOS key would count as `none` in `attestation_ios_app_category_total`, and nothing would be
+      * refused. The first device's counts are the check. */
+    private val EncodedKeyLength = 77
 
     def parse(data: Array[Byte], withCredential: Boolean): Either[AttestationFailure, AuthData] =
       if data.length < Fixed then Left(malformed("the authenticator data is too short"))
@@ -168,9 +198,24 @@ private[attestation] object AppAttest:
         val buffer = ByteBuffer.wrap(data)
         val rpIdHash = data.slice(0, 32)
         val counter = buffer.getInt(33).toLong & 0xffffffffL
-        if !withCredential then Right(AuthData(rpIdHash, counter, None, None))
+        if !withCredential then Right(AuthData(rpIdHash, counter, None, None, None, None))
         else if data.length < Fixed + 16 + 2 then Left(malformed("the authenticator data carries no credential"))
         else
           val length = buffer.getShort(Fixed + 16).toInt & 0xffff
           if data.length < Fixed + 18 + length then Left(malformed("the credential id is longer than the authenticator data"))
-          else Right(AuthData(rpIdHash, counter, Some(data.slice(Fixed, Fixed + 16)), Some(data.slice(Fixed + 18, Fixed + 18 + length))))
+          else
+            val (category, version) = extensions(data, Fixed + 18 + length + EncodedKeyLength)
+            Right(AuthData(rpIdHash, counter, Some(data.slice(Fixed, Fixed + 16)), Some(data.slice(Fixed + 18, Fixed + 18 + length)), category, version))
+
+    /** The category and the bundle version of the extensions map, when there is one and it reads; anything else is nothing, never a
+      * failure: they are not what an attestation is accepted or refused for. */
+    private def extensions(data: Array[Byte], from: Int): (Option[Long], Option[String]) =
+      if (data(32) & ExtensionsFlag) == 0 || from >= data.length then (None, None)
+      else
+        Cbor.decode(data.drop(from)).toOption match
+          case Some(map) =>
+            (
+              map.get("apple_validation_category_01").collect { case Cbor.Unsigned(value) => value },
+              map.get("apple_bundle_version_01").flatMap(_.text),
+            )
+          case None => (None, None)

@@ -353,6 +353,22 @@ object AttestationServiceSpec extends ZIOSpecDefault:
         yield assertTrue(result.isDefined, !result.exists(_.toString.startsWith("Declared")))
       },
     ),
+    test("the launch category Apple reports for a newly attested key is counted for its client, as a closed label") {
+      val pair = p256()
+      def categoryCount(client: String, label: String) =
+        Metric.counter("attestation_ios_app_category_total")
+          .tagged(Set(MetricLabel("client", client), MetricLabel("category", label))).value.map(_.count)
+      for
+        e <- env()
+        sent = evidence(
+          Some("ios"), Some(b64(keyId(pair))),
+          attestation = Some(appleAttestation(e.chain, pair, appId, hashFor("jti-c", "category-client"), AppleOptions(category = Some(4)))),
+        )
+        before <- categoryCount("category-client", "app_store")
+        _ <- e.service.verify("category-client", enforce, jkt, "jti-c", None, sent)
+        after <- categoryCount("category-client", "app_store")
+      yield assertTrue(after - before == 1.0)
+    },
     test("a request under report waits for its check no longer than the bound, and the outcome is counted as a Timeout") {
       val slowTrust = new AttestationTrust:
         def appleRoots = apple().roots

@@ -144,12 +144,42 @@ object AttestationFixtures:
       credentialId: Option[Array[Byte]] = None,
       rpIdSource: Option[String] = None,
       format: String = "apple-appattest",
+      /** `apple_validation_category_01` and `apple_bundle_version_01` of the `extensions` map; none when both are absent. */
+      category: Option[Long] = None,
+      bundleVersion: Option[String] = None,
+      /** Bytes after the encoded key that are not a CBOR map. */
+      brokenExtensions: Boolean = false,
   )
 
-  def authenticatorData(appId: String, counter: Long, attested: Option[(Array[Byte], Array[Byte])]): Array[Byte] =
-    val fixed = sha256(utf8(appId)) ++ Array[Byte](if attested.isDefined then 0x40 else 0) ++ ByteBuffer.allocate(4).putInt(counter.toInt).array()
-    attested.fold(fixed): (aaguid, credentialId) =>
-      fixed ++ aaguid ++ ByteBuffer.allocate(2).putShort(credentialId.length.toShort).array() ++ credentialId
+  /** The credential's public key as a COSE EC2 P-256 map ({1: 2, 3: -7, -1: 1, -2: x, -3: y}), which is 77 bytes: what Apple puts between the
+    * credential id and the extensions, built as CBOR and not as a block of the length the parser skips. */
+  def coseKey: Array[Byte] =
+    val encoded = cbor(
+      Cbor.Mapping(
+        Vector(
+          Cbor.Unsigned(1) -> Cbor.Unsigned(2),
+          Cbor.Unsigned(3) -> Cbor.Negative(6),
+          Cbor.Negative(0) -> Cbor.Unsigned(1),
+          Cbor.Negative(1) -> Cbor.Bytes(Array.fill[Byte](32)(7)),
+          Cbor.Negative(2) -> Cbor.Bytes(Array.fill[Byte](32)(8)),
+        ),
+      ),
+    )
+    require(encoded.length == 77, s"a COSE P-256 key is 77 bytes, not ${encoded.length}")
+    encoded
+
+  def authenticatorData(
+      appId: String,
+      counter: Long,
+      attested: Option[(Array[Byte], Array[Byte])],
+      extensions: Option[Array[Byte]] = None,
+  ): Array[Byte] =
+    val flags = (if attested.isDefined then 0x40 else 0) | (if extensions.isDefined then 0x80 else 0)
+    val fixed = sha256(utf8(appId)) ++ Array[Byte](flags.toByte) ++ ByteBuffer.allocate(4).putInt(counter.toInt).array()
+    attested.fold(fixed ++ extensions.getOrElse(Array.emptyByteArray)): (aaguid, credentialId) =>
+      // The attested credential: aaguid, the credential id and its length, and the 77 bytes of the encoded key, then the extensions.
+      fixed ++ aaguid ++ ByteBuffer.allocate(2).putShort(credentialId.length.toShort).array() ++ credentialId ++
+        extensions.fold(Array.emptyByteArray)(coseKey ++ _)
 
   def appleAttestation(
       chain: Apple,
@@ -159,7 +189,19 @@ object AttestationFixtures:
       options: AppleOptions = AppleOptions(),
   ): Array[Byte] =
     val id = keyId(pair)
-    val authData = authenticatorData(options.rpIdSource.getOrElse(appId), options.counter, Some(options.aaguid -> options.credentialId.getOrElse(id)))
+    val extensions =
+      if options.brokenExtensions then Some(Array[Byte](0xff.toByte, 0xff.toByte))
+      else if options.category.isEmpty && options.bundleVersion.isEmpty then None
+      else
+        Some(
+          cbor(
+            Cbor.Mapping(
+              (options.category.map(value => Cbor.Text("apple_validation_category_01") -> Cbor.Unsigned(value)).toVector ++
+                options.bundleVersion.map(value => Cbor.Text("apple_bundle_version_01") -> Cbor.Text(value)).toVector),
+            ),
+          ),
+        )
+    val authData = authenticatorData(options.rpIdSource.getOrElse(appId), options.counter, Some(options.aaguid -> options.credentialId.getOrElse(id)), extensions)
     val nonce = options.nonce.getOrElse(sha256(authData, clientDataHash))
     val credential = issue(
       subject = "CN=credential",

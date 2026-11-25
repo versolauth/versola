@@ -88,6 +88,11 @@ object AttestationService:
 
   private val requests = Metric.counter("attestation_requests_total")
 
+  /** The launch category Apple reports for an attested iOS key (`apple_validation_category_01`): App Store, TestFlight, development,
+    * enterprise or ad hoc. Counted, not enforced: the values are from Apple's documentation and have not been read from a device here,
+    * so what they show under `report` is what decides whether a policy may refuse by category. A closed set per `client`. */
+  private val appCategories = Metric.counter("attestation_ios_app_category_total")
+
   /** `client` is the client the request is for, which is what lets an operator see whose installs fail under `report` before moving
     * that client to `enforce`. It is a closed set: `verify` is only called for a client central holds a policy for, and the id is
     * the one the request's path names and edge looked the policy up by, never something the app wrote in the form. */
@@ -206,6 +211,7 @@ object AttestationService:
                 AppAttest.verifyAttestation(decoded, keyBytes, clientData, apps.appIds, apps.environment, trust.appleRoots, now),
               )
               _ <- keys.register(clientId, key, attested.publicKey, apps.environment, now).orDie
+              _ <- appCategories.tagged(Set(MetricLabel("client", clientId), MetricLabel("category", AppAttest.Category.label(attested.category)))).increment
             yield ()
           case (None, Some(assertion)) =>
             for
