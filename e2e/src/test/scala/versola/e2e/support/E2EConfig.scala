@@ -62,6 +62,9 @@ final case class E2EConfig(
       * (`edge/dev/mtls`). */
     edgeMutualTlsUrl: String = "https://localhost:8083",
     edgeMutualTlsTrustedCertificates: String = "../edge/dev/mtls/ca.crt",
+    /** Central's and edge's diagnostics listeners (`DPORT`), which serve `/metrics`; auth's is [[authDiagnosticsUrl]]. */
+    centralDiagnosticsUrl: String = "http://localhost:9002",
+    edgeDiagnosticsUrl: String = "http://localhost:9006",
 )
 
 object E2EConfig:
@@ -109,6 +112,8 @@ object E2EConfig:
       centralMutualTlsServerCertificate <- env("CENTRAL_MTLS_SERVER_CERT", "../central/dev/mtls/server.crt")
       edgeMutualTlsUrl <- env("EDGE_MTLS_URL", "https://localhost:8083")
       edgeMutualTlsTrustedCertificates <- env("EDGE_MTLS_CA", "../edge/dev/mtls/ca.crt")
+      centralDiagnosticsUrl <- env("CENTRAL_DIAGNOSTICS_URL", "http://localhost:9002")
+      edgeDiagnosticsUrl <- env("EDGE_DIAGNOSTICS_URL", "http://localhost:9006")
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
@@ -139,6 +144,8 @@ object E2EConfig:
       centralMutualTlsServerCertificate,
       edgeMutualTlsUrl,
       edgeMutualTlsTrustedCertificates,
+      centralDiagnosticsUrl,
+      edgeDiagnosticsUrl,
     )
 
   private def env(name: String, default: String): Task[String] =
