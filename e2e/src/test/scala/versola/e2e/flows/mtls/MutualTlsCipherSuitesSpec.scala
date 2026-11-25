@@ -2,7 +2,7 @@ package versola.e2e.flows.mtls
 
 import versola.e2e.support.E2EConfig
 import zio.*
-import zio.http.{Client, Request, URL}
+import zio.http.{Client, Request, Status, URL}
 import zio.test.*
 
 import java.io.FileInputStream
@@ -88,8 +88,10 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
     def checkServerTrusted(chain: Array[X509Certificate], authType: String): Unit =
       certificateSeen.set(true)
       delegate.checkServerTrusted(chain, authType)
-    def checkClientTrusted(chain: Array[X509Certificate], authType: String, socket: Socket): Unit = delegate.checkClientTrusted(chain, authType, socket)
-    def checkClientTrusted(chain: Array[X509Certificate], authType: String, engine: SSLEngine): Unit = delegate.checkClientTrusted(chain, authType, engine)
+    def checkClientTrusted(chain: Array[X509Certificate], authType: String, socket: Socket): Unit =
+      delegate.checkClientTrusted(chain, authType, socket)
+    def checkClientTrusted(chain: Array[X509Certificate], authType: String, engine: SSLEngine): Unit =
+      delegate.checkClientTrusted(chain, authType, engine)
     def checkClientTrusted(chain: Array[X509Certificate], authType: String): Unit = delegate.checkClientTrusted(chain, authType)
     def getAcceptedIssuers: Array[X509Certificate] = delegate.getAcceptedIssuers
 
@@ -127,35 +129,36 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
       for
         context <- sslContext(target.trusted, certificateSeen)
         socket <- ZIO.fromAutoCloseable(ZIO.attemptBlocking(context.getSocketFactory.createSocket()))
+        tls <- socket match
+          case tls: SSLSocket => ZIO.succeed(tls)
+          case other => ZIO.fail(IllegalStateException(s"expected an SSLSocket, got ${other.getClass.getName}"))
         result <- ZIO.attemptBlocking:
-          socket match
-            case tls: SSLSocket =>
-              tls.setEnabledProtocols(Array("TLSv1.2"))
-              tls.setEnabledCipherSuites(Array(suite))
-              tls.setSoTimeout(10000)
-              tls.connect(InetSocketAddress(target.host, target.port), 10000)
-              tls.startHandshake()
-            case other => throw IllegalStateException(s"expected an SSLSocket, got ${other.getClass.getName}")
+          tls.setEnabledProtocols(Array("TLSv1.2"))
+          tls.setEnabledCipherSuites(Array(suite))
+          tls.setSoTimeout(10000)
+          tls.connect(InetSocketAddress(target.host, target.port), 10000)
+          tls.startHandshake()
         .either
-        probe <- result match
+        classified <- result match
           case _ if certificateSeen.get => ZIO.succeed(Probe.Agreed)
           case Right(_) => ZIO.succeed(Probe.Agreed)
           case Left(error: SSLHandshakeException) if Option(error.getMessage).exists(_.contains("Received fatal alert: handshake_failure")) =>
             ZIO.succeed(Probe.Refused)
+          case Left(_: IllegalArgumentException) => ZIO.succeed(Probe.NotOffered)
           case Left(error: SSLHandshakeException) if Option(error.getMessage).exists(_.contains("No appropriate protocol")) =>
             ZIO.succeed(Probe.NotOffered)
           case Left(error) => ZIO.fail(error)
-      yield probe
+      yield classified
 
-  private def metric(target: Target, client: Client): Task[String] =
-    ZIO.scoped:
-      for
-        url <- ZIO.fromEither(URL.decode(s"${target.diagnosticsUrl}/metrics")).mapError(error => RuntimeException(error))
-        response <- client.batched(Request.get(url))
-        body <- response.body.asString
-      yield body
+  private def metrics(target: Target, client: Client): Task[(Status, String)] =
+    for
+      url <- ZIO.fromEither(URL.decode(s"${target.diagnosticsUrl}/metrics")).mapError(error => RuntimeException(error))
+      response <- client.batched(Request.get(url))
+      body <- response.body.asString
+    yield (response.status, body)
 
-  private val refusedGauge = """(?m)^tls_cbc_refused(\{[^}]*\})?\s+1(\.0+)?\s*$""".r
+  /** Prometheus text format: `name value [timestamp]`, the value a float (`1.0`) and the timestamp the connector's own. */
+  private val refusedGauge = """(?m)^tls_cbc_refused(\{[^}]*\})?\s+1(\.0+)?(\s+\d+)?\s*$""".r
 
   def spec = suite("Mutual TLS listeners agree to no AES-CBC suite (RFC 9325 §4.2, FAPI 2.0 §5.2.2)")(
     Listener.values.toList.map(listener =>
@@ -166,7 +169,9 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
             target <- target(config, listener)
             outcome <- probe(target, cbcSuite)
           yield assertTrue(outcome == Probe.Refused)
-            .label(s"$outcome: Refused is the only answer that shows the listener turned CBC down ($cbcSuite NotOffered means this JVM cannot offer it)")
+            .label(
+              s"$outcome: Refused is the only answer that shows the listener turned CBC down ($cbcSuite NotOffered means this JVM cannot offer it)",
+            )
         },
         test(s"a client offering only $gcmSuite gets past the suite negotiation") {
           for
@@ -174,8 +179,12 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
             target <- target(config, listener)
             outcome <- probe(target, gcmSuite)
           yield assertTrue(outcome == Probe.Agreed)
-            .label(s"expected the GCM suite to be taken (it then fails on the missing client certificate, with an alert that is not handshake_failure), got $outcome")
+            .label(
+              s"expected the GCM suite to be taken (it then fails on the missing client certificate, with an alert that is not handshake_failure), got $outcome",
+            )
         },
+        // The static-RSA suites (TLS_RSA_*) are in Netty's default list and out of RFC 9325 §4.2; the JDK disables them by
+        // default from 24 on (CI runs 25, the images 27), so on an older JDK this test would name them.
         test("every TLS 1.2 suite this JVM supports is refused or one of the four of RFC 9325 §4.2") {
           for
             config <- ZIO.service[E2EConfig]
@@ -183,19 +192,26 @@ object MutualTlsCipherSuitesSpec extends ZIOSpec[E2EConfig & Client]:
             suites <- clientSuites(target.trusted)
             outcomes <- ZIO.foreach(suites)(suite => probe(target, suite).map(suite -> _))
             agreed = outcomes.collect { case (suite, Probe.Agreed) => suite }
-            offered = outcomes.count(_._2 != Probe.NotOffered)
-          yield assertTrue(agreed.toSet.subsetOf(recommended), agreed.nonEmpty, offered > 1)
-            .label(s"suites the listener agreed to: ${agreed.mkString(", ")}; the ones outside RFC 9325 §4.2: ${agreed.filterNot(recommended).mkString(", ")}")
+          yield assertTrue(outcomes.contains(cbcSuite -> Probe.Refused), agreed.contains(gcmSuite))
+            .label(s"the control: this JVM offered the CBC suite and the listener refused it, and took the GCM one; outcomes: $outcomes") &&
+            assertTrue(agreed.toSet.subsetOf(recommended))
+              .label(
+                s"suites the listener agreed to: ${agreed.mkString(", ")}; the ones outside RFC 9325 §4.2: ${agreed.filterNot(recommended).mkString(", ")}",
+              )
         },
         test("its /metrics says the policy is in force: tls_cbc_refused 1") {
           for
             config <- ZIO.service[E2EConfig]
             target <- target(config, listener)
             client <- ZIO.service[Client]
-            body <- metric(target, client)
-          yield assertTrue(refusedGauge.findFirstIn(body).isDefined)
-            .label(s"expected a line 'tls_cbc_refused 1' on ${target.diagnosticsUrl}/metrics; the policy is off (VERSOLA_TLS_CIPHER_POLICY=jdk) or the gauge is missing")
+            (status, body) <- metrics(target, client)
+          yield assertTrue(status == Status.Ok)
+            .label(s"expected ${target.diagnosticsUrl}/metrics to answer 200, got $status: the diagnostics address is wrong, not the policy") &&
+            assertTrue(refusedGauge.findFirstIn(body).isDefined)
+              .label(
+                s"expected a line 'tls_cbc_refused 1' on ${target.diagnosticsUrl}/metrics; the policy is off (VERSOLA_TLS_CIPHER_POLICY=jdk) or the gauge is missing",
+              )
         },
       ),
     )*,
-  )
+  ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(3.minutes)
