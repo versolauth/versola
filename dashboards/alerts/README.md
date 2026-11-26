@@ -110,7 +110,7 @@ audit log.
 
 The file passes `promtool check rules` (4 rules), and the expressions were run against synthetic series with `promtool test rules` (a kind with nothing
 past the middle is silent, one failure does not fire `CertificateRenewalsFailing`, two do, a refusal of an edge or EST caller does not, a listener certificate at 50 of 365
-days fires the warning only); the tests are not kept in the repository.
+days fires the warning only); those tests are not kept in the repository (the rule of the TLS cipher policy below is the first to keep its test).
 
 `central` reads the count from its own tables (`client_certificate_issuance`, `edge_certificates`, `client_est_certificates`) every five minutes, with one
 aggregate query for each kind, so what is exported does not grow with the number of clients; every replica publishes the same number. The edges of a
@@ -123,3 +123,24 @@ A renewal that never reaches `central` (an edge that cannot connect to it) is no
 `CertificateRenewalOverdue` are what show it. The listener gauges are set once, when a service starts: they are the end of the certificate it serves now, so a
 renewed file counts only after the restart. Certificates that an edge generates for an enrolled client (`enrollEdgeClientCertificate`) are not tracked: `central`
 stores only their last serial, not their end.
+
+## TLS cipher policy
+
+`versola-tls.rules.yaml` (#1049): `auth`, `central` and `edge` refuse the TLS 1.2 AES-CBC cipher suites (RFC 9325 §4.2, which FAPI 2.0 asks for through BCP 195).
+Each exports the gauge `tls_cbc_refused` once, at start: 1 when the policy is in force, 0 when `VERSOLA_TLS_CIPHER_POLICY=jdk` turned it off. A service that is asked
+for the policy and cannot apply it does not start, so there is no third value. The rule groups by namespace, like the others, and names no service: the one running
+without the policy is the one whose own `tls_cbc_refused` is 0.
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `TlsCbcPolicyOff` | `tls_cbc_refused` is 0 for some service of a namespace: the policy was opted out | 10m | warning |
+
+The file passes `promtool check rules` (1 rule), and its test, kept in [`tests/versola-tls.rules.test.yaml`](tests/versola-tls.rules.test.yaml), runs against synthetic series:
+
+```bash
+promtool test rules dashboards/alerts/tests/versola-tls.rules.test.yaml
+```
+
+(a namespace where one service exports 0 fires after the `for`, one where every service exports 1 does not, and the alert clears when the policy comes back).
+On an installation that does not have to meet FAPI 2.0 an opt-out is a choice, not a fault: leave this rule out of the rules that page.
+A service that exports nothing (it is down, or runs an image from before the policy) is not seen by this rule; the rules for what is down are elsewhere.

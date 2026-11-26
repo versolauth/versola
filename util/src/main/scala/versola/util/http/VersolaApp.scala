@@ -13,7 +13,7 @@ import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.`export`.BatchSpanProcessor
 import io.opentelemetry.semconv.ServiceAttributes
 import versola.cleanup.{CleanupConfig, CleanupManager}
-import versola.util.{EnvName, PostInitializationService}
+import versola.util.{EnvName, PostInitializationService, TlsCipherPolicy}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.FromConfigSourceTypesafe
@@ -40,14 +40,20 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   // Before anything can ask the JCA for an algorithm; accp-required refuses the start here.
   private val cryptoProvider = versola.util.CryptoProvider.installFromEnv()
 
+  // The first step of `bootstrap`, before a running service builds a TLS context (the JDK reads the property once).
+  // Lazy, so a test that only touches an app object does not change a process-wide setting.
+  private lazy val tlsCipherPolicy = TlsCipherPolicy.installFromEnv()
+
   override type Environment =
     ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client & OutboundGuard
 
   override val bootstrap: ZLayer[Any, Any, Environment] =
-    OpenTelemetry.contextZIO >+> configProvider >+> envName >+>
-      ZioLogging.logFormats >+>
-      jsonLoggerLayer(serviceName) >+>
-      openTelemetryLayer(serviceName) >+> Observability.client
+    ZLayer.fromZIO(ZIO.attempt(tlsCipherPolicy)) >>> (
+      OpenTelemetry.contextZIO >+> configProvider >+> envName >+>
+        ZioLogging.logFormats >+>
+        jsonLoggerLayer(serviceName) >+>
+        openTelemetryLayer(serviceName) >+> Observability.client
+    )
 
   def dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies]
 
@@ -235,6 +241,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
       _ <- zio.metrics.Metric.gauge("crypto_provider_native").set(if cryptoProvider.native then 1.0 else 0.0)
+      _ <- zio.metrics.Metric.gauge("tls_cbc_refused").set(if tlsCipherPolicy.refused then 1.0 else 0.0)
       client <- ZIO.service[Client]
 
       // Before `dependencies.build`, deliberately. Building them is what waits on everything
