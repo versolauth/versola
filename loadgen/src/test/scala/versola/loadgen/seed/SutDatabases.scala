@@ -40,11 +40,11 @@ object SutDatabases:
     */
   private val creation = new Object
 
-  /** The databases already made fresh by this JVM. These are scratch databases that outlive the run, so one left by an
-    * earlier checkout holds migrations as that checkout had them; a migration edited since (or a branch switched) no
-    * longer matches its recorded checksum and Flyway refuses every spec with `Migration checksum mismatch`. They
-    * hold nothing worth keeping, so the first use in a run drops and recreates them, and later uses in the same run
-    * share what that made.
+  /** The databases already made fresh by this JVM, which under sbt's default layering is one `test` invocation. These are
+    * scratch databases that outlive the run, so one left by an earlier checkout holds migrations as that checkout had
+    * them; a migration edited since (or a branch switched) no longer matches its recorded checksum and Flyway refuses
+    * every spec with `Migration checksum mismatch`. They hold nothing worth keeping, so the first use in a run drops and
+    * recreates them, and later uses in the same run share what that made.
     */
   private val recreated = scala.collection.mutable.Set.empty[String]
 
@@ -83,7 +83,14 @@ object SutDatabases:
           try
             val statement = connection.createStatement()
             try
-              if recreated.add(database) then statement.execute(s"DROP DATABASE IF EXISTS $database WITH (FORCE)")
+              if !recreated.contains(database) then
+                // Only a scratch database of this suite is ever dropped, whatever name a future caller passes.
+                require(database.startsWith("loadgen_sut_"), s"refusing to drop '$database': not a loadgen SUT scratch database")
+                // WITH (FORCE) (Postgres 13+) ends the other sessions on it: two runs against one Postgres (two worktrees
+                // with the same POSTGRES_HOST) are not supported, the second would cut the first off.
+                statement.execute(s"DROP DATABASE IF EXISTS $database WITH (FORCE)")
+                // Recorded only once the drop has worked: a failed one must fail the next spec too, not leave it on the stale database.
+                recreated += database
               val existing = statement.executeQuery(s"SELECT 1 FROM pg_database WHERE datname = '$database'")
               if !existing.next() then statement.execute(s"CREATE DATABASE $database")
             finally statement.close()
