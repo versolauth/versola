@@ -840,7 +840,7 @@ object EdgeService:
         _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
         response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
       // The session's own cookie, when this request rotated it, is added to whatever `proxy` answers with.
-      yield response.removeHeader(Header.SetCookie)
+      yield response.updateHeaders(ProxyHeaders.toCaller).removeHeader(Header.SetCookie)
 
     /** Rate limit checkpoints R2 and R3. A policy in `enforce` refuses the call here with `429` and `Retry-After`; one in
       * `shadow` only counts `would_limit` and the request goes on unchanged. With no policy at the checkpoint this is one
@@ -1612,7 +1612,11 @@ object EdgeService:
         .filter(_.name != EdgeSessionCookie.name)
         .map(_.toRequest)
 
-      val baseHeaders = request.headers
+      // The caller's address as text, as the deployment declares it (`client-ip`): not the /64 key of an IPv6 rate limit, not the proxy's own
+      // address standing in for a missing header, and none on the mutual-TLS listener, where the caller is a certificate.
+      val clientAddress =
+        Option.when(request.remoteCertificate.isEmpty)(ClientAddress.trustedLiteral(request, config.clientIp, config.clientIpHeader)).flatten
+      val baseHeaders = ProxyHeaders.toUpstream(request.headers, clientAddress)
         .removeHeader(Header.Cookie)
         .removeHeader(Header.Host)
         .removeHeader(Header.Authorization)
