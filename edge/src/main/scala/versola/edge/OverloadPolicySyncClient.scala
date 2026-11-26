@@ -28,7 +28,7 @@ object OverloadPolicySyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends OverloadPolicySyncClient:
-    private val OverloadPolicyURL = config.central.url / "edge" / "sync" / "overload"
+    private val OverloadPolicyURL = config.syncUrl("overload")
 
     override def getAll: Task[EdgeOverloadPolicy] =
       for

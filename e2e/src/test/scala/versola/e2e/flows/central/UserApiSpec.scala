@@ -417,4 +417,29 @@ object UserApiSpec extends CentralApiSpec:
         assertTrue(record.flatMap(_.str("email")).contains(email))
           .label("repointing an email is an account takeover, since password recovery follows it")
     },
+    test("a password reset takes a lifetime of one hour to seven days and refuses any other") {
+      def reset(central: CentralApi, userId: String, expiresInSeconds: Long) =
+        central.post(
+          "/users/password/reset",
+          Json.Obj(
+            "userId" -> Json.Str(userId),
+            "expiresInSeconds" -> Json.Num(expiresInSeconds),
+            "channel" -> Json.Str("show"),
+          ),
+        )
+      for
+        central <- api
+        login <- CentralApi.login("probe")
+        id <- createSynced(central, Fixtures.user(login = Some(login)))
+        tooShort <- reset(central, id, 3599)
+        tooLong <- reset(central, id, 604801)
+        negative <- reset(central, id, -1)
+        accepted <- reset(central, id, 43200)
+      yield assertTrue(
+        tooShort.status == Status.BadRequest,
+        tooLong.status == Status.BadRequest,
+        negative.status == Status.BadRequest,
+        accepted.status == Status.Ok,
+      ).label("the lifetime is how long a password that bypasses the user's own stays usable, so it has a ceiling")
+    },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(180.seconds)

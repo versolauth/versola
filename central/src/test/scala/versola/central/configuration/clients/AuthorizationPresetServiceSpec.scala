@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsRecord,
   ChallengeSettingsService,
   EmailRegistration,
@@ -69,6 +70,8 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     createdAt = Instant.EPOCH,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(
@@ -129,6 +132,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     securityProfile = SecurityProfile.fapi2,
     logoLight = None,
     logoDark = None,
+    auditSettings = AuditSettings.default,
   )
 
   override def spec = suite("AuthorizationPresetService")(

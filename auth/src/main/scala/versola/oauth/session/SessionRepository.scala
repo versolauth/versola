@@ -1,7 +1,7 @@
 package versola.oauth.session
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.RefreshToken
+import versola.oauth.model.{Cnf, RefreshToken}
 import versola.oauth.revocation.RevocationTerms
 import versola.oauth.session.model.{
   EndedSession,
@@ -188,6 +188,12 @@ trait SessionRepository:
     * the request named no scope, or named the one already stored, the stored value is already
     * correct and writing it buys a row version for nothing.
     *
+    * `cnf` is `Some` only when this refresh re-bound the grant: the whole confirmation the row
+    * carries from now on, written by the statement that renews it. The one case is a client
+    * registered by an edge-group name refreshing with another certificate of its group (RFC 8705
+    * §7.1; `OAuthTokenService` decides it, this only stores what it is given). `None` leaves the
+    * stored confirmation alone, which is every other refresh.
+    *
     * Returns false when the token is gone, expired or retired. That is checked on every call,
     * including the one that writes nothing, because revocation works by setting `expires_at`
     * to now: the caller's earlier read can be stale by the time it gets here.
@@ -195,6 +201,7 @@ trait SessionRepository:
   def renewBoundToken(
       token: MAC.Of[RefreshToken],
       scope: Option[Set[ScopeToken]],
+      cnf: Option[Cnf],
   ): Task[Boolean]
 
   /** Revokes the chain the first exchange of a replayed authorization code started, named by

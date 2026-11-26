@@ -162,8 +162,8 @@ object LogoutController extends Controller:
       renderService: ConversationRenderService,
       uiLocales: Option[List[String]],
   ): Task[Response] =
-    Observability.setError("hint_mismatch") *>
-      setSessionAuth(info) *>
+    // Not a failure: a hint from before a step-up is expected, and the user is asked, so no error is recorded.
+    setSessionAuth(info) *>
       renderService.renderLogoutConfirm(info, csrfToken(rawId, redirect, state, config), redirect, state, uiLocales)
 
   private def sessionIdFromCookie(request: Request, config: CoreConfig): Option[SessionId] =

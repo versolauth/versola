@@ -1,6 +1,7 @@
 package versola.central.configuration.clients.certificates
 
-import org.bouncycastle.asn1.x509.{BasicConstraints, ExtendedKeyUsage, Extension, KeyPurposeId, KeyUsage}
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.asn1.x509.{BasicConstraints, ExtendedKeyUsage, Extension, GeneralName, GeneralNames, KeyPurposeId, KeyUsage}
 import org.bouncycastle.cert.jcajce.{JcaX509CertificateConverter, JcaX509ExtensionUtils, JcaX509v3CertificateBuilder}
 import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.operator.jcajce.{JcaContentSignerBuilder, JcaContentVerifierProviderBuilder}
@@ -72,15 +73,24 @@ object LocalCaIssuer:
           BigInteger(159, random).setBit(158),
           Date.from(now.minusMillis(ClockSkew.toMillis)),
           Date.from(notAfter),
-          csr.getSubject,
+          // central's choice of names, when it made one: the request is then only the proof of the key
+          request.subjectDn.fold(csr.getSubject)(X500Name(_)),
           csr.getPublicKey,
         )
         builder.addExtension(Extension.basicConstraints, true, BasicConstraints(false))
         builder.addExtension(Extension.keyUsage, true, KeyUsage(KeyUsage.digitalSignature))
         builder.addExtension(Extension.extendedKeyUsage, false, ExtendedKeyUsage(KeyPurposeId.id_kp_clientAuth))
         builder.addExtension(Extension.authorityKeyIdentifier, false, subjectKeyIdentifier)
-        Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName))).foreach: san =>
-          builder.addExtension(Extension.subjectAlternativeName, false, san.getParsedValue)
+        if request.subjectDn.isDefined then
+          val names =
+            request.dnsNames.map(GeneralName(GeneralName.dNSName, _)) ++
+              request.uris.map(GeneralName(GeneralName.uniformResourceIdentifier, _)) ++
+              request.emailAddresses.map(GeneralName(GeneralName.rfc822Name, _)) ++
+              request.ipAddresses.map(GeneralName(GeneralName.iPAddress, _))
+          if names.nonEmpty then builder.addExtension(Extension.subjectAlternativeName, false, GeneralNames(names.toArray))
+        else
+          Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName))).foreach: san =>
+            builder.addExtension(Extension.subjectAlternativeName, false, san.getParsedValue)
         val signer = JcaContentSignerBuilder(signatureName).build(key)
         val issued = JcaX509CertificateConverter().getCertificate(builder.build(signer))
         ClientCertificateRequests.pem("CERTIFICATE", issued.getEncoded)

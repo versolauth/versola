@@ -16,10 +16,15 @@ object PrivateKeyUtil extends PrivateKeyUtil:
         .getInstance(algorithm)
         .generatePrivate(
           PKCS8EncodedKeySpec(
+            // Both alphabets are read: central shows a key it generated as base64url (`-` and `_`) and configuration
+            // has always held the standard one (`+` and `/`). The two share no character that means different things,
+            // so mapping one onto the other cannot turn a valid key into another.
             Base64.getDecoder.decode(
               key
                 .replaceAll(" ", "")
-                .replaceAll("\n", ""),
+                .replaceAll("\n", "")
+                .replace('-', '+')
+                .replace('_', '/'),
             ),
           ),
         )

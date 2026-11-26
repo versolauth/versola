@@ -112,6 +112,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     securityProfile = SecurityProfile.fapi2,
     logoLight = None,
     logoDark = None,
+    auditSettings = Some(AuditSettings.default),
   )
   val systemSettings = SystemSettingsRecord.default
   val smsTemplates = Vector(
@@ -977,6 +978,25 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         unset <- none.getTenantLogo(tenantId)
       yield assertTrue(set == Some(TenantLogo("light.svg", "dark.svg")), otherTenant.isEmpty, single.isEmpty, unset.isEmpty)
     },
+    test("auditLog and auditTokenRefresh read the tenant's switches; a tenant with no settings keeps the log, without the refreshes") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(auditSettings = Some(AuditSettings(log = false, tokenRefresh = true)))))
+        empty <- makeEnv()
+        off <- env.auditLog(tenantId)
+        refresh <- env.auditTokenRefresh(tenantId)
+        unknownLog <- env.auditLog(TenantId("nobody"))
+        unknownRefresh <- env.auditTokenRefresh(TenantId("nobody"))
+        neverLoadedLog <- empty.auditLog(tenantId)
+        neverLoadedRefresh <- empty.auditTokenRefresh(tenantId)
+      yield assertTrue(!off, refresh, unknownLog, !unknownRefresh, neverLoadedLog, !neverLoadedRefresh)
+    },
+    test("a record that sets neither audit switch (central of the previous release) reads as the log on and the refreshes off") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(auditSettings = None)))
+        log <- env.auditLog(tenantId)
+        refresh <- env.auditTokenRefresh(tenantId)
+      yield assertTrue(log, !refresh)
+    },
     test("getPostLogoutRedirectUris decodes the tenant's configured URLs") {
       val settings = challengeSettings.copy(
         postLogoutRedirectUris = List("https://app.example/bye", "not a url"),
@@ -1103,7 +1123,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         val newOtpTemplates = Vector(
           OtpTemplateRecord("tmpl-2", tenantId, Map("en" -> "code"), OtpTemplatePurpose.otp, OtpTemplateChannel.sms),
         )
-        val newChallengeSettings = Vector(challengeSettings.copy(ipHeader = "X-Forwarded-For"))
+        val newChallengeSettings =
+          Vector(challengeSettings.copy(ipHeader = "X-Forwarded-For", auditSettings = Some(AuditSettings(log = false, tokenRefresh = false))))
         val newSystemSettings = systemSettings.copy(passwordRegex = "^.{12,}$")
         val newMetadata = Json.Obj("issuer" -> Json.Str("https://idp.example"))
         val newResources = Vector(resourceRecord)
@@ -1186,6 +1207,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
           locales <- env.localeCache.get
           otpTemplates <- env.otpTemplateCache.get
           challengeSettingsResult <- env.challengeSettingsCache.get
+          // a switch changed in central reaches the audit decision with the cache
+          auditLogAfter <- env.auditLog(tenantId)
           sysSettings <- env.systemSettingsCache.get
           metadata <- env.metadataCache.get.map(_.document)
           resources <- env.resourceCache.get
@@ -1198,6 +1221,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
           locales == newLocales,
           otpTemplates == newOtpTemplates,
           challengeSettingsResult == newChallengeSettings,
+          !auditLogAfter,
           sysSettings == newSystemSettings,
           // `syncConfiguration` derives `ServedMetadata` the same way the cache source does
           // (see `OAuthConfigurationService.live`'s `metadataCacheSource`), so the served

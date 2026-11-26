@@ -1,0 +1,24 @@
+{
+  "revocations": [
+    {
+      "id": "d5691aa5-4eda-4581-a813-54359a0d9010",
+      "at": "2026-11-12T15:50:09.791898Z",
+      "by_staff": "01a1d072-ab02-7211-bb45-c481c6871034",
+      "by": "fam",
+      "value": "fam_unknown",
+      "clients": [],
+      "edges": [],
+      "ended": 0
+    },
+    {
+      "id": "7c829cd6-a898-47f9-b746-f780b93a397e",
+      "at": "2026-11-12T15:50:09.236379Z",
+      "by_staff": "01a1d072-ab02-7211-bb45-c481c6871034",
+      "by": "sid",
+      "value": "sid_unknown",
+      "clients": [],
+      "edges": [],
+      "ended": 0
+    }
+  ]
+}

@@ -588,6 +588,85 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.resetPassword.calls.nonEmpty)),
     ),
     controllerTestCase(
+      description = "reset password accepts the shortest lifetime, one hour",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":3600,"channel":"email"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.resetPassword.succeedsWith(None),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "reset password accepts the longest lifetime, seven days",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":604800,"channel":"email"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.resetPassword.succeedsWith(None),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "reset password refuses a lifetime under one hour and does not reach auth",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":3599,"channel":"email"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "reset password refuses a lifetime over seven days and does not reach auth",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":604801,"channel":"email"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "reset password refuses a zero lifetime and does not reach auth",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":0,"channel":"email"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "reset password refuses a negative lifetime and does not reach auth",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":-43200,"channel":"email"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "reset password refuses a lifetime that would overflow the expiry and does not reach auth",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":9223372036854775807,"channel":"email"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "reset password with the show channel returns the plaintext in non-prod",
       request = Request(
         method = Method.POST,

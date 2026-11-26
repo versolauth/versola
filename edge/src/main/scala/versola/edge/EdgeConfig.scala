@@ -94,8 +94,21 @@ case class EdgeConfig(
     // How many edge pods share the traffic, for the per-pod share of a rate limit: `dns:<name>`, see [[ReplicaCounter]]. Absent: the `replicas` of
     // the policy set in central.
     replicasFrom: Option[String] = None,
+    // What only a partner edge (#564) is told: who its first administrators are, where its console's files are, and how long
+    // an invite lives. Refused outright on a first-party edge, where none of it means anything.
+    partner: EdgeConfig.Partner = EdgeConfig.Partner(),
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
+
+  /** Where this edge reads the configuration `name` from: the first-party sync surface of central, or the partner's own
+    * (`/edge/partner/sync`, #962), which answers with the same shapes for the rows of this edge's partner only. */
+  def syncUrl(name: String): URL =
+    mode match
+      case EdgeMode.FirstParty => central.url / "edge" / "sync" / name
+      case EdgeMode.Partner => central.url / "edge" / "partner" / "sync" / name
+
+  /** Where this edge reaches the partner surface of central that is not a sync (`/me`, the management routes of the console). */
+  def partnerUrl: URL = central.url / "edge" / "partner"
 
 /** How this edge relates to the operator's installation, and so where it gets its
   * configuration from and how it proves itself to auth (#555). The mode selects an
@@ -112,29 +125,16 @@ enum EdgeMode(
     * central registered for it, and an internal surface reachable from inside the cell. */
   case FirstParty extends EdgeMode("first-party")
 
-  /** An edge run by a partner on infrastructure the operator does not control (#564): an
-    * ordinary OAuth client of the operator's tenant, configured from a local file and the
-    * operator issuer's public discovery, with no central sync, no `EdgeAssertion` and no
-    * internal surface. Not implemented yet: refused at startup by [[EdgeConfig.validated]]. */
+  /** An edge run by a partner on infrastructure the operator does not control (#564): configured by the narrow
+    * `/edge/partner` surface of central over mutual TLS, scoped to the partner by the edge certificate and to nothing
+    * else, authenticating the partner's clients to auth as ordinary clients (never vouching for a token as an edge), with
+    * no internal surface, and serving the partner's console and `/partner/api` of its own. */
   case Partner extends EdgeMode("partner")
 
 object EdgeMode:
   given DeriveConfig[EdgeMode] = DeriveConfig[String].mapOrFail: value =>
     values.find(_.name == value)
       .toRight(Config.Error.InvalidData(message = s"mode must be one of ${values.map(_.name).mkString(", ")}, not '$value'"))
-
-  /** What startup fails with for a mode this version does not implement. One error for the
-    * three boundaries, so a wiring that somehow bypasses [[EdgeConfig.validated]] still fails
-    * naming the same cause.
-    */
-  case class NotImplemented(mode: EdgeMode)
-    extends IllegalArgumentException(
-      s"mode = ${mode.name} is not implemented yet (#564): " +
-        "a partner edge reads its configuration from a local file and the operator issuer's discovery " +
-        "document and authenticates to auth as an ordinary client, none of which this version provides. " +
-        "Leave `mode` out, or set it to first-party, to run the edge as an internal component of the " +
-        "installation.",
-    )
 
 object EdgeConfig:
 
@@ -199,7 +199,7 @@ object EdgeConfig:
         )
         _ <- refuseNativeWithoutDpop(config)
         _ <- refuseUnusableFeed(config.revocation.feed)
-        _ <- refuseUnimplementedMode(config)
+        _ <- refuseMisconfiguredMode(config)
         _ <- refuseCentralWithoutMutualTls(config)
         _ <- ZIO.foreachDiscard(config.replicasFrom)(spec => ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)))
       yield config,
@@ -217,20 +217,50 @@ object EdgeConfig:
     ).flatten
     ZIO.fail(IllegalArgumentException(s"revocation.feed: ${problems.mkString("; ")}")).when(problems.nonEmpty).unit
 
-  /** `Partner` is a mode in name only until #564: it names a configuration source, an auth
-    * identity and an internal surface none of which exists yet. Refused here, at the one
-    * place every mode is read, rather than wherever the first boundary happens to be built.
+  /** What a mode needs and what it must not have (#564). Refused here, at the one place every mode is read, rather than
+    * wherever the first boundary happens to be built.
     *
-    * This is also, for now, the whole of #564's "startup fails if partner mode is combined
-    * with central sync settings": `central` is a required block, so there is no partner
-    * configuration that is not also a central-sync configuration, and refusing the mode
-    * refuses the combination. The finer check -- partner with a `central` block, partner with
-    * a `security.internal-secret` -- belongs with the change that makes those blocks optional.
+    * A partner edge runs where the operator has no control, so what it holds is only what central gave it: its certificate
+    * comes from central (`central.identity`, renewed from the 14-day certificate the partner's group gets), never one
+    * deployed with it; and it has no `security.internal-secret`, because that secret authorizes the non-production
+    * `/service` surface, which a partner edge does not have. That the mode agrees with the kind of the edge's group in
+    * central is not known until the edge has spoken to central: `PartnerState` checks it with the first `/edge/partner/me`.
+    * It is a guard against a misconfiguration, not a security control (central decides the kind and scopes every answer by the
+    * edge's certificate).
     */
-  private def refuseUnimplementedMode(config: EdgeConfig): Task[Unit] =
+  private def refuseMisconfiguredMode(config: EdgeConfig): Task[Unit] =
+    def invalid(message: String): Task[Unit] = ZIO.fail(IllegalArgumentException(message))
     config.mode match
-      case EdgeMode.FirstParty => ZIO.unit
-      case EdgeMode.Partner => ZIO.fail(EdgeMode.NotImplemented(config.mode))
+      case EdgeMode.FirstParty =>
+        invalid("partner.admins and partner.console-directory are for a partner edge: set mode = \"partner\" or remove them")
+          .when(config.partner.admins.nonEmpty || config.partner.consoleDirectory.isDefined)
+          .unit *>
+          // a partner edge keeps what its enrollment answered here (`enrolled.json`); the same directory under mode = first-party would be a
+          // partner's identity presented as the operator's own, which central refuses on every sync and this refuses at the start, with the reason
+          ZIO.foreachDiscard(config.central.identity): identity =>
+            ZIO.attemptBlocking(Files.exists(Path.of(identity.directory, "enrolled.json"))).flatMap: enrolled =>
+              invalid(
+                s"central.identity.directory ${identity.directory} holds the enrollment of a partner edge (enrolled.json): " +
+                  "start it with mode = \"partner\"; an edge of the operator enrols with its own token in its own directory",
+              ).when(enrolled)
+      case EdgeMode.Partner =>
+        if config.central.identity.isEmpty then
+          invalid(
+            "mode = partner needs central.identity: a partner edge holds a certificate central issued to it (enrolled with its " +
+              "enrollment token and renewed by itself), not one it was deployed with",
+          )
+        else if config.security.internalSecret.isDefined then
+          invalid(
+            "mode = partner refuses security.internal-secret: it authorizes the /service/* surface, which a partner edge does not serve",
+          )
+        else if config.revocation.feed.enabled then
+          invalid(
+            "mode = partner refuses revocation.feed.enabled: a partner edge has no pull feed (back-channel logout and the access-token lifetime cover it)",
+          )
+        else if config.partner.admins.exists(_.isBlank) then invalid("partner.admins names a blank phone number or email")
+        else if config.central.identity.flatMap(_.enrollment).exists(_.url.isDefined) then
+          invalid("central.identity.enrollment.url is not set on a partner edge: the enrollment token carries the address")
+        else ZIO.unit
 
   /** The native flow is DPoP end to end -- every client it serves is registered
     * `dpopBoundAccessTokens`, `/native/start` verifies and replay-guards the device's proof,
@@ -285,8 +315,9 @@ object EdgeConfig:
       invalid("the certificate this edge presents to central is not named: set central.mutual-tls.certificate and private-key, or central.identity")
     else
       ZIO.foreachDiscard(central.identity.flatMap(_.enrollment)): enrollment =>
-        invalid("central.identity.enrollment.url must be https")
-          .unless(enrollment.url.scheme.contains(Scheme.HTTPS))
+        enrollment.url match
+          case Some(url) => invalid("central.identity.enrollment.url must be https").unless(url.scheme.contains(Scheme.HTTPS))
+          case None => ZIO.unit
 
   private def refuseEmptyPins(name: String, pins: Set[String]): Task[Unit] =
     ZIO.fail(IllegalArgumentException(s"$name must name at least one certificate")).when(pins.isEmpty).unit
@@ -325,6 +356,22 @@ object EdgeConfig:
         bundle.toFile.nn.deleteOnExit()
         Files.write(bundle, many.flatMap(path => Files.readAllLines(Path.of(path)).nn.asScala :+ "").mkString("\n").getBytes(StandardCharsets.UTF_8))
         ClientSSLConfig.FromCertFile(bundle.toString)
+
+  /** The partner's own configuration (#564), meaningful in [[EdgeMode.Partner]] only.
+    *
+    * @param admins the first administrators of the partner's console: each a phone number (`+7701...`) or an email address.
+    *   Applied as invites at every start (see `StaffService.applyAdmins`), so the first sign-in of such a person is admitted as
+    *   `admin`; nothing is looked up at the operator.
+    * @param consoleDirectory where the static files of the partner console are (`partner.html`, `versola-partner.js`),
+    *   built from `central-ui`'s second entry and served under `/partner/`. Absent serves none: `/partner/` answers 404 and the
+    *   API still works.
+    * @param inviteTtl how long an invite lives, from the moment an administrator makes it and from every start for `admins`.
+    */
+  case class Partner(
+      admins: List[String] = Nil,
+      consoleDirectory: Option[String] = None,
+      inviteTtl: Duration = Duration.fromSeconds(7L * 24 * 3600),
+  )
 
   /** Edge's own mutual-TLS listener (`MPORT`), shaped like auth's (`CoreConfig.MutualTlsConfig`).
     *
@@ -414,8 +461,9 @@ object EdgeConfig:
     *   in the environment or the config. Read once, when there is no certificate yet.
     */
   case class CentralEnrollment(
-      url: URL,
-      tokenFile: String,
+      url: Option[URL] = None,
+      tokenFile: Option[String] = None,
+      token: Option[String] = None,
   )
 
   /** RFC 9449 proof validation at the resource server: the parts that are facts about this

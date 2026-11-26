@@ -421,6 +421,10 @@ the short gap described in [deploy.md](deploy.md#mutual-tls-certificates); `iden
 `edge-client`, which nobody pins; `report` changes nothing and prints one line per certificate,
 `mtls-init: cert <file> notBefore=<UTC> notAfter=<UTC> subject=<CN or URN>`, for `doctor` and `status`.
 `docker/versola-tools/test/mtls-init.test.sh` runs every phase against a throwaway step-ca in Docker.
+`docker/versola-tools/test/step-ca-init.test.sh` checks that creating the CA (`step-ca-init.sh`, which both compose
+fragments run instead of the image's own init) and starting it print nothing secret, that a CA the image made
+is left as it is, and that the fragments' own lines removing the unused `versola` provisioner do so once and keep
+`central`'s.
 
 **(3a) Client certificates the edge enrols for (#463) -- preferred.** Register an edge-fronted client with
 `"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
@@ -581,7 +585,7 @@ real, in-use counterparts, and each mismatch fails differently.
 | `EDGE_TOKEN_ENC_KEY` | the AES key (exactly 32 bytes, base64url) of the refresh tokens in edge's session table; with a fresh one every session fails to decrypt in `refreshSession`, a server error rather than a re-login |
 | `CENTRAL_RESOURCE_SECRET` | `central` keeps its copy from first boot (create-only, AES-encrypted); `cert-sync` and operator tools present the store's value, so a fresh one is a 401 for them. Edge gets it by sync. A rotation through the admin API changes central's copy, not the store's |
 | `EDGE_PRIVATE_KEY`, `EDGE_KEY_ID`, `EDGE_PUBLIC_JWK`, `JWKS_JSON` | `central` already trusts the real edge's public key (its `kid` must equal `EDGE_KEY_ID`, and it must be RSA); a fresh pair makes every edge → central sync 401. `JWKS_JSON` is `{"keys":[<jwk>,…]}` with the public key of `JWT_PRIVATE_KEY` (the same pair: same modulus for RSA, same point for EC) and an `alg`; the edge key is the one that must stay RSA, `JWT_PRIVATE_KEY` need not be |
-| `UTILITY_CLIENT_PUBLIC_JWK`, `UTILS_PRIVATE_KEY_JWK` | `central` re-applies the utility client's public key on every boot, so a fresh pair silently replaces the key loadgen and `versola-cli` authenticate with. Reuse the existing pair: the public half goes into central's path below; the private half is not in OpenBao at all, it stays wherever loadgen or the operator keeps it (the `utils.private-key.jwk` a fresh `configure` writes is a new, unrelated key — ignore it). `gen-env`'s reuse path takes an EC P-256 private JWK; `k8s/README.md` covers a client seeded with a `client_secret` |
+| `UTILITY_CLIENT_PUBLIC_JWK`, `UTILS_PRIVATE_KEY_JWK` | `central` re-applies the utility client's public key on every boot, so a fresh pair silently replaces the key loadgen and `versola-cli` authenticate with. Reuse the existing pair: the public half goes into central's path below; the private half is not under any service's path (`secret/versola/<target>/{auth,central,edge}`): `versola-cli` keeps it apart, at `secret/versola/<target>/utils`, and the first `configure` against an empty store generates a pair there (a stored key wins afterwards). Keep the existing private half wherever loadgen or the operator holds it (the `utils.private-key.jwk` a fresh `configure` writes is that new, unrelated key — ignore it). `gen-env`'s reuse path takes an EC P-256 private JWK; `k8s/README.md` covers a client seeded with a `client_secret` |
 
 `ADMIN_BOOTSTRAP_PASSWORD` is deliberately absent: nothing outside `gen-env` owns it, so the generated
 value is correct.

@@ -3,6 +3,7 @@ package versola
 import versola.central.CentralConfig
 import versola.central.audit.{AuditHook, CentralAudit}
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -592,6 +593,7 @@ object BootstrapService:
         endpointId("GET", "/configuration/edges"),
         endpointId("GET", "/configuration/edges/policies"),
         endpointId("GET", "/configuration/edges/rate-limits/recommended"),
+        endpointId("GET", "/configuration/edge-groups"),
       ),
     ),
     (
@@ -603,6 +605,30 @@ object BootstrapService:
         endpointId("POST", "/configuration/edges/rotate-key"),
         endpointId("DELETE", "/configuration/edges/old-key"),
         endpointId("PATCH", "/configuration/edges/policies"),
+        endpointId("PUT", "/configuration/edges/dpop"),
+        endpointId("POST", "/configuration/edges/enrollment-tokens"),
+        endpointId("POST", "/configuration/edge-groups"),
+      ),
+    ),
+    (
+      Permission("partners:read"),
+      localized("View partners and their requests", "Просмотр партнёров и их запросов"),
+      Set(
+        endpointId("GET", "/configuration/partners"),
+        endpointId("GET", "/configuration/partners/approvals"),
+      ),
+    ),
+    (
+      Permission("partners:manage"),
+      localized("Manage partners: limits, suspension, approvals", "Управление партнёрами: лимиты, приостановка, согласования"),
+      Set(
+        endpointId("POST", "/configuration/partners"),
+        endpointId("PUT", "/configuration/partners"),
+        endpointId("POST", "/configuration/partners/suspend"),
+        endpointId("POST", "/configuration/partners/resume"),
+        endpointId("PUT", "/configuration/partners/limits"),
+        endpointId("POST", "/configuration/partners/approvals/approve"),
+        endpointId("POST", "/configuration/partners/approvals/reject"),
       ),
     ),
     (
@@ -906,6 +932,7 @@ object BootstrapService:
       securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
       logoLight = None,
       logoDark = None,
+      auditSettings = AuditSettings.default,
     )
 
   /** Default theme seeded from the shared CSS resource. */
@@ -988,6 +1015,19 @@ object BootstrapService:
     "GET" -> "/configuration/edges/policies",
     "PATCH" -> "/configuration/edges/policies",
     "GET" -> "/configuration/edges/rate-limits/recommended",
+    "PUT" -> "/configuration/edges/dpop",
+    "POST" -> "/configuration/edges/enrollment-tokens",
+    "GET" -> "/configuration/edge-groups",
+    "POST" -> "/configuration/edge-groups",
+    "GET" -> "/configuration/partners",
+    "POST" -> "/configuration/partners",
+    "PUT" -> "/configuration/partners",
+    "POST" -> "/configuration/partners/suspend",
+    "POST" -> "/configuration/partners/resume",
+    "PUT" -> "/configuration/partners/limits",
+    "GET" -> "/configuration/partners/approvals",
+    "POST" -> "/configuration/partners/approvals/approve",
+    "POST" -> "/configuration/partners/approvals/reject",
     "GET" -> "/configuration/forms",
     "GET" -> "/configuration/forms/previews",
     "PUT" -> "/configuration/forms",
@@ -1080,8 +1120,8 @@ object BootstrapService:
       "GET" -> "/antifraud/lists/audit",
     )
 
-  /** Who is calling, for the audit log (#469): the `sub`, the tenant, the client and the session of the token edge has verified, as
-    * query parameters (`AuditHook`). A query parameter and not a body field: a `userId` in a body is the *target* user on the user
+  /** Who is calling, for the audit log (#469): the `sub`, the tenant, the client and the session of the token edge has verified, and
+    * the address the call came from, as query parameters (`AuditHook`). A query parameter and not a body field: a `userId` in a body is the *target* user on the user
     * routes (edge overwrites a field of the same name, so the administrator would reset their own password), and a call without a
     * body or a JSON one (a `DELETE`, a rotation) has nothing to carry a field; a query parameter works on every method. Edge removes
     * a parameter of the same name that the caller sent. The session is empty, and so not sent, for a token that has none. Every
@@ -1091,6 +1131,9 @@ object BootstrapService:
     InjectRule(InjectTarget.query, AuditHook.ActorTenantParam, "token.tenant_id"),
     InjectRule(InjectTarget.query, AuditHook.ActorClientParam, "token.client_id"),
     InjectRule(InjectTarget.query, AuditHook.ActorSessionParam, "has(token.sid) ? token.sid : ''"),
+    // The caller's address as this edge's own `client-ip` setting finds it; none (and so not sent) where it does not, or on an edge
+    // that does not offer one to a rule yet.
+    InjectRule(InjectTarget.query, AuditHook.ActorIpParam, "has(request.clientIp) ? request.clientIp : ''"),
   )
 
   /** What central's endpoints are told of the caller, from the token edge has verified (not from the caller: edge overwrites
@@ -1487,6 +1530,7 @@ object BootstrapService:
         enrollEdgeClientCertificate = false,
         themeOverrides = None,
         estEnrollment = false,
+        partnerId = None,
       )
       // Issued by central: `register` takes the profile enforcement as it is, which for the one
       // credential that issues (tls_client_auth) is the enforcement `conformant` asks for anyway.
@@ -1604,6 +1648,7 @@ object BootstrapService:
         enrollEdgeClientCertificate = false,
         themeOverrides = None,
         estEnrollment = false,
+        partnerId = None,
       )
       // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
       // does not admit, is still seeded for a deployment that configured no key for it.
@@ -1717,7 +1762,13 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          case None => edgeRepo.createEdge(
+              id = seed.id,
+              publicKeyJwk = Some(seed.publicKeyJwk),
+              requireDpopNonce = EdgeRecord.DefaultRequireDpopNonce,
+              groupId = EdgeGroup.DefaultId,
+              publicUrl = None,
+            )
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the
@@ -1773,6 +1824,7 @@ object BootstrapService:
                   CentralConfig.centralClientId :: utilityClientId.toList,
                   allEndpoints.toVector,
                   Some(encryptedSecret),
+                  None,
                 )
               yield ()
             case Some(existing) =>
@@ -1819,6 +1871,7 @@ object BootstrapService:
               List(CentralConfig.centralClientId),
               desiredEndpoints.toVector,
               Some(encryptedSecret),
+              None,
             )
           case Some(existing) =>
             val existingById = existing.endpoints.map(endpoint => endpoint.id -> endpoint).toMap

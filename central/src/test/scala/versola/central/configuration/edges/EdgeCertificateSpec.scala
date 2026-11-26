@@ -45,6 +45,22 @@ object EdgeCertificateSpec extends ZIOSpecDefault:
       val certificate = TestCertificates.generate(uris = List("urn:versola:edge:edge-a", "urn:versola:edge-group:partner")).certificate
       assertTrue(!EdgeCertificate.isIssuedTo(certificate, edgeId, EdgeGroupId("default")))
     },
+    test("a partner's edge must present the group name: one that names only the edge, or another group, is not a member's") {
+      val group = EdgeGroupId("partner-acme")
+      val member = TestCertificates.generate(uris = List("urn:versola:edge:edge-a", "urn:versola:edge-group:partner-acme")).certificate
+      val nameless = TestCertificates.generate(uri = Some("urn:versola:edge:edge-a")).certificate
+      val other = TestCertificates.generate(uris = List("urn:versola:edge:edge-a", "urn:versola:edge-group:partner-globex")).certificate
+      val two = TestCertificates.generate(
+        uris = List("urn:versola:edge:edge-a", "urn:versola:edge-group:partner-acme", "urn:versola:edge-group:partner-globex"),
+      ).certificate
+      assertTrue(
+        EdgeCertificate.isIssuedToMemberOf(member, edgeId, group),
+        !EdgeCertificate.isIssuedToMemberOf(nameless, edgeId, group),
+        !EdgeCertificate.isIssuedToMemberOf(other, edgeId, group),
+        !EdgeCertificate.isIssuedToMemberOf(two, edgeId, group),
+        !EdgeCertificate.isIssuedToMemberOf(member, EdgeId("edge-b"), group),
+      )
+    },
     test("a certificate with no group name still passes, the way those issued before groups do") {
       val certificate = TestCertificates.generate(uri = Some("urn:versola:edge:edge-a")).certificate
       assertTrue(EdgeCertificate.isIssuedTo(certificate, edgeId, EdgeGroupId("default")))

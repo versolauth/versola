@@ -28,6 +28,9 @@ trait EdgeCertificateHolder:
   def install(chain: String, privateKeyPem: String): Task[Unit]
 
 object EdgeCertificateHolder:
+  /** The pairs kept in `root` (created owner-only if it is not there), as [[live]] opens them for `central.identity`. */
+  def directory(root: Path): Task[EdgeCertificateHolder] = Directory.open(root)
+
   val live: ZLayer[EdgeConfig, Throwable, EdgeCertificateHolder] =
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[EdgeConfig]: config =>

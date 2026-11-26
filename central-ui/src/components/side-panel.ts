@@ -177,6 +177,12 @@ export class VersolaSidePanel extends LitElement {
         padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
       }
 
+      /* The body scrolls, so a keyboard user can reach it (SC 2.1.1); the ring sits inside the sheet. */
+      .panel-body:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: -2px;
+      }
+
       .panel-foot {
         display: flex;
         justify-content: flex-end;
@@ -343,7 +349,7 @@ export class VersolaSidePanel extends LitElement {
               title=${modal ? 'Cancel and close' : 'Close panel'} @click=${this.close}>${statusIcon('x', 'icon', 18)}</button>
           </div>
         </header>
-        <div class="panel-body"><slot></slot></div>
+        <div class="panel-body" tabindex="0" role="region" aria-label=${`${this.heading} content`}><slot></slot></div>
         <footer class=${`panel-foot ${this.hasFooter ? '' : 'empty'}`}><slot name="footer" @slotchange=${this.handleFooterSlotChange}></slot></footer>
         ${modal ? html`<div class="sentinel" tabindex="0" @focus=${this.trapToEnd}></div>` : nothing}
       </aside>
