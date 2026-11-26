@@ -35,21 +35,21 @@
   "dependencies": {
     "@marcbachmann/cel-js": "^8.0.0",
     "@types/prismjs": "^1.26.6",
-    "libphonenumber-js": "^1.13.15",
+    "libphonenumber-js": "^1.13.17",
     "lit": "^3.2.1",
     "prismjs": "^1.30.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
     "@babel/core": "^7.29.13",
-    "@playwright/test": "^1.65.0",
+    "@playwright/test": "^1.65.1",
     "@types/node": "^26.6.6",
-    "babel-preset-solid": "^1.9.16",
+    "babel-preset-solid": "^1.9.19",
     "esbuild": "^0.28.2",
     "esbuild-plugin-solid": "^0.6.0",
     "solid-js": "^1.9.18",
     "typescript": "^7.0.2",
-    "vite": "^8.3.7",
-    "vitest": "^5.1.0"
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
   }
 }
