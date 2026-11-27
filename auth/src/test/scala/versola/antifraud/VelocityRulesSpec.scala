@@ -29,17 +29,26 @@ object VelocityRulesSpec extends UnitSpecBase:
     signals = Map.empty,
   )
 
-  private def antifraud(s: Setup, blockAt: Int = 50) =
+  private def antifraud(s: Setup, blockAt: Int = 50, share: CellShare = CellShare.whole) =
     AntifraudTestSettings.engine(
       AntifraudTestSettings.decision.copy(enabled = true),
-      List(AntifraudTestSettings.velocityRules(s.settings, s.tuning)),
+      List(AntifraudTestSettings.velocityRules(s.settings, s.tuning, share)),
       s.tuning.copy(blockAt = blockAt),
     )
 
   /** Makes `n` requests as a caller that counts every step does, and decides the last one. */
-  private def decide(s: Setup, n: Int, request: AntifraudContext = ctx, blockAt: Int = 50): UIO[Decision] =
+  private def decide(
+      s: Setup,
+      n: Int,
+      request: AntifraudContext = ctx,
+      blockAt: Int = 50,
+      share: CellShare = CellShare.whole,
+  ): UIO[Decision] =
     val counters = VelocityCounters(s.settings, AntifraudTestSettings.velocityLimits, s.tuning.thresholds)
-    ZIO.foreach(1 to n)(_ => counters.recordAndSnapshot(request)).flatMap(ctxs => antifraud(s, blockAt).evaluate(ctxs.last))
+    ZIO.foreach(1 to n)(_ => counters.recordAndSnapshot(request)).flatMap(ctxs => antifraud(s, blockAt, share).evaluate(ctxs.last))
+
+  private def sharing(numerator: Long, denominator: Long): CellShare = new CellShare:
+    override def current: UIO[CellShare.Share] = ZIO.succeed(CellShare.Share(numerator, denominator))
 
   def spec = suite("VelocityRules")(
     test("fires when a limit is exceeded, not when it is reached") {
@@ -48,6 +57,86 @@ object VelocityRulesSpec extends UnitSpecBase:
         reached <- decide(s, 3)
         over <- decide(s, 4)
       yield assertTrue(reached == Decision.allow, over == Decision(DecisionAction.Block, 50, List("velocity_phone_10m")))
+    },
+    // versolauth/versola#1052: a limit by address holds for the deployment, so a cell applies its share of it.
+    test("a cell fires the limits of the keys that are not confined to it above ceil(limit * share), and not before") {
+      val limit = AntifraudTestSettings.limit.copy(perHour = 10, weight = 50)
+      val s = settings(AntifraudTestSettings.thresholds.copy(ip = limit, asn = limit, prefix = limit))
+      val third = sharing(1, 3)
+      def fires(request: AntifraudContext, rule: String)(n: Int) =
+        decide(s, n, request, blockAt = 100, share = third).map(_.firedRules.contains(rule))
+      val byIp = ctx.copy(subjectHash = None, destPrefix = None)
+      val byAsn = ctx.copy(subjectHash = None, destPrefix = None, ip = None, asn = Some(64500))
+      val byPrefix = ctx.copy(subjectHash = None, ip = None)
+      for
+        // 10 * 1/3 = 3.33..., so 4 is allowed (a limit is reached, not exceeded) and the fifth request fires
+        ipAt4 <- fires(byIp, "velocity_ip_1h")(4)
+        ipAt5 <- fires(byIp, "velocity_ip_1h")(5)
+        asnAt4 <- fires(byAsn, "velocity_asn_1h")(4)
+        asnAt5 <- fires(byAsn, "velocity_asn_1h")(5)
+        prefixAt4 <- fires(byPrefix, "velocity_prefix_1h")(4)
+        prefixAt5 <- fires(byPrefix, "velocity_prefix_1h")(5)
+      yield assertTrue(!ipAt4, ipAt5, !asnAt4, asnAt5, !prefixAt4, prefixAt5)
+    },
+    test("a limit of 100 lets 34 through and fires above it in a cell with a share of 34 hundredths") {
+      val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perDay = 100)))
+      val byIp = ctx.copy(subjectHash = None, destPrefix = None)
+      for
+        at34 <- decide(s, 34, byIp, share = sharing(34, 100))
+        at35 <- decide(s, 35, byIp, share = sharing(34, 100))
+      yield assertTrue(at34 == Decision.allow, at35.firedRules == List("velocity_ip_24h"))
+    },
+    test("a phone is counted against its whole limit in a cell that has a share of the rest") {
+      val s = settings(AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perHour = 10, weight = 50)))
+      val byPhone = ctx.copy(ip = None, destPrefix = None)
+      for
+        // 1/3 of 10 would fire above 4
+        atFive <- decide(s, 5, byPhone, share = sharing(1, 3))
+        atTen <- decide(s, 10, byPhone, share = sharing(1, 3))
+        atEleven <- decide(s, 11, byPhone, share = sharing(1, 3))
+      yield assertTrue(atFive == Decision.allow, atTen == Decision.allow, atEleven.firedRules == List("velocity_phone_1h"))
+    },
+    test("a device is counted against its whole limit too") {
+      val s = settings(AntifraudTestSettings.thresholds.copy(device = AntifraudTestSettings.limit.copy(perHour = 10, weight = 50)))
+      val byDevice = ctx.copy(ip = None, destPrefix = None, subjectHash = None, deviceId = Some("dev"))
+      for
+        atFive <- decide(s, 5, byDevice, share = sharing(1, 3))
+        atEleven <- decide(s, 11, byDevice, share = sharing(1, 3))
+      yield assertTrue(atFive == Decision.allow, atEleven.firedRules == List("velocity_device_1h"))
+    },
+    test("a limit of 0 stays no limit whatever the share, and a share that would round a limit to 0 gives 1") {
+      val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 0, perHour = 1, weight = 50)))
+      val byIp = ctx.copy(subjectHash = None, destPrefix = None)
+      for
+        one <- decide(s, 1, byIp, share = sharing(1, 100))
+        two <- decide(s, 2, byIp, share = sharing(1, 100))
+        many <- decide(s, 20, byIp, share = sharing(1, 100))
+      yield assertTrue(
+        one == Decision.allow,
+        two.firedRules == List("velocity_ip_1h"),
+        // No rule is made for the window that has no limit.
+        !many.firedRules.contains("velocity_ip_1m"),
+      )
+    },
+    test("the rules carry the share: the same limits give the whole limit where the cell has the whole deployment") {
+      val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perHour = 10, weight = 50)))
+      val byIp = ctx.copy(subjectHash = None, destPrefix = None)
+      for
+        atFour <- decide(s, 4, byIp)
+        atEleven <- decide(s, 11, byIp)
+      yield assertTrue(atFour == Decision.allow, atEleven.firedRules == List("velocity_ip_1h"))
+    },
+    test("a change of the share applies to the next request, with no restart") {
+      val s = settings(AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perHour = 10, weight = 50)))
+      val byIp = ctx.copy(subjectHash = None, destPrefix = None)
+      for
+        share <- Ref.make(CellShare.Share(1, 1))
+        changing = new CellShare:
+          override def current: UIO[CellShare.Share] = share.get
+        before <- decide(s, 5, byIp, share = changing)
+        _ <- share.set(CellShare.Share(1, 3))
+        after <- decide(s, 5, byIp, share = changing)
+      yield assertTrue(before == Decision.allow, after.firedRules == List("velocity_ip_1h"))
     },
     test("a limit applies to its key and window only, and 0 is no limit") {
       val s = settings(AntifraudTestSettings.thresholds.copy(

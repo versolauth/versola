@@ -154,7 +154,8 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     yield ()
 
   /** Atomically claims a batch by pushing `next_attempt_at` forward by `leaseSeconds`.
-    * Processes events in per-user FIFO order.
+    * Processes events in per-user FIFO order. The events of a user with an unfinished move are not claimed: they wait, and are
+    * delivered to the cell the directory names once the move is over (versolauth/versola#1051).
     */
   override def claimDueEvents(limit: Int, lease: Duration): Task[Vector[OutboxRecord]] =
     val leaseSeconds = lease.toSeconds
@@ -168,6 +169,11 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
                 SELECT 1 FROM user_outbox u2
                 WHERE u2.user_id = u1.user_id
                 AND u2.id < u1.id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM user_moves m
+                WHERE m.user_id = u1.user_id
+                AND m.phase NOT IN ('done', 'failed')
               )
               ORDER BY id
               LIMIT $limit

@@ -94,7 +94,7 @@ object CellHandoffSpec extends UnitSpecBase:
       random <- ZIO.service[SecureRandom]
       keys = pair.orElse(cell.flatMap(keyOf.get)).getOrElse(TestEnvConfig.authKeyPair)
       config = TestEnvConfig.withKeyPairOf(TestEnvConfig.coreConfig, keys).copy(cellId = cell.map(RoutingKey.CellId.parse(_).toOption.get))
-    yield CellHandoff.Impl(config, security, random, sessions, registry)
+    yield CellHandoff.Impl(config, CellEnvelope.Impl(config, security, registry), random, sessions)
 
   /** A seal as a cell that does what it should not would make it: every part chosen by the caller, the signature made
     * properly under `signer` and the whole encrypted to `to`. */
@@ -108,6 +108,7 @@ object CellHandoffSpec extends UnitSpecBase:
       ttl: Duration = 1.minute,
       algorithm: JWT.Algorithm = JWT.Algorithm.RS256,
       encryptedTo: RsaKeyPair = TestEnvConfig.anotherCellKeyPair,
+      purpose: String = CellEnvelope.Purpose.Handoff,
   ): ZIO[SecurityService, Throwable, String] =
     val payload = CellHandoff.Payload(
       params = Map("client_id" -> List("c")),
@@ -120,7 +121,12 @@ object CellHandoffSpec extends UnitSpecBase:
     for
       security <- ZIO.service[SecurityService]
       jws <- JWT.serialize(
-        claims = JWT.Claims(issuer, issuer, audience, Json.Obj("handoff" -> payload.toJsonAST.toOption.get)),
+        claims = JWT.Claims(
+          issuer,
+          issuer,
+          audience,
+          Json.Obj("purpose" -> Json.Str(purpose), "body" -> Json.Str(Base64.urlEncode(payload.toJson.getBytes(StandardCharsets.UTF_8)))),
+        ),
         ttl = ttl,
         signature = JWT.Signature.Asymmetric(algorithm, signer.keyId, signer.privateKey),
       )
@@ -375,6 +381,29 @@ object CellHandoffSpec extends UnitSpecBase:
           differs == Left(CellHandoff.Refused.Forged),
           notVerified == Left(CellHandoff.Refused.Forged),
           named == Left(CellHandoff.Refused.Forged),
+        )
+      },
+      test("an envelope made for another use is not a handoff, and a handoff is not accepted where another use is expected") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          security <- ZIO.service[SecurityService]
+          opener = CellEnvelope.Impl(
+            TestEnvConfig.withKeyPairOf(TestEnvConfig.coreConfig, TestEnvConfig.anotherCellKeyPair).copy(cellId = Some(home)),
+            security,
+            registryOf(),
+          )
+          // a user-move envelope made by kz-1 for kz-2, with a body that would be a valid handoff payload
+          moveEnvelope <- forged(purpose = CellEnvelope.Purpose.UserMove)
+          asHandoff <- second.open(moveEnvelope).either
+          // and a genuine handoff, presented where a moved user is expected
+          handoff <- first.seal(record, Left(email), home)
+          asMove <- opener.open(CellEnvelope.Purpose.UserMove, handoff).either
+          asHandoffStill <- opener.open(CellEnvelope.Purpose.Handoff, handoff).either
+        yield assertTrue(
+          asHandoff == Left(CellHandoff.Refused.Purpose),
+          asMove == Left(CellEnvelope.Refused.WrongPurpose),
+          asHandoffStill.isRight,
         )
       },
       test("a seal signed with anything but RS256 is refused, as is one signed with a key the issuer has not got") {

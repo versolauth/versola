@@ -130,6 +130,12 @@ describe('words for an event', () => {
       .toEqual({ title: 'User roles updated by an admin', subtitle: 'by a · changed roles' });
   });
 
+  it('names a move between cells by the other cell', () => {
+    expect(describeEvent(event({ kind: 'user.moved_out', details: { cell: 'kz-2' } }))).toEqual({ title: 'Moved to another cell', subtitle: 'to kz-2' });
+    expect(describeEvent(event({ kind: 'user.moved_in', details: { cell: 'kz-1' } }))).toEqual({ title: 'Moved in from another cell', subtitle: 'from kz-1' });
+    expect(describeEvent(event({ kind: 'user.moved_in' }))).toEqual({ title: 'Moved in from another cell', subtitle: '' });
+  });
+
   it('shows the kind itself for one it does not know', () => {
     expect(describeEvent(event({ kind: 'something.new', reason: 'why' }))).toEqual({ title: 'something.new', subtitle: 'why' });
   });

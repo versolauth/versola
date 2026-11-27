@@ -72,7 +72,9 @@ trait UserRepository:
     * are delivered. */
   def pendingEvents(id: UserId): Task[Vector[OutboxEvent]]
 
-  /** Atomically claim up to `limit` due outbox rows by leasing them for `lease` (other instances skip them).
+  /** Atomically claim up to `limit` due outbox rows by leasing them for `lease` (other instances skip them). The events of a
+    * user that has an unfinished move (versolauth/versola#1051) are not due: they wait until the move is `done` or `failed`, and
+    * are then delivered to the cell the directory names, which is the target after a move.
     * The lease is reset to a backoff value by [[rescheduleEvent]] on failure, or the row is removed on success.
     */
   def claimDueEvents(limit: Int, lease: Duration): Task[Vector[OutboxRecord]]

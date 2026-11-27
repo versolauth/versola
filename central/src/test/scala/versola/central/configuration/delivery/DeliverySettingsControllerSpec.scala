@@ -98,6 +98,8 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify: (Response, Stub[DeliverySettingsService], SecurityService) => Task[TestResult] = (_, _, _) => ZIO.succeed(assertTrue(true)),
       // Without any Authorization header; otherwise a request that carries none is sent with the admin credential.
       anonymous: Boolean = false,
+      // Sent with the token of a registered edge, which the controller has to look up.
+      asEdge: Boolean = false,
   ) =
     test(description) {
       for
@@ -118,8 +120,11 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
+        _ <- ZIO.when(asEdge)(edgeService.find.succeedsWith(Some(TestCentralConfig.edgeRecord)))
+        edgeBearer <- if asEdge then TestCentralConfig.edgeToken.map(Header.Authorization.Bearer(_)).asSome else ZIO.none
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
+          case None if edgeBearer.isDefined => request.addHeader(edgeBearer.get)
           case None if !anonymous => request.addHeader(TestAdminAuth.basicAuthHeader)
           case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
@@ -283,6 +288,14 @@ object DeliverySettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "GET sync returns 401 for a token signed under another key",
       request = Request.get(path / "sync").addHeader(Header.Authorization.Bearer(foreignToken)),
+      expectedStatus = Status.Unauthorized,
+      setup = svc => svc.getSettings.succeedsWith(Some(stored)),
+      verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.getSettings.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "GET sync returns 401 for a registered edge's token: it carries passwords an edge has no use for",
+      request = Request.get(path / "sync"),
+      asEdge = true,
       expectedStatus = Status.Unauthorized,
       setup = svc => svc.getSettings.succeedsWith(Some(stored)),
       verify = (_, svc, _) => ZIO.succeed(assertTrue(svc.getSettings.calls.isEmpty)),

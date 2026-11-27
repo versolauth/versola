@@ -49,7 +49,7 @@ object AuthorizeEndpointController extends Controller:
               answered:
                 ZIO.serviceWithZIO[AuthorizeRequestParser](_.validate(payload.params.view.mapValues(Chunk.fromIterable).toMap, request))
                   .flatMap: authorizeRequest =>
-                    authorizeAnd(authorizeRequest, par = false): (authId, started) =>
+                    authorizeAnd(authorizeRequest, par = false, handed = true): (authId, started) =>
                       superseding(authId, payload).as(started),
       )
     }
@@ -210,17 +210,21 @@ object AuthorizeEndpointController extends Controller:
   private def authorizeAndRedirect(request: AuthorizeRequest, par: Boolean) =
     authorizeAnd(request, par)((_, started) => ZIO.succeed(started))
 
-  /** @param onStarted what answers a request that started a conversation, given its id and the redirect to its first
+  /** @param handed the request was handed here by another cell, which has chosen where the address goes
+    * @param onStarted what answers a request that started a conversation, given its id and the redirect to its first
     *   step, which carries its cookie
     */
-  private def authorizeAnd[R](request: AuthorizeRequest, par: Boolean)(onStarted: (AuthId, Response) => ZIO[R, Throwable, Response]) =
+  private def authorizeAnd[R](request: AuthorizeRequest, par: Boolean, handed: Boolean = false)(
+      onStarted: (AuthId, Response) => ZIO[R, Throwable, Response],
+  ) =
     for
       authService <- ZIO.service[AuthorizeEndpointService]
       configService <- ZIO.service[OAuthConfigurationService]
       responseService <- ZIO.service[AuthorizationResponseService]
       config <- ZIO.service[CoreConfig]
       authConversationTtl <- configService.getAuthConversationTtl(request.clientId)
-      response <- authService.authorize(request).tap(AuthMetrics.authorizeOutcome).tap(_ => auditSuccess(request, par)).flatMap:
+      started = if handed then authService.authorizeHanded(request) else authService.authorize(request)
+      response <- started.tap(AuthMetrics.authorizeOutcome).tap(_ => auditSuccess(request, par)).flatMap:
         case AuthorizeResponse.Authorized(code, idToken) =>
           responseService.redirect(
             request.clientId,

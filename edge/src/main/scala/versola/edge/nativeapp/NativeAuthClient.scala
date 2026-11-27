@@ -22,7 +22,8 @@ import zio.{Chunk, Random, Task, URLayer, ZIO, ZLayer}
   * Where cells are registered (versolauth/versola#559) a call goes to the mutual-TLS listener of the cell that holds
   * the user, by the same rules as `SSOClient`: a pushed request is placed in an open cell, a code or a refresh token
   * goes to the cell its routing key names, a token to revoke to the cell of its key or of its `cell` header. A cell
-  * that answers `421 moved` to `/par` or `/token` is asked once more at the cell it names. With no cell registered,
+  * that answers `421 moved` to `/par`, `/token` or `/revoke` is asked once more at the cell it names, with the same form and
+  * proof: a moved user's tokens are revoked at the new cell. With no cell registered,
   * and for a value without a key, the call goes to the listener the `native` block names, as before.
   */
 trait NativeAuthClient:
@@ -111,7 +112,7 @@ object NativeAuthClient:
         certificate: PrivateClientCertificate.Material,
         form: Form,
     ): Task[Relayed] =
-      routed(CellRouting.Placement, replay = true)(post(_, "par", clientId, certificate, form, Headers.empty))
+      routed(CellRouting.Placement)(post(_, "par", clientId, certificate, form, Headers.empty))
 
     override def token(
         clientId: String,
@@ -119,7 +120,7 @@ object NativeAuthClient:
         form: Form,
         forwardedHeaders: Headers,
     ): Task[Relayed] =
-      routed(presented(form, "code").orElse(presented(form, "refresh_token")), replay = true)(
+      routed(presented(form, "code").orElse(presented(form, "refresh_token")))(
         post(_, "token", clientId, certificate, form, forwardedHeaders),
       )
 
@@ -135,7 +136,7 @@ object NativeAuthClient:
         if token.startsWith(s"${RoutingKey.Version}.") then ZIO.succeed(CellRouting.ByValue(token))
         else JWT.parseHeader[CellHeader](token).map(_.cell).orElseSucceed(None).map(CellRouting.ByHeader(_))
       ZIO.foreach(routing)(identity).flatMap(routing =>
-        routed(routing, replay = false)(post(_, "revoke", clientId, certificate, form, forwardedHeaders)),
+        routed(routing)(post(_, "revoke", clientId, certificate, form, forwardedHeaders)),
       )
 
     private def field(form: Form, name: String): Option[String] = form.get(name).flatMap(_.stringValue)
@@ -143,18 +144,18 @@ object NativeAuthClient:
     private def presented(form: Form, name: String): Option[CellRouting] = field(form, name).map(CellRouting.ByValue(_))
 
     /** Sends the call to the cell `routing` names (`None`: nothing in the call names one, so the configured listener),
-      * and once more to the cell a `421 moved` answer names when `replay` allows it. A value naming a cell this
+      * and once more to the cell a `421 moved` answer names (only one this edge knows, never the one just asked). A value naming a cell this
       * deployment does not have is answered here, as the grant it is not. */
-    private def routed(routing: CellRouting, replay: Boolean)(call: Option[EdgeCell] => Task[Relayed]): Task[Relayed] =
-      routed(Some(routing), replay)(call)
+    private def routed(routing: CellRouting)(call: Option[EdgeCell] => Task[Relayed]): Task[Relayed] =
+      routed(Some(routing))(call)
 
-    private def routed(routing: Option[CellRouting], replay: Boolean)(call: Option[EdgeCell] => Task[Relayed]): Task[Relayed] =
+    private def routed(routing: Option[CellRouting])(call: Option[EdgeCell] => Task[Relayed]): Task[Relayed] =
       (for
         topology <- cells.current
         roll <- Random.nextDouble
         initial <- ZIO.foreach(routing)(routing => ZIO.fromEither(CellRouting.route(topology, routing, roll))).map(_.flatten)
         first <- call(initial)
-        moved = Option.when(replay && first.status.code == 421)(first.bodyAsString.fromJson[Moved].toOption).flatten
+        moved = Option.when(first.status.code == 421)(first.bodyAsString.fromJson[Moved].toOption).flatten
           .collect { case Moved("moved", Some(cell)) => cell }
           .flatMap(to => topology.cells.find(_.id == to))
           .filterNot(target => initial.exists(_.id == target.id))

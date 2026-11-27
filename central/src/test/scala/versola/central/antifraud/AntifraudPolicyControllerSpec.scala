@@ -34,6 +34,8 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val state = PolicyState(settingsVersion = 4, settings = Some(settings), listsVersion = 11)
   private val lists = PolicyLists(
     version = 11,
+    full = true,
+    removed = Nil,
     entries = List(
       ListEntryRecord(
         id = UUID.fromString("00000000-0000-0000-0000-0000000000e1"),
@@ -67,7 +69,12 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val sync = URL.root / "antifraud" / "policy" / "sync"
   private val listsSync = URL.root / "antifraud" / "policy" / "lists" / "sync"
 
-  private def run(request: Request, settingsService: AntifraudSettingsService, listService: AntifraudListService) =
+  private def run(
+      request: Request,
+      settingsService: AntifraudSettingsService,
+      listService: AntifraudListService,
+      edges: EdgeService = stub[EdgeService],
+  ) =
     for
       client <- ZIO.service[Client]
       tracing <- tracingLayer.build
@@ -76,7 +83,7 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
           AntifraudPolicyController.routes.provideEnvironment(
             ZEnvironment[AntifraudSettingsService](settingsService) ++
               ZEnvironment[AntifraudListService](listService) ++
-              ZEnvironment[EdgeService](stub[EdgeService]) ++
+              ZEnvironment[EdgeService](edges) ++
               ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
               ZEnvironment(TestCentralConfig.config) ++
               tracing,
@@ -98,14 +105,14 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         body.fromJson[PolicyState] == Right(state),
-        listService.active.calls.isEmpty,
+        listService.lists.calls.isEmpty,
       )
     },
     test("the lists endpoint answers the entries that have not expired and the version they were read at") {
       val settingsService = stub[AntifraudSettingsService]
       val listService = stub[AntifraudListService]
       for
-        _ <- listService.active.succeedsWith(lists)
+        _ <- listService.lists.succeedsWith(lists)
         raw <- authToken
         response <- run(Request.get(listsSync).addHeader(Header.Authorization.Bearer(raw)), settingsService, listService)
         body <- response.body.asString
@@ -115,6 +122,54 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
         settingsService.state.calls.isEmpty,
       )
     },
+    test("the lists endpoint asks for the whole list without `since`, and for the changes after the version in it") {
+      val settingsService = stub[AntifraudSettingsService]
+      val listService = stub[AntifraudListService]
+      val removedId = UUID.fromString("00000000-0000-0000-0000-0000000000e2")
+      val delta = PolicyLists(version = 13, full = false, entries = Nil, removed = List(removedId))
+      for
+        _ <- listService.lists.succeedsWith(lists)
+        raw <- authToken
+        whole <- run(Request.get(listsSync).addHeader(Header.Authorization.Bearer(raw)), settingsService, listService)
+        _ <- listService.lists.succeedsWith(delta)
+        changes <- run(Request.get(listsSync.addQueryParam("since", "11")).addHeader(Header.Authorization.Bearer(raw)), settingsService, listService)
+        body <- changes.body.asString
+      yield assertTrue(
+        whole.status == Status.Ok,
+        changes.status == Status.Ok,
+        listService.lists.calls == List(None, Some(11L)),
+        body.fromJson[PolicyLists] == Right(delta),
+        body.contains(""""full":false"""),
+        body.contains(""""entries":[]"""),
+        body.contains(s""""removed":["$removedId"]"""),
+      )
+    },
+    test("a `since` that is not a whole number is 400 and nothing is read") {
+      val settingsService = stub[AntifraudSettingsService]
+      val listService = stub[AntifraudListService]
+      for
+        raw <- authToken
+        words <- run(Request.get(listsSync.addQueryParam("since", "abc")).addHeader(Header.Authorization.Bearer(raw)), settingsService, listService)
+        fraction <-
+          run(Request.get(listsSync.addQueryParam("since", "1.5")).addHeader(Header.Authorization.Bearer(raw)), settingsService, listService)
+      yield assertTrue(
+        words.status == Status.BadRequest,
+        fraction.status == Status.BadRequest,
+        listService.lists.calls.isEmpty,
+      )
+    },
+    test("the lists endpoint with a `since` is refused without auth's token, and nothing is read") {
+      val settingsService = stub[AntifraudSettingsService]
+      val listService = stub[AntifraudListService]
+      for
+        anonymous <- run(Request.get(listsSync.addQueryParam("since", "3")), settingsService, listService)
+        basic <- run(
+          Request.get(listsSync.addQueryParam("since", "3")).addHeader(Header.Authorization.Basic("admin", "admin")),
+          settingsService,
+          listService,
+        )
+      yield assertTrue(anonymous.status == Status.Unauthorized, basic.status == Status.Unauthorized, listService.lists.calls.isEmpty)
+    } @@ TestAspect.silentLogging,
     test("a request without a token is refused and nothing is read") {
       val settingsService = stub[AntifraudSettingsService]
       val listService = stub[AntifraudListService]
@@ -125,7 +180,23 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
         state.status == Status.Unauthorized,
         lists.status == Status.Unauthorized,
         settingsService.state.calls.isEmpty,
-        listService.active.calls.isEmpty,
+        listService.lists.calls.isEmpty,
+      )
+    } @@ TestAspect.silentLogging,
+    test("a registered edge's token, which is genuine, is refused on both routes and nothing is read: only an auth copies the policy") {
+      val settingsService = stub[AntifraudSettingsService]
+      val listService = stub[AntifraudListService]
+      val edges = stub[EdgeService]
+      for
+        _ <- edges.find.succeedsWith(Some(TestCentralConfig.edgeRecord))
+        raw <- TestCentralConfig.edgeToken
+        state <- run(Request.get(sync).addHeader(Header.Authorization.Bearer(raw)), settingsService, listService, edges)
+        lists <- run(Request.get(listsSync).addHeader(Header.Authorization.Bearer(raw)), settingsService, listService, edges)
+      yield assertTrue(
+        state.status == Status.Unauthorized,
+        lists.status == Status.Unauthorized,
+        settingsService.state.calls.isEmpty,
+        listService.lists.calls.isEmpty,
       )
     } @@ TestAspect.silentLogging,
     test("a token signed with a key nobody registered, a malformed one and a Basic credential are refused") {
@@ -141,7 +212,7 @@ object AntifraudPolicyControllerSpec extends ZIOSpecDefault, ZIOStubs:
         garbage.status == Status.Unauthorized,
         basic.status == Status.Unauthorized,
         settingsService.state.calls.isEmpty,
-        listService.active.calls.isEmpty,
+        listService.lists.calls.isEmpty,
       )
     } @@ TestAspect.silentLogging,
   ).provideSomeLayer(TestClient.layer)

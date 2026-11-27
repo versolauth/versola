@@ -5,6 +5,7 @@ import versola.oauth.jwks.JwksService
 import versola.oauth.model.{SessionCookie, State}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo}
+import versola.user.move.{DepartureRefusal, DepartureResponses}
 import versola.util.http.{Controller, Observability}
 import versola.util.{Base64, CoreConfig, FormDecoder, JWT}
 import zio.*
@@ -178,9 +179,15 @@ object LogoutController extends Controller:
       uiLocales: Option[List[String]],
   ): RIO[LogoutService, Response] =
     for
-      result <- ZIO.serviceWithZIO[LogoutService](_.logout(identifier, redirect, state))
-      rendered <- render.renderLogout(result.logoutUris, result.postLogoutRedirectUri, result.state, uiLocales, result.clientId)
-    yield rendered.addCookie(SessionCookie.expired)
+      ended <- ZIO.serviceWithZIO[LogoutService](_.logout(identifier, redirect, state)).either
+      response <- ended match
+        // A user who is leaving this cell keeps the session: try again in a moment (versolauth/versola#1051).
+        case Left(refusal: DepartureRefusal) => Observability.setError("user_leaving").as(DepartureResponses.of(refusal))
+        case Left(failure: Throwable) => ZIO.fail(failure)
+        case Right(result) =>
+          render.renderLogout(result.logoutUris, result.postLogoutRedirectUri, result.state, uiLocales, result.clientId)
+            .map(_.addCookie(SessionCookie.expired))
+    yield response
 
   private def setSessionAuth(info: SessionInfo): UIO[Unit] =
     Observability.setSessionId(info.record.publicId) *>

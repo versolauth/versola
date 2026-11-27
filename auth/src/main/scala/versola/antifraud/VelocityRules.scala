@@ -118,14 +118,24 @@ object VelocityRules:
           signal(keyType, window) -> (counters.count(keyType, key, window, at) + extra(keyType)).toString
     ctx.copy(signals = ctx.signals ++ counts)
 
-  /** The rules of the configured limits. Carry no state: the counts are in the context. */
-  def rules(thresholds: Thresholds): List[AntifraudRule] =
+  /** Whether a limit on the key is meant for the deployment and not for one cell. A count is per cell, so these are the
+    * keys a person can spread over the cells: the address (`ip`), its AS and the range of numbers. A `phone` belongs to
+    * one cell, since an address nobody holds reaches one cell and a registered one is held by one (versolauth/versola#1052);
+    * a `device` is not shared out either. */
+  def sharedAcrossCells(keyType: VelocityKey): Boolean = keyType match
+    case VelocityKey.ip | VelocityKey.asn | VelocityKey.prefix => true
+    case VelocityKey.phone | VelocityKey.device => false
+
+  /** The rules of the configured limits. Carry no state: the counts are in the context.
+    *
+    * @param share this cell's share of the limits that are meant for the deployment (see [[CellShare]]) */
+  def rules(thresholds: Thresholds, share: CellShare.Share): List[AntifraudRule] =
     val limits =
       for
         keyType <- VelocityKey.values.toList
         limit = thresholds.of(keyType)
         window <- VelocityWindow.values.toList
-        max = limit.of(window)
+        max = if sharedAcrossCells(keyType) then share.of(limit.of(window)) else limit.of(window)
         if max > 0
       yield (
         signal(keyType, window),
@@ -149,9 +159,9 @@ object VelocityRules:
 
   /** The rule set for [[Antifraud.Impl]], from the limits of the request's tenant (see [[AntifraudTuning]]); empty while the
     * counters are off. */
-  def ruleSet(settings: VelocityCounters.Settings, tuning: AntifraudTuning): Antifraud.RuleSet =
+  def ruleSet(settings: VelocityCounters.Settings, tuning: AntifraudTuning, cellShare: CellShare): Antifraud.RuleSet =
     new Antifraud.RuleSet:
-      override def rules: UIO[List[AntifraudRule]] = ZIO.succeed(if settings.enabled then VelocityRules.rules(tuning.current.thresholds) else Nil)
+      override def rules: UIO[List[AntifraudRule]] =
+        if settings.enabled then cellShare.current.map(VelocityRules.rules(tuning.current.thresholds, _)) else ZIO.succeed(Nil)
 
-      override def rulesFor(ctx: AntifraudContext): UIO[List[AntifraudRule]] =
-        ZIO.succeed(if settings.enabled then VelocityRules.rules(tuning.current.thresholds) else Nil)
+      override def rulesFor(ctx: AntifraudContext): UIO[List[AntifraudRule]] = rules

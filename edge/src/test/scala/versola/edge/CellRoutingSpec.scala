@@ -213,7 +213,7 @@ object CellRoutingSpec extends ZIOSpecDefault:
           seen <- hosts.get
         yield assertTrue(seen.reverse == List("kz-2-mtls", "kz-1-mtls", "kz-2-mtls", "kz-1-mtls", "configured"))
       },
-      test("a native pushed request is placed in an open cell and replayed once on moved; a refresh is too, a revocation is not") {
+      test("a native pushed request is placed in an open cell and replayed once on moved; a refresh and a revocation are too") {
         val cells = topology.copy(cells = Vector(secured("kz-1"), secured("kz-3").copy(state = EdgeCellState.Closed)))
         for
           hosts <- serve(host => if host == "kz-1-mtls" then moved else Response.json(pushedJson).status(Status.Created))
@@ -224,11 +224,47 @@ object CellRoutingSpec extends ZIOSpecDefault:
           revoked <- auth.revoke("app", certificateMaterial, form("token" -> "v1.kz-1.abc"), Headers.empty)
           seen <- hosts.get
         yield assertTrue(
-          seen.reverse == List("kz-1-mtls", "kz-3-mtls", "kz-1-mtls", "kz-3-mtls", "kz-1-mtls"),
+          seen.reverse == List("kz-1-mtls", "kz-3-mtls", "kz-1-mtls", "kz-3-mtls", "kz-1-mtls", "kz-3-mtls"),
           pushed.status == Status.Created,
           refreshed.status == Status.Created,
-          revoked.status.code == 421,
+          revoked.status == Status.Created,
         )
+      },
+      test("a native revocation answered moved is asked once at the cell named, with the same form, and that answer is returned") {
+        val cells = topology.copy(cells = Vector(secured("kz-1"), secured("kz-3")))
+        for
+          hosts <- serve(host => if host == "kz-1-mtls" then moved else Response.json("{}"))
+          client <- ZIO.service[Client]
+          revoked <- native(client, cells).revoke("app", certificateMaterial, form("token" -> "v1.kz-1.abc"), Headers.empty)
+          seen <- hosts.get
+        yield assertTrue(seen.reverse == List("kz-1-mtls", "kz-3-mtls"), revoked.status == Status.Ok)
+      },
+      test("a native revocation answered moved to a cell the edge does not know is not followed") {
+        val cells = topology.copy(cells = Vector(secured("kz-1"), secured("kz-3")))
+        for
+          hosts <- serve(_ => Response.json("""{"error":"moved","cell":"kz-9"}""").status(Status.fromInt(421)))
+          client <- ZIO.service[Client]
+          revoked <- native(client, cells).revoke("app", certificateMaterial, form("token" -> "v1.kz-1.abc"), Headers.empty)
+          seen <- hosts.get
+        yield assertTrue(revoked.status.code == 421, seen == List("kz-1-mtls"))
+      },
+      test("a native revocation answered moved to the cell just asked is not asked again") {
+        val cells = topology.copy(cells = Vector(secured("kz-1"), secured("kz-3")))
+        for
+          hosts <- serve(_ => Response.json("""{"error":"moved","cell":"kz-1"}""").status(Status.fromInt(421)))
+          client <- ZIO.service[Client]
+          revoked <- native(client, cells).revoke("app", certificateMaterial, form("token" -> "v1.kz-1.abc"), Headers.empty)
+          seen <- hosts.get
+        yield assertTrue(revoked.status.code == 421, seen == List("kz-1-mtls"))
+      },
+      test("a native revocation answered moved twice is the caller's: one replay, no chasing") {
+        val cells = topology.copy(cells = Vector(secured("kz-1"), secured("kz-3")))
+        for
+          hosts <- serve(_ => moved)
+          client <- ZIO.service[Client]
+          revoked <- native(client, cells).revoke("app", certificateMaterial, form("token" -> "v1.kz-1.abc"), Headers.empty)
+          seen <- hosts.get
+        yield assertTrue(revoked.status.code == 421, seen.reverse == List("kz-1-mtls", "kz-3-mtls"))
       },
       test("a native value naming an unknown cell is an invalid grant with no call made, and a cell without a pinned listener is not reached") {
         for
@@ -379,6 +415,59 @@ object CellRoutingSpec extends ZIOSpecDefault:
           userinfo == SSOClient.CellWithoutMutualTls(ClientId("web-app"), "kz-1"),
           seen.isEmpty,
         )
+      },
+      test("a userinfo answered moved is asked once at the cell named, with the same token, and that answer is returned") {
+        for
+          hosts <- serve(host => if host == "kz-1" then moved else Response.json("""{"sub":"u"}"""))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          info <- sso.userInfo(tokenOf("kz-1"), SSOClient.TokenBinding.Unbound)
+          seen <- hosts.get
+        yield assertTrue(seen.reverse == List("kz-1", "kz-3"), info.toString.contains("\"u\""))
+      },
+      test("the replayed userinfo carries the access token the first call carried") {
+        val token = tokenOf("kz-1")
+        for
+          presented <- Ref.make(List.empty[(String, Option[String])])
+          _ <- TestClient.addRoutes(
+            Handler.fromFunctionZIO[Request](request =>
+              val host = request.url.path.segments.headOption.getOrElse("")
+              presented.update((host, request.rawHeader(Header.Authorization)) :: _)
+                .as(if host == "kz-1" then moved else Response.json("""{"sub":"u"}""")),
+            ).toRoutes,
+          )
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          _ <- sso.userInfo(token, SSOClient.TokenBinding.Unbound)
+          seen <- presented.get
+        yield assertTrue(seen.reverse == List("kz-1" -> Some(s"Bearer $token"), "kz-3" -> Some(s"Bearer $token")))
+      },
+      test("a second moved answer to userinfo is the caller's: one replay, no chasing") {
+        for
+          hosts <- serve(_ => moved)
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          error <- sso.userInfo(tokenOf("kz-1"), SSOClient.TokenBinding.Unbound).flip
+          seen <- hosts.get
+        yield assertTrue(error == SSOClient.CellMoved("kz-3"), seen.reverse == List("kz-1", "kz-3"))
+      },
+      test("userinfo moved to a cell the edge does not know is not followed") {
+        for
+          hosts <- serve(_ => Response.json("""{"error":"moved","cell":"kz-9"}""").status(Status.fromInt(421)))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          error <- sso.userInfo(tokenOf("kz-1"), SSOClient.TokenBinding.Unbound).flip
+          seen <- hosts.get
+        yield assertTrue(error == SSOClient.CellMoved("kz-9"), seen == List("kz-1"))
+      },
+      test("userinfo moved to the cell just asked is not asked again") {
+        for
+          hosts <- serve(_ => Response.json("""{"error":"moved","cell":"kz-1"}""").status(Status.fromInt(421)))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          error <- sso.userInfo(tokenOf("kz-1"), SSOClient.TokenBinding.Unbound).flip
+          seen <- hosts.get
+        yield assertTrue(error == SSOClient.CellMoved("kz-1"), seen == List("kz-1"))
       },
       test("a pushed request is placed in an open cell, and replayed once when that cell says the user moved") {
         val placed = topology.copy(cells = Vector(one, two.copy(state = EdgeCellState.Closed), three.copy(state = EdgeCellState.Closed)))

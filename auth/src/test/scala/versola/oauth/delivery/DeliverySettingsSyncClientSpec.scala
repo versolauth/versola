@@ -15,6 +15,7 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
 
   private def tokenService(client: Client): CentralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
+    override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
     override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
 
   /** What central sends: a password is encrypted to the key of the auth that asked, and encoded base64url. */

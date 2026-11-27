@@ -23,6 +23,12 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
     override def clearStats: Task[Unit] =
       xa.connect(sql"DELETE FROM af_dest_stats".update.run()).unit
 
+    // The id of the transaction that wrote the row version: unchanged for a row the statement left alone.
+    override def rowVersions(ids: List[UUID]): Task[Map[UUID, Long]] =
+      val keys = ids.toArray
+      xa.connect:
+        sql"SELECT id, xmin::text::bigint FROM af_list_entry WHERE id = ANY($keys)".query[(UUID, Long)].run().toMap
+
   override lazy val environment =
     ZLayer:
       for
@@ -39,7 +45,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect:
         sql"DELETE FROM af_list_entry".update.run()
-        sql"UPDATE af_list_version SET version = 0".update.run()
+        sql"UPDATE af_list_version SET version = 0, full_copied_at = NULL".update.run()
         sql"DELETE FROM af_counter_reset".update.run()
         // What the preview cases wrote: the events of the hour before `at`, in partitions that may be gone by now.
         sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(ZoneOffset.UTC)}".update.run()
@@ -58,9 +64,12 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
           .fork
           _ <- Live.live(ZIO.sleep(500.millis))
           calls = List(
-            "replaceAll" -> impatient.replaceAll(List(entry()), 1).unit,
+            "replaceAll" -> impatient.replaceAll(List(entry()), 1, at, at).unit,
             "loadActive" -> impatient.loadActive(at).unit,
             "version" -> impatient.version.unit,
+            "copied" -> impatient.copied.unit,
+            "applyChanges" -> impatient.applyChanges(List(entry()), Nil, 0, 1).unit,
+            "removeExpired" -> impatient.removeExpired(at, 10).unit,
             "addHits" -> impatient.addHits(List(ListHit(id, 1, at))),
             "hits" -> impatient.hits(List(id)).unit,
             "pruneCounterResets" -> impatient.pruneCounterResets(at, 10).unit,

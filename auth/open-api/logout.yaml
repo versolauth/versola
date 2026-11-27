@@ -51,6 +51,8 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/LogoutPage'
+        '503':
+          $ref: '#/components/responses/Leaving'
 
     post:
       operationId: logoutPost
@@ -81,6 +83,8 @@ paths:
           $ref: '#/components/responses/LogoutPage'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Leaving'
 
 components:
   parameters:
@@ -164,6 +168,24 @@ components:
           type: string
 
   responses:
+    Leaving:
+      description: |
+        Temporarily unavailable. The user the session belongs to is on its way to another cell of the deployment (an operator moves
+        users between cells), and this cell ends nothing of theirs until the move is done (a matter of seconds) or abandoned: the
+        session and its cookie are left as they were, no relying party is notified. Repeat the request after `Retry-After`
+        (2 seconds).
+      headers:
+        Retry-After:
+          schema: {type: integer, const: 2}
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: {type: string, const: temporarily_unavailable}
+              error_description: {type: string}
+
     LogoutPage:
       description: |
         An HTML page. Either the confirmation prompt, or the signed-out page carrying one

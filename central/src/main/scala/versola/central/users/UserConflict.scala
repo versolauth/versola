@@ -15,3 +15,9 @@ case object UserNotFound
 type UserIndexConflict = UserIndexConflict.type
 
 case object UserIndexConflict
+
+/** The user has a move between cells that is not finished (versolauth/versola#1051): a change of the user waits for it, so that it
+  * is not made to the cell the user is leaving and lost. Answered `409` with the error code `user_moving`. */
+type UserMoving = UserMoving.type
+
+case object UserMoving

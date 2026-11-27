@@ -69,8 +69,13 @@ case class SettingsCheck(settings: Option[AntifraudSettings], patch: Option[Anti
   * version of the lists. The settings travel with it because they are one small row. */
 case class PolicyState(settingsVersion: Long, settings: Option[AntifraudSettings], listsVersion: Long) derives JsonCodec
 
-/** The lists as a cell copies them: every entry that has not expired, and the version they were read at. */
-case class PolicyLists(version: Long, entries: List[ListEntryRecord]) derives JsonCodec
+/** The lists as a cell copies them, and the version they were read at (versolauth/versola#1052).
+  *
+  * `full`: `entries` is every entry that has not expired and `removed` is empty; the cell replaces its copy. Not `full`:
+  * the cell was at the version it asked `since`, and `entries` are the entries changed after it that are still stored and
+  * not expired, as they are now, and `removed` the ids changed after it that are not (deleted, or expired since): the cell
+  * drops `removed`, stores `entries`, and is then at `version`. */
+case class PolicyLists(version: Long, full: Boolean, entries: List[ListEntryRecord], removed: List[UUID]) derives JsonCodec
 
 /** Who put an entry on the list. */
 object ListEntrySource:

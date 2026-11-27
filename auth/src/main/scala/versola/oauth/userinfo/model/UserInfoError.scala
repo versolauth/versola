@@ -15,3 +15,9 @@ enum UserInfoError:
 
   /** RFC 9449 §9: carries a freshly issued nonce for the client to retry with. */
   case UseDpopNonce(nonce: String)
+
+  /** The user is moving to another cell (versolauth/versola#1051): `503` with `Retry-After`. */
+  case Leaving
+
+  /** The user lives in `cell` now: `421`. */
+  case Moved(cell: String)

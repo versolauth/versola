@@ -565,6 +565,15 @@ class PostgresSessionRepository(xa: TransactorZIO)
           ZIO.fail(RefreshAlreadyExchanged())
       }
 
+  override def findSessionOwner(publicId: PublicSessionId): Task[Option[UserId]] =
+    xa.connectMeasured("find-session-owner"):
+      sql"SELECT user_id FROM sso_sessions WHERE public_id = $publicId".query[UserId].run().headOption
+
+  override def findRetiredTokenOwner(token: MAC.Of[RefreshToken], clientId: ClientId): Task[Option[UserId]] =
+    xa.connectMeasured("find-retired-refresh-token-owner"):
+      sql"SELECT user_id FROM refresh_tokens WHERE id = $token AND client_id = $clientId AND rotated_at IS NOT NULL"
+        .query[UserId].run().headOption
+
   override def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
     for
       now <- Clock.instant

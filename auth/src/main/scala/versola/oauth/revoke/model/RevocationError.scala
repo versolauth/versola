@@ -15,11 +15,19 @@ enum RevocationError:
     * describes the deployment's proxy, not the caller — is logged rather than returned. */
   case InvalidClientCertificate(reason: String)
 
+  /** The user is moving to another cell (versolauth/versola#1051): `503` with `Retry-After`. */
+  case Unavailable
+
+  /** The user, or the refresh token, went to `cell`: `421`. */
+  case Moved(cell: String)
+
   def status: Status = this match
     case InvalidClient => Status.Unauthorized
     case InvalidClientCertificate(_) => Status.Unauthorized
     case InvalidRequest => Status.BadRequest
     case UnsupportedTokenType => Status.BadRequest
+    case Unavailable => Status.ServiceUnavailable
+    case Moved(_) => Status.MisdirectedRequest
 
 case class RevocationErrorResponse(
     error: String,
@@ -41,6 +49,14 @@ object RevocationErrorResponse:
           error = "invalid_request",
           errorDescription = Some("The request is missing the required 'token' parameter"),
         )
+      case RevocationError.Unavailable =>
+        RevocationErrorResponse(
+          error = "temporarily_unavailable",
+          errorDescription = Some("The server is temporarily unable to handle the request"),
+        )
+      // Answered by the controller, which says where the token went; never rendered from here.
+      case RevocationError.Moved(_) =>
+        RevocationErrorResponse(error = "moved", errorDescription = None)
       case RevocationError.UnsupportedTokenType =>
         RevocationErrorResponse(
           error = "unsupported_token_type",

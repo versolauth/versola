@@ -541,6 +541,29 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         BootstrapService.permissionCatalog.filter(_._3.contains(endpointId("GET", "/users/audit"))).map(_._1.toString) == List("audit:read"),
       )
     },
+    test("moving a user is registered for the console: the write with users:manage and the list with users:read, and with no other permission") {
+      def endpoints(permission: String) =
+        BootstrapService.permissionCatalog.find(
+          _._1 == versola.central.configuration.permissions.Permission(permission),
+        ).map(_._3).getOrElse(Set.empty)
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      val grantedBy = (method: String, path: String) =>
+        BootstrapService.permissionCatalog.filter(_._3.contains(endpointId(method, path))).map(_._1.toString)
+      assertTrue(
+        prod.contains("POST" -> "/users/move"),
+        prod.contains("GET" -> "/users/moves"),
+        endpoints("users:manage").contains(endpointId("POST", "/users/move")),
+        endpoints("users:read").contains(endpointId("GET", "/users/moves")),
+        // a read does not move anybody, and a write is not granted by the right to look
+        !endpoints("users:read").contains(endpointId("POST", "/users/move")),
+        !endpoints("users:manage").contains(endpointId("GET", "/users/moves")),
+        grantedBy("POST", "/users/move") == List("users:manage"),
+        grantedBy("GET", "/users/moves") == List("users:read"),
+        // told who the administrator is, as every other route of the console, so that the audit row names them
+        BootstrapService.centralInjects("POST", "/users/move") == BootstrapService.actorInjects,
+        BootstrapService.centralInjects("GET", "/users/moves") == BootstrapService.actorInjects,
+      )
+    },
     test("a deployment that registered the endpoints with older inject rules gets the current ones, and nothing but the inject rules is rewritten") {
       def record(method: String, path: String, inject: Vector[InjectRule], allow: Option[String] = None) =
         versola.central.configuration.resources.ResourceEndpointRecord(

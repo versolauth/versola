@@ -5,6 +5,8 @@ import type {
   UserRefreshToken,
   UserAgent,
   UserDevice,
+  UserMove,
+  UserMovePhase,
   UserRoleAssignment,
   UserSearchField,
   UserSession,
@@ -18,10 +20,23 @@ type UserSearchRecordDto = {
   phone?: string;
   login?: string;
   claims: Record<string, unknown>;
+  cell?: string | null;
+  move?: UserMove | null;
 };
 type UserSearchResponseDto = { users: UserSearchRecordDto[] };
 type CreateUserResponseDto = { id: string };
 type UserRolesResponseDto = { roles: string[] };
+
+/** What a per-user write answers (`409 user_moving`) while the user has a move between cells that is not finished. */
+export const USER_MOVING_MESSAGE = 'This user is being moved to another cell, so it cannot be changed now. Try again when the move is done or has failed.';
+
+const MOVING_TEXT = /being moved to another cell/i;
+
+/** The message of a failed call: the readable text for `user_moving`, else what central said, else the fallback. */
+export function failureText(status: number, body: string, fallback: string): string {
+  if (status === 409 && MOVING_TEXT.test(body)) return USER_MOVING_MESSAGE;
+  return body.trim() || fallback;
+}
 
 export const IDENTIFIER_TAKEN_MESSAGE = 'One of the identifiers is already taken by another user.';
 
@@ -34,6 +49,8 @@ function toUser(record: UserSearchRecordDto): User {
     phone: record.phone,
     login: record.login,
     claims: record.claims ?? {},
+    cell: record.cell ?? null,
+    move: record.move ?? null,
   };
 }
 
@@ -59,7 +76,7 @@ export async function searchUsers(field: UserSearchField, query: string): Promis
   if (response.status === 404) return [];
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Search failed (${response.status})`);
+    throw new Error(failureText(response.status, body, `Search failed (${response.status})`));
   }
 
   const data = (await response.json()) as UserSearchResponseDto;
@@ -79,12 +96,13 @@ export async function createUser(user: Omit<User, 'id'>): Promise<User> {
   });
 
   if (response.status === 409) {
-    throw new Error(IDENTIFIER_TAKEN_MESSAGE);
+    const text = await response.text();
+    throw new Error(MOVING_TEXT.test(text) ? USER_MOVING_MESSAGE : IDENTIFIER_TAKEN_MESSAGE);
   }
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Create failed (${response.status})`);
+    throw new Error(failureText(response.status, body, `Create failed (${response.status})`));
   }
 
   const { id } = (await response.json()) as CreateUserResponseDto;
@@ -111,12 +129,13 @@ export async function updateUser(previous: User, next: User): Promise<void> {
   });
 
   if (response.status === 409) {
-    throw new Error(IDENTIFIER_TAKEN_MESSAGE);
+    const text = await response.text();
+    throw new Error(MOVING_TEXT.test(text) ? USER_MOVING_MESSAGE : IDENTIFIER_TAKEN_MESSAGE);
   }
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text.trim() || `Update failed (${response.status})`);
+    throw new Error(failureText(response.status, text, `Update failed (${response.status})`));
   }
 }
 
@@ -133,7 +152,7 @@ export async function patchUserClaims(userId: string, claimsPatch: Record<string
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text.trim() || `Update claims failed (${response.status})`);
+    throw new Error(failureText(response.status, text, `Update claims failed (${response.status})`));
   }
 }
 
@@ -146,7 +165,7 @@ export async function fetchUserRoles(userId: string, tenantId: string): Promise<
   if (response.status === 204) return [];
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to load roles (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to load roles (${response.status})`));
   }
 
   const data = (await response.json()) as UserRolesResponseDto;
@@ -170,7 +189,7 @@ export async function updateUserRoles(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text.trim() || `Update roles failed (${response.status})`);
+    throw new Error(failureText(response.status, text, `Update roles failed (${response.status})`));
   }
 }
 
@@ -217,7 +236,7 @@ export async function fetchUserDevices(userId: string): Promise<UserDevice[]> {
   const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to load devices (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to load devices (${response.status})`));
   }
 
   const data = (await response.json()) as UserDeviceDto[];
@@ -237,7 +256,7 @@ export async function fetchUserRefreshTokens(userId: string): Promise<UserRefres
   const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to load refresh tokens (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to load refresh tokens (${response.status})`));
   }
 
   return (await response.json()) as UserRefreshToken[];
@@ -257,7 +276,7 @@ export async function deleteUser(userId: string): Promise<void> {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to delete user (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to delete user (${response.status})`));
   }
 }
 
@@ -276,7 +295,7 @@ export async function revokeUserRefreshTokens(userId: string, clientId: string):
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to revoke offline access (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to revoke offline access (${response.status})`));
   }
 }
 
@@ -295,7 +314,7 @@ export async function endUserSession(userId: string, sessionId: string): Promise
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to end session (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to end session (${response.status})`));
   }
 }
 
@@ -314,7 +333,7 @@ export async function forgetUserAgent(userId: string, userAgentId: string): Prom
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to forget the device (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to forget the device (${response.status})`));
   }
 }
 
@@ -330,7 +349,7 @@ export async function invalidateUserSession(userId: string): Promise<void> {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to invalidate session (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to invalidate session (${response.status})`));
   }
 }
 export async function listPasskeys(userId: string): Promise<PasskeyInfo[]> {
@@ -344,7 +363,7 @@ export async function listPasskeys(userId: string): Promise<PasskeyInfo[]> {
   if (response.status === 204) return [];
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body.trim() || `Failed to load passkeys (${response.status})`);
+    throw new Error(failureText(response.status, body, `Failed to load passkeys (${response.status})`));
   }
 
   const data = (await response.json()) as { passkeys: PasskeyInfo[] };
@@ -361,7 +380,7 @@ export async function renamePasskey(userId: string, credentialId: string, name: 
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text.trim() || `Rename passkey failed (${response.status})`);
+    throw new Error(failureText(response.status, text, `Rename passkey failed (${response.status})`));
   }
 }
 
@@ -378,7 +397,7 @@ export async function deletePasskey(userId: string, credentialId: string): Promi
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text.trim() || `Delete passkey failed (${response.status})`);
+    throw new Error(failureText(response.status, text, `Delete passkey failed (${response.status})`));
   }
 }
 
@@ -401,7 +420,7 @@ export async function resetPassword(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text.trim() || `Reset password failed (${response.status})`);
+    throw new Error(failureText(response.status, text, `Reset password failed (${response.status})`));
   }
 
   if (response.status === 204) return null;
@@ -424,7 +443,7 @@ export async function resetUserLimits(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text.trim() || `Reset limits failed (${response.status})`);
+    throw new Error(failureText(response.status, text, `Reset limits failed (${response.status})`));
   }
 }
 
@@ -458,4 +477,43 @@ export async function fetchUserAudit(userId: string, query: UserAuditQuery = {},
     throw new UserAuditError(body || fallback, response.status);
   }
   return parseUserAuditReport(await response.json());
+}
+
+/** A refusal of `POST /users/move`: `status` 400 (the text says why: other partition, draining target, same cell...), 404 (no
+ *  such user) or 409 (`move_in_progress`). */
+export class UserMoveRefusal extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'UserMoveRefusal';
+  }
+}
+
+/** Starts the move of a user to another cell; central answers `202` and carries it out in the background. */
+export async function moveUser(userId: string, cell: string): Promise<void> {
+  const response = await fetch(proxyUrl('/users/move').toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ userId, cell }),
+  });
+  if (response.ok) return;
+  const text = (await response.text()).trim();
+  const message = response.status === 404 ? (text || 'No user has this ID.')
+    : response.status === 409 ? 'A move of this user is already in progress. Wait until it is done or has failed.'
+    : (text || `Move failed (${response.status})`);
+  throw new UserMoveRefusal(message, response.status);
+}
+
+/** The latest move of each user, newest first; `cell` limits them to those from or to it. */
+export async function fetchUserMoves(query: { cell?: string; phase?: UserMovePhase; limit?: number } = {}): Promise<UserMove[]> {
+  const url = proxyUrl('/users/moves');
+  if (query.cell) url.searchParams.set('cell', query.cell);
+  if (query.phase) url.searchParams.set('phase', query.phase);
+  if (query.limit) url.searchParams.set('limit', String(query.limit));
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(failureText(response.status, text, `Failed to load moves (${response.status})`));
+  }
+  return ((await response.json()) as { moves: UserMove[] }).moves;
 }

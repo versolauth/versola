@@ -11,6 +11,7 @@ import versola.oauth.model.{SessionCookie, State}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
+import versola.user.move.DepartureRefusal
 import versola.util.UnitSpecBase
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, MAC}
@@ -224,6 +225,19 @@ object LogoutControllerSpec extends UnitSpecBase:
           response.headers.get(Header.SetCookie).exists { h =>
             h.renderedValue.contains(SessionCookie.name) && h.renderedValue.contains("Max-Age=0")
           },
+        )),
+    ),
+    controllerTestCase(
+      description = "POST /logout for a user who is leaving is 503 with Retry-After: the session and its cookie are left, nothing is rendered",
+      request = postWithCsrf(csrfToken(rawSessionId)),
+      expectedStatus = Status.ServiceUnavailable,
+      setup = (logoutService, _, sessionService) =>
+        sessionService.find.succeedsWith(Some(sessionInfo)) *> logoutService.logout.failsWith(DepartureRefusal.Leaving),
+      verify = (response, _, renderService, _) =>
+        ZIO.succeed(assertTrue(
+          response.headers.get("Retry-After").contains("2"),
+          renderService.renderLogout.calls.isEmpty,
+          response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
     controllerTestCase(

@@ -17,13 +17,18 @@ info:
     * `/configuration/*/sync` (`GET /configuration/cells/sync` among them: the cells with their state, weight, region and public keys),
       `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
       and `POST /users/registrations`, `POST /users/lookup`, `POST /users/home`, `POST /users/sessions/superseded`, `GET /antifraud/policy/sync`
-      and `GET /antifraud/policy/lists/sync`, which an auth reads with a token of its own: RS256, signed with the private key whose public half
+      and `GET /antifraud/policy/lists/sync` (with `since`, the version of the caller's copy, it answers the changes after that version, or the whole list when
+      they do not reach back that far or `since` is ahead of central; `400` when `since` is not a whole number), which an auth reads with a token of its own: RS256, signed with the private key whose public half
       is in `publicKeys` of its cell (or in central's `auth.public-keys` for the auth central is configured with), `kid` the key's id, `iss`
       `auth`, `aud` `central`. Central tells who calls from the key that verifies the token, not from anything the token says of itself; HS256
       tokens, and the shared secret they were signed with, no longer exist. What the answers of these routes carry as secrets (client and
       resource secrets, delivery passwords, the private keys tenants sign with) is encrypted to that key, so only that auth reads it.
       Central calls auth the same way, with RS256 under its own service key and `aud` the id of the cell it calls (`auth` for a configured auth
-      with no cell id). Every route outside `/edge/*` refuses a token that authenticates an edge (`403`).
+      with no cell id). Every route outside `/edge/*` refuses a token that authenticates an edge (`403`); the routes only an auth calls
+      (`POST /users/lookup`, `/users/home`, `/users/sessions/superseded`, `GET /antifraud/policy/sync`, `/antifraud/policy/lists/sync`,
+      `GET /configuration/cells/sync` and `GET /configuration/delivery-settings/sync`) refuse it again in the handler (`401`), so that the
+      refusal does not rest on the group alone. A token that names an edge is accepted anywhere only as RS256 with `exp`, `iss` `edge`
+      and `aud` `central`, which is what every edge signs.
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
       `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`, `cells`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener; the one
@@ -1221,7 +1226,9 @@ paths:
         '404':
           description: No user with this `id`.
         '409':
-          description: One of the identifiers is already taken by another user.
+          description: >-
+            One of the identifiers is already taken by another user, or the user has a move between cells that is not
+            finished (error code `user_moving`; try again when it is over).
     delete:
       tags: [Users]
       summary: Delete a user
@@ -1251,6 +1258,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No user with this `id`.
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/claims:
     patch:
@@ -1269,6 +1278,8 @@ paths:
           description: Patch accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/roles:
     get:
@@ -1318,6 +1329,8 @@ paths:
           description: Patch accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/sessions:
     get:
@@ -1548,6 +1561,8 @@ paths:
           description: "`id` or `clientId` missing."
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/limits/reset:
     post:
@@ -1564,6 +1579,94 @@ paths:
       responses:
         '202':
           description: Reset accepted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/move:
+    post:
+      tags: [Users]
+      summary: Move a user to another cell
+      description: |
+        Moves the user from the cell that holds it to `cell`, in the background, and answers at once. The
+        move is driven by central (`phase`: `leaving`, `exported`, `arrived`, `flipped`, `done`, `failed`, and `abandoning` while an abandoned move is cleaned up; follow it with
+        `GET /users/moves`): the old cell is told the user is leaving and answers temporarily unavailable for them,
+        the rows that travel (identifiers, claims, passwords, passkeys, roles, consents and the refresh tokens that
+        have not expired) are read as one sealed envelope that central cannot open and handed to the new cell, which
+        keeps it as the arrival of this move (`moveId`, new at every start: an envelope of another move, or a replayed one,
+        is refused). Just before the directory is changed the old cell is asked again, and rows it changed meanwhile are
+        handed over again (three times at most, then the move is abandoned with `source_changed`); the directory then
+        names the new cell, the new cell is told to keep the arrival, and the old cell drops what it held. Browser sessions, conversations,
+        authorization codes, remembered devices and attempt counters end with the move; a person signed in in a
+        browser signs in again, and an app holding a refresh token keeps working (the old cell answers `moved` and the
+        edge repeats the call to the new one). The audit log, the antifraud events and counters, and the revocation
+        records stay in the old cell.
+
+        A failure before the directory is changed is retried five times with a backoff and then abandoned: the new cell
+        forgets the user, the old one serves it again, and the move is `failed` with an `error` code (`abandoning` until that
+        clean-up is done, which is retried without limit). A failure after it
+        is retried without limit and is never rolled back. While a move is unfinished the user's changes through this
+        API answer `409` (`user_moving`) and the events queued for the user wait. Requires every cell of the partition to
+        share `PASSWORDS_SECRET`, the Argon2 parameters and `REFRESH_TOKENS_SECRET`; this is not checked here.
+      operationId: moveUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveUserRequest'
+      responses:
+        '202':
+          description: The move is recorded and will be carried out.
+        '400':
+          description: >-
+            The request is not a user id and a cell id, or the move cannot be made, with the error code of the request log:
+            `user_without_cell` (the directory places the user in no cell), `source_cell_not_registered`,
+            `target_cell_not_registered`, `same_cell` (the target is the cell the user is in), `other_partition`
+            (the two cells are in different partitions), or `target_cell_draining`. A `closed` cell may be moved to.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No user with this id (`user_not_found`).
+        '409':
+          description: A move of the user is in progress (`move_in_progress`); a finished or failed one is replaced.
+
+  /users/moves:
+    get:
+      tags: [Users]
+      summary: List the moves of users between cells
+      description: >-
+        The moves, newest first, of which there is one per user: a finished or failed move is replaced by the next one of the user.
+        A move of the drain of a cell has `reason` `drain`.
+      operationId: getUserMoves
+      parameters:
+        - name: cell
+          in: query
+          required: false
+          description: Only the moves from this cell or to it.
+          schema:
+            $ref: '#/components/schemas/TopologyId'
+        - name: phase
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/UserMovePhase'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: The moves.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserMovesResponse'
+        '400':
+          description: A `phase` that is not one of the phases, or a `limit` outside 1 to 500.
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1602,6 +1705,8 @@ paths:
           description: Rename accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
     delete:
       tags: [Users]
       summary: Delete a passkey
@@ -1623,6 +1728,8 @@ paths:
           description: Deletion accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/password/reset:
     post:
@@ -1657,6 +1764,8 @@ paths:
           description: The password was delivered over `email` or `sms`.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
         '400':
           description: |
             `expiresInSeconds` is outside the allowed range of 3600 to 604800 seconds. Nothing is reset.
@@ -1686,6 +1795,8 @@ paths:
           description: Password set.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
         '404':
           description: The deployment runs in production.
 
@@ -2944,7 +3055,7 @@ paths:
           description: Cell registered.
         '400':
           description: >-
-            The record is malformed: a negative weight, an address that is not an absolute
+            The record is malformed: an id that is reserved (`auth`, `central`), a negative weight, an address that is not an absolute
             `http` or `https` URL (`mtlsUrl` must be `https`), a pin that is not a PEM
             certificate or is named twice, a region that does not exist, or `publicKeys` that is empty, has more
             than two keys, holds a key that is not a public RSA JWK of 2048 to 8192 bits with a `kid`, names a
@@ -2998,6 +3109,16 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: force
+          in: query
+          required: false
+          description: >-
+            `true` deletes the cell although it still answers `moved` for refresh tokens of users that were moved out of it
+            (`tokens` of the cell in `GET /configuration/topology`), or did not say whether it does. The edge does not know a
+            deleted cell, so those refresh tokens stop working. Does not lift the refusal for a move that is not finished.
+          schema:
+            type: boolean
+            default: false
       responses:
         '204':
           description: Cell deleted.
@@ -3007,8 +3128,10 @@ paths:
           description: There is no such cell.
         '409':
           description: >-
-            The cell is `open` or `draining`, or the user directory still places users in it and
-            `lost` is not `true`. Only a `closed` cell that holds no user is deleted.
+            The cell is `open` or `draining`, or the user directory still places users in it, or a move from or to it
+            is not finished, or it still answers `moved` for refresh tokens of moved users (or did not answer in
+            time) and `force` is not `true`. `lost=true` skips the last three, not the state rule. Only a `closed`
+            cell that holds no user and has no move under way is deleted.
 
   /configuration/edges/region:
     put:
@@ -3931,6 +4054,12 @@ components:
   responses:
     Unauthorized:
       description: The credentials are missing, malformed or not accepted.
+    UserMoving:
+      description: >-
+        The user has a move between cells that is not finished (`POST /users/move`, or the drain of its cell), so a
+        change of it would be made to the cell it is leaving and lost. Nothing was changed. The error code of the
+        request log is `user_moving`; try again once the move is `done` or `failed` (`GET /users/moves`). Reads are
+        not refused.
 
   parameters:
     TenantIdQuery:
@@ -6115,6 +6244,18 @@ components:
         claims:
           type: object
           additionalProperties: true
+        cell:
+          description: The cell the directory places the user in. Absent for a user of no cell.
+          oneOf:
+            - $ref: '#/components/schemas/TopologyId'
+            - type: 'null'
+        move:
+          description: >-
+            The latest move of the user between cells, if there was one. While it is unfinished and the user is leaving its
+            cell, the cell does not answer for the user, and `email`, `phone`, `login` and `claims` are empty.
+          oneOf:
+            - $ref: '#/components/schemas/UserMove'
+            - type: 'null'
       required: [id, claims]
     UserSearchResponse:
       type: object
@@ -7848,8 +7989,119 @@ components:
         cells:
           type: array
           items:
-            $ref: '#/components/schemas/Cell'
+            $ref: '#/components/schemas/CellStatus'
       required: [partitions, regions, cells]
+    CellStatus:
+      description: >-
+        A cell as `GET /configuration/topology` answers it: the record, and what the users and the moves add to it.
+      allOf:
+        - $ref: '#/components/schemas/Cell'
+        - type: object
+          properties:
+            users:
+              type: integer
+              format: int64
+              description: How many users the directory places in the cell.
+            moving:
+              type: integer
+              format: int64
+              description: How many moves that leave the cell are not finished.
+            tokens:
+              type: integer
+              format: int64
+              description: >-
+                How many refresh tokens of users moved out of the cell it still answers `moved` for, from the cell's own
+                report (`GET /users/departures/summary`). Absent when the cell did not answer in time: that is not an error of
+                the request.
+            tokensUntil:
+              type: string
+              format: date-time
+              description: When the last of those tokens expires. Absent with `tokens`, or when there are none.
+            drainBlocked:
+              type: string
+              enum: [no_open_cell]
+              description: >-
+                Set on a `draining` cell that cannot be emptied now, because no open cell of its partition (with a weight above
+                0) can take its users. Nothing is started until there is one.
+          required: [users, moving]
+    UserMovePhase:
+      type: string
+      enum: [leaving, exported, arrived, flipped, done, failed, abandoning]
+      description: >-
+        `leaving`: the old cell is told, and the rows are read after a settle time. `exported`: the rows are read.
+        `arrived`: the new cell holds them, and the old cell is asked again before the directory is changed. `flipped`: the
+        directory names the new cell; from here the move is never rolled back, and one that stays here is the one to alert on
+        (`central_user_moves{phase}`). `done`: the old cell dropped what it held. `abandoning`: given up before the flip, and the
+        new cell forgetting the arrival and the old one serving the user again is not finished (retried without limit; it counts
+        as unfinished). `failed`: abandoned before the flip, and cleaned up.
+    MoveUserRequest:
+      type: object
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        cell:
+          $ref: '#/components/schemas/TopologyId'
+      required: [userId, cell]
+    UserMove:
+      type: object
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        moveId:
+          type: string
+          format: uuid
+          description: Names this move at both cells; new at every start, so the next move of the user has another.
+        from:
+          $ref: '#/components/schemas/TopologyId'
+        to:
+          $ref: '#/components/schemas/TopologyId'
+        phase:
+          $ref: '#/components/schemas/UserMovePhase'
+        reason:
+          type: string
+          enum: [admin, drain]
+        startedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        attempts:
+          type: integer
+          description: Failed attempts of the step the move is at; set back to 0 when it reaches the next phase.
+        error:
+          type: string
+          enum:
+            - depart_failed
+            - source_lacks_user
+            - export_failed
+            - arrive_failed
+            - target_has_user
+            - user_gone
+            - flip_failed
+            - complete_failed
+            - cell_unavailable
+            - departure_exists
+            - arrive_rejected
+            - invalid_document
+            - source_changed
+            - keep_failed
+          description: >-
+            The code of the last failure, or why the move was abandoned (`user_gone`: the directory no longer named the
+            old cell for the user, which was deleted; `source_changed`: the user's rows at the old cell kept changing while they
+            were handed over). `departure_exists`: another move of the user is leaving the old cell. `arrive_rejected`: the new
+            cell refused the envelope; `invalid_document`: the rows do not fit the new cell's configuration (a role, client or
+            scope it does not have). `keep_failed`: after the flip, the new cell did not confirm that it keeps the arrival.
+            Absent when nothing failed.
+      required: [userId, moveId, from, to, phase, reason, startedAt, updatedAt, attempts]
+    UserMovesResponse:
+      type: object
+      properties:
+        moves:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserMove'
+      required: [moves]
     SetEdgeRegionRequest:
       type: object
       properties:
@@ -8685,7 +8937,7 @@ components:
               cell: { type: string, description: The id of the cell. }
               status:
                 type: object
-                description: "What the instance said: `decision`, `lists` and `tuning`, as above. Absent when the cell did not answer."
+                description: "What the instance said: `decision`, `lists` and `tuning`, as above, and `cellShare`: the share of a limit by address (`ip`, `asn`, `prefix`) the cell applies, its weight among the cells that take users, so that the limit holds for the deployment and not once per cell (a limit of 100 at a share of 0.34 fires above 34 in that cell). Absent when the cell did not answer."
               error: { type: string, description: Why the cell did not answer; absent when it did. }
             required: [cell]
       required: [decision, lists, tuning, cells]

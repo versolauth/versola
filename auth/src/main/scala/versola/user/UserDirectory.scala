@@ -23,10 +23,11 @@ trait UserDirectory:
     */
   def claim(credential: Either[Email, Phone]): Task[UserDirectory.Claim]
 
-  /** Who holds a credential, and in which cell, without claiming it; `None` when nobody does. Asked by a cell that did
-    * not find the credential in its own database, to send the sign-in to the cell that holds the user
-    * (versolauth/versola#1046). */
-  def lookup(credential: Either[Email, Phone]): Task[Option[UserDirectory.Claim]]
+  /** The cell a sign-in by this address is to be sent to, when this cell does not hold it (versolauth/versola#1046,
+    * versolauth/versola#1052): the cell of the user who holds it, and for an address nobody holds the cell central's
+    * keyed hash picks, so that the answer does not say whether the address is registered. `None` only where there is no
+    * cell to send it to. */
+  def homeOfAddress(credential: Either[Email, Phone]): Task[Option[RoutingKey.CellId]]
 
   /** The cell a sign-in by this login is to be sent to, when this cell does not hold the login
     * (versolauth/versola#1048). Central answers a cell for a login nobody holds as well, so that sending a sign-in on
@@ -50,7 +51,12 @@ object UserDirectory:
 
   private[user] case class ClaimResponse(userId: UserId, cell: Option[String]) derives JsonCodec
 
-  private[user] case class HomeRequest(login: Option[Login], userId: Option[UserId]) derives JsonCodec
+  private[user] case class HomeRequest(
+      login: Option[Login],
+      userId: Option[UserId],
+      email: Option[Email],
+      phone: Option[Phone],
+  ) derives JsonCodec
 
   private[user] case class HomeResponse(cell: String) derives JsonCodec
 
@@ -62,23 +68,6 @@ object UserDirectory:
       centralSyncTokenService: CentralSyncTokenService,
   ) extends UserDirectory:
     private val RegistrationsUrl = config.central.url / "users" / "registrations"
-
-    private val LookupUrl = config.central.url / "users" / "lookup"
-
-    override def lookup(credential: Either[Email, Phone]): Task[Option[Claim]] =
-      val request = ClaimRequest(email = credential.left.toOption, phone = credential.toOption, cell = None)
-      ZIO.scoped:
-        for
-          response <- centralSyncTokenService.syncRequest(
-            Request
-              .post(LookupUrl, Body.fromString(request.toJson))
-              .addHeader(Header.ContentType(MediaType.application.json)),
-          )
-          found <-
-            if response.status == Status.NotFound then ZIO.none
-            else if !response.status.isSuccess then ZIO.fail(new Exception(s"Looking a credential up failed with ${response.status}"))
-            else response.body.asJsonFromCodec[ClaimResponse].flatMap(read).asSome
-        yield found
 
     private val HomeUrl = config.central.url / "users" / "home"
 
@@ -96,10 +85,13 @@ object UserDirectory:
             .unit
 
     override def homeOfLogin(login: Login): Task[Option[RoutingKey.CellId]] =
-      home(HomeRequest(login = Some(login), userId = None))
+      home(HomeRequest(login = Some(login), userId = None, email = None, phone = None))
 
     override def homeOfUser(userId: UserId): Task[Option[RoutingKey.CellId]] =
-      home(HomeRequest(login = None, userId = Some(userId)))
+      home(HomeRequest(login = None, userId = Some(userId), email = None, phone = None))
+
+    override def homeOfAddress(credential: Either[Email, Phone]): Task[Option[RoutingKey.CellId]] =
+      home(HomeRequest(login = None, userId = None, email = credential.left.toOption, phone = credential.toOption))
 
     private def home(request: HomeRequest): Task[Option[RoutingKey.CellId]] =
       ZIO.scoped:

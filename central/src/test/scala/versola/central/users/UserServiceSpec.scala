@@ -37,6 +37,11 @@ object UserServiceSpec extends UnitSpecBase:
       publicKeys = Nil,
     )
   private val registeredCells = Vector("kz-1", "kz-2", "kz-3").map(CellId(_))
+  private def weighted(id: String, weight: Int, state: CellState = CellState.Open) =
+    cellRecord(CellId(id)).copy(weight = weight, state = state)
+  private def macs(count: Int, seed: Long): Vector[IdentifierMac] =
+    val random = new java.util.Random(seed)
+    Vector.fill(count)(IdentifierMac(Array.fill(32)(random.nextInt().toByte)))
 
   class Env:
     val userRepository = stub[UserRepository]
@@ -44,7 +49,9 @@ object UserServiceSpec extends UnitSpecBase:
     val oAuthClientService = stub[OAuthClientService]
     val secureRandom = stub[SecureRandom]
     val topology = stub[TopologyRepository]
-    val service = UserService.Impl(userRepository, authClient, oAuthClientService, secureRandom, key, topology)
+    val moves = stub[UserMoveRepository]
+    val service = UserService.Impl(userRepository, authClient, oAuthClientService, secureRandom, key, topology, moves)
+    Unsafe.unsafe(u ?=> Runtime.default.unsafe.run(moves.find.succeedsWith(None))(using summon, u).getOrThrow())
 
   def spec = suite("UserService")(
     test("findById returns enriched record when user found") {
@@ -55,6 +62,38 @@ object UserServiceSpec extends UnitSpecBase:
         _ <- env.userRepository.pendingEvents.succeedsWith(Vector.empty)
         result <- env.service.findById(userId)
       yield assertTrue(result.map(_.id).contains(userId))
+    },
+    test(
+      "findById names the user's cell and its move; a user the cell does not answer for, because it is leaving, is shown without what the cell holds",
+    ) {
+      val env = Env()
+      val move = UserMove(
+        userId = userId,
+        fromCell = CellId("kz-1"),
+        toCell = CellId("kz-2"),
+        phase = MovePhase.Leaving,
+        startedAt = Instant.parse("2027-02-01T10:00:00Z"),
+        updatedAt = Instant.parse("2027-02-01T10:00:00Z"),
+        attempts = 0,
+        error = None,
+        reason = MoveReason.Admin,
+        notBefore = Instant.parse("2027-02-01T10:00:00Z"),
+        departedAt = None,
+        moveId = UUID.fromString("00000000-0000-7000-8000-0000000000a1"),
+        digest = None,
+      )
+      for
+        _ <- env.userRepository.find.succeedsWith(Some(UserDirectoryRecord(userId, Some(CellId("kz-1")))))
+        _ <- env.authClient.getUser.failsWith(AuthClient.UserLeavingCell)
+        _ <- env.userRepository.pendingEvents.succeedsWith(Vector.empty)
+        _ <- env.moves.find.succeedsWith(Some(move))
+        result <- env.service.findById(userId)
+      yield assertTrue(
+        result.flatMap(_.cell).contains(CellId("kz-1")),
+        result.flatMap(_.move).map(_.phase).contains(MovePhase.Leaving),
+        result.flatMap(_.move).map(_.to).contains(CellId("kz-2")),
+        result.exists(_.email.isEmpty),
+      )
     },
     test("findById returns None when user not found") {
       val env = Env()
@@ -471,6 +510,7 @@ object UserServiceSpec extends UnitSpecBase:
     test("revokeRefreshTokens delegates to authClient") {
       val env = Env()
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.authClient.revokeRefreshTokens.succeedsWith(())
         _ <- env.service.revokeRefreshTokens(userId, ClientId("app"))
       yield assertTrue(env.authClient.revokeRefreshTokens.calls == List((userId, ClientId("app"))))
@@ -511,7 +551,7 @@ object UserServiceSpec extends UnitSpecBase:
       val login = Login("jdoe")
       for
         _ <- env.userRepository.findByIdentifier.succeedsWith(Some(UserDirectoryRecord(userId, Some(cell))))
-        result <- env.service.homeCell(HomeCellRequest(login = Some(login), userId = None))
+        result <- env.service.homeCell(HomeCellRequest(login = Some(login), userId = None, email = None, phone = None))
       yield assertTrue(
         result == Some(cell),
         env.userRepository.findByIdentifier.calls.map(i => (i.kind, i.mac.toList)) == List((IdentifierKind.Login, key.login(login).mac.toList)),
@@ -522,13 +562,13 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       for
         _ <- env.userRepository.findByIdentifier.succeedsWith(Some(UserDirectoryRecord(userId, None)))
-        result <- env.service.homeCell(HomeCellRequest(login = Some(Login("jdoe")), userId = None))
+        result <- env.service.homeCell(HomeCellRequest(login = Some(Login("jdoe")), userId = None, email = None, phone = None))
       yield assertTrue(result.isEmpty, env.topology.getCells.calls.isEmpty)
     },
     test("homeCell answers a registered cell for a login nobody holds, the same one every time, picked by the MAC of the login") {
       val env = Env()
       val login = Login("nobody")
-      val request = HomeCellRequest(login = Some(login), userId = None)
+      val request = HomeCellRequest(login = Some(login), userId = None, email = None, phone = None)
       for
         _ <- env.userRepository.findByIdentifier.succeedsWith(None)
         _ <- env.topology.getCells.succeedsWith(registeredCells.map(cellRecord))
@@ -545,34 +585,215 @@ object UserServiceSpec extends UnitSpecBase:
       for
         _ <- env.userRepository.findByIdentifier.succeedsWith(None)
         _ <- env.topology.getCells.succeedsWith(Vector.empty)
-        result <- env.service.homeCell(HomeCellRequest(login = Some(Login("nobody")), userId = None))
+        result <- env.service.homeCell(HomeCellRequest(login = Some(Login("nobody")), userId = None, email = None, phone = None))
       yield assertTrue(result.isEmpty)
     },
     test("homeCell answers the cell of a known user id") {
       val env = Env()
       for
         _ <- env.userRepository.find.succeedsWith(Some(UserDirectoryRecord(userId, Some(cell))))
-        result <- env.service.homeCell(HomeCellRequest(login = None, userId = Some(userId)))
+        result <- env.service.homeCell(HomeCellRequest(login = None, userId = Some(userId), email = None, phone = None))
       yield assertTrue(result == Some(cell), env.userRepository.find.calls == List(userId), env.topology.getCells.calls.isEmpty)
     },
     test("homeCell answers nothing for an unknown user id, not a decoy") {
       val env = Env()
       for
         _ <- env.userRepository.find.succeedsWith(None)
-        result <- env.service.homeCell(HomeCellRequest(login = None, userId = Some(userId)))
+        result <- env.service.homeCell(HomeCellRequest(login = None, userId = Some(userId), email = None, phone = None))
       yield assertTrue(result.isEmpty, env.topology.getCells.calls.isEmpty)
     },
     test("homeCell answers nothing for a request with both a login and a user id, and for one with neither") {
       val env = Env()
       for
-        both <- env.service.homeCell(HomeCellRequest(login = Some(Login("jdoe")), userId = Some(userId)))
-        neither <- env.service.homeCell(HomeCellRequest(login = None, userId = None))
+        both <- env.service.homeCell(HomeCellRequest(login = Some(Login("jdoe")), userId = Some(userId), email = None, phone = None))
+        neither <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = None, phone = None))
       yield assertTrue(
         both.isEmpty,
         neither.isEmpty,
         env.userRepository.findByIdentifier.calls.isEmpty,
         env.userRepository.find.calls.isEmpty,
         env.topology.getCells.calls.isEmpty,
+      )
+    },
+    // versolauth/versola#1052
+    test("homeCell for an email answers the cell of the user that holds it, by its MAC, and does not read the cells") {
+      val env = Env()
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(UserDirectoryRecord(userId, Some(cell))))
+        result <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = Some(email), phone = None))
+      yield assertTrue(
+        result == Some(cell),
+        env.userRepository.findByIdentifier.calls.map(i => (i.kind, i.mac.toList)) == List((IdentifierKind.Email, key.email(email).mac.toList)),
+        env.topology.getCells.calls.isEmpty,
+      )
+    },
+    test("homeCell for a phone answers the cell of the user that holds it, by its MAC") {
+      val env = Env()
+      val phone = Phone("+15551234567")
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(UserDirectoryRecord(userId, Some(cell))))
+        result <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = None, phone = Some(phone)))
+      yield assertTrue(
+        result == Some(cell),
+        env.userRepository.findByIdentifier.calls.map(i => (i.kind, i.mac.toList)) == List((IdentifierKind.Phone, key.phone(phone).mac.toList)),
+        env.topology.getCells.calls.isEmpty,
+      )
+    },
+    test("homeCell for an address held by a user with no cell answers nothing, and does not place it") {
+      val env = Env()
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(UserDirectoryRecord(userId, None)))
+        result <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = Some(email), phone = None))
+      yield assertTrue(result.isEmpty, env.topology.getCells.calls.isEmpty)
+    },
+    test("homeCell for an address nobody holds answers the cell placementCell picks among the cells that take users, the same every time") {
+      val env = Env()
+      val phone = Phone("+15551234567")
+      val cells = Vector(weighted("kz-1", 100), weighted("kz-2", 300), weighted("kz-3", 600), weighted("kz-4", 500, CellState.Closed))
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(None)
+        _ <- env.topology.getCells.succeedsWith(cells)
+        byEmail <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = Some(email), phone = None))
+        again <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = Some(email), phone = None))
+        byPhone <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = None, phone = Some(phone)))
+      yield assertTrue(
+        byEmail == UserService.placementCell(cells, key.email(email).mac),
+        again == byEmail,
+        byPhone == UserService.placementCell(cells, key.phone(phone).mac),
+        byEmail.exists(Set("kz-1", "kz-2", "kz-3").map(CellId(_)).contains),
+        byPhone.exists(Set("kz-1", "kz-2", "kz-3").map(CellId(_)).contains),
+      )
+    },
+    test("homeCell for an address nobody holds answers nothing when no cell takes users: none, closed, draining, weightless") {
+      val env = Env()
+      val request = HomeCellRequest(login = None, userId = None, email = Some(email), phone = None)
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(None)
+        _ <- env.topology.getCells.succeedsWith(Vector.empty)
+        none <- env.service.homeCell(request)
+        _ <- env.topology.getCells.succeedsWith(
+          Vector(weighted("kz-1", 100, CellState.Closed), weighted("kz-2", 100, CellState.Draining), weighted("kz-3", 0)),
+        )
+        nonTaking <- env.service.homeCell(request)
+      yield assertTrue(none.isEmpty, nonTaking.isEmpty)
+    },
+    test("homeCell for a login nobody holds is still the decoy over every cell, taking or not") {
+      val env = Env()
+      val login = Login("nobody")
+      val cells = Vector(weighted("kz-1", 100, CellState.Closed), weighted("kz-2", 0), weighted("kz-3", 100, CellState.Draining))
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(None)
+        _ <- env.topology.getCells.succeedsWith(cells)
+        result <- env.service.homeCell(HomeCellRequest(login = Some(login), userId = None, email = None, phone = None))
+      yield assertTrue(result == UserService.decoyCell(cells.map(_.id), key.login(login).mac), result.isDefined)
+    },
+    test("homeCell answers nothing for a request with two fields or with none, and asks nobody") {
+      val env = Env()
+      val phone = Phone("+15551234567")
+      val requests = List(
+        HomeCellRequest(login = Some(Login("jdoe")), userId = None, email = Some(email), phone = None),
+        HomeCellRequest(login = None, userId = None, email = Some(email), phone = Some(phone)),
+        HomeCellRequest(login = None, userId = Some(userId), email = None, phone = Some(phone)),
+        HomeCellRequest(login = None, userId = Some(userId), email = Some(email), phone = None),
+        HomeCellRequest(login = Some(Login("jdoe")), userId = Some(userId), email = Some(email), phone = Some(phone)),
+        HomeCellRequest(login = None, userId = None, email = None, phone = None),
+      )
+      for answers <- ZIO.foreach(requests)(env.service.homeCell)
+      yield assertTrue(
+        answers.forall(_.isEmpty),
+        env.userRepository.findByIdentifier.calls.isEmpty,
+        env.userRepository.find.calls.isEmpty,
+        env.topology.getCells.calls.isEmpty,
+      )
+    },
+    test("placementCell answers nothing for no cell, and never a cell that is closed, draining or weightless") {
+      val cells = Vector(
+        weighted("a-closed", 1000, CellState.Closed),
+        weighted("b-draining", 1000, CellState.Draining),
+        weighted("c-zero", 0),
+        weighted("d-open", 1),
+      )
+      val all = macs(500, seed = 11)
+      assertTrue(
+        UserService.placementCell(Vector.empty, all.head).isEmpty,
+        all.forall(mac => UserService.placementCell(cells, mac) == Some(CellId("d-open"))),
+        all.forall(mac => UserService.placementCell(cells.init, mac).isEmpty),
+      )
+    },
+    test("placementCell is the same on every call and whatever order the cells come in") {
+      val cells = Vector(weighted("kz-1", 100), weighted("kz-2", 300), weighted("kz-3", 600), weighted("kz-4", 300))
+      val all = macs(300, seed = 3)
+      assertTrue(
+        all.forall: mac =>
+          val expected = UserService.placementCell(cells, mac)
+          expected.isDefined &&
+          expected == UserService.placementCell(cells, mac) &&
+          expected == UserService.placementCell(cells.reverse, mac) &&
+          expected == UserService.placementCell(cells.drop(2) ++ cells.take(2), mac),
+      )
+    },
+    test("placementCell puts addresses on the cells in proportion to their weights: 10%, 30%, 60% over 20 000 MACs within 2 points") {
+      val cells = Vector(weighted("kz-1", 100), weighted("kz-2", 300), weighted("kz-3", 600))
+      val n = 20000
+      val counts = macs(n, seed = 20260101L).flatMap(UserService.placementCell(cells, _)).groupBy(identity).view.mapValues(_.size).toMap
+      val share = cells.map(c => c.id -> counts.getOrElse(c.id, 0).toDouble / n).toMap
+      assertTrue(
+        counts.values.sum == n,
+        math.abs(share(CellId("kz-1")) - 0.10) <= 0.02,
+        math.abs(share(CellId("kz-2")) - 0.30) <= 0.02,
+        math.abs(share(CellId("kz-3")) - 0.60) <= 0.02,
+      )
+    },
+    test("placementCell: a cell's weight changing moves addresses only to it (heavier) or from it (lighter)") {
+      val before = Vector(weighted("kz-1", 100), weighted("kz-2", 300), weighted("kz-3", 600))
+      val all = macs(5000, seed = 17)
+      def moves(after: Vector[CellRecord]) =
+        all.flatMap(mac =>
+          (UserService.placementCell(before, mac), UserService.placementCell(after, mac)) match
+            case (Some(from), Some(to)) if from != to => Some(from -> to)
+            case _ => None,
+        )
+      val heavier = moves(Vector(weighted("kz-1", 100), weighted("kz-2", 500), weighted("kz-3", 600)))
+      val lighter = moves(Vector(weighted("kz-1", 100), weighted("kz-2", 100), weighted("kz-3", 600)))
+      assertTrue(
+        heavier.nonEmpty,
+        heavier.forall { case (from, to) => to == CellId("kz-2") && from != CellId("kz-2") },
+        lighter.nonEmpty,
+        lighter.forall { case (from, to) => from == CellId("kz-2") && to != CellId("kz-2") },
+      )
+    },
+    test("placementCell: a cell closing or being removed moves only its own addresses") {
+      val cells = Vector(weighted("kz-1", 100), weighted("kz-2", 300), weighted("kz-3", 600))
+      val all = macs(5000, seed = 23)
+      val removed = cells.filterNot(_.id == CellId("kz-2"))
+      val closed = cells.map(c => if c.id == CellId("kz-2") then c.copy(state = CellState.Closed) else c)
+      def check(after: Vector[CellRecord]) = all.forall: mac =>
+        val was = UserService.placementCell(cells, mac)
+        val now = UserService.placementCell(after, mac)
+        if was == Some(CellId("kz-2")) then now.exists(_ != CellId("kz-2")) else now == was
+      assertTrue(
+        all.exists(mac => UserService.placementCell(cells, mac) == Some(CellId("kz-2"))),
+        check(removed),
+        check(closed),
+      )
+    },
+    test("the degenerate digests, all zero bits and all one bits, give a number inside (0, 1) and a finite positive score") {
+      val zeros = UserService.unitOf(Array.fill(32)(0.toByte))
+      val ones = UserService.unitOf(Array.fill(32)(0xff.toByte))
+      val scores = List(zeros, ones).flatMap(u => List(1, 100, Int.MaxValue).map(UserService.rendezvousScore(_, u)))
+      assertTrue(
+        zeros > 0.0 && zeros < 1.0,
+        ones > 0.0 && ones < 1.0,
+        math.log(zeros).isFinite && math.log(zeros) < 0.0,
+        math.log(ones).isFinite && math.log(ones) < 0.0,
+        scores.forall(score => score.isFinite && score > 0.0),
+      )
+    },
+    test("placementCell does not throw for a MAC of zeros or of ones") {
+      val cells = Vector(weighted("kz-1", 100), weighted("kz-2", 300))
+      assertTrue(
+        UserService.placementCell(cells, IdentifierMac(Array.fill(32)(0.toByte))).isDefined,
+        UserService.placementCell(cells, IdentifierMac(Array.fill(32)(0xff.toByte))).isDefined,
       )
     },
     test("decoyCell answers nothing for no cell and the only cell for one") {
@@ -638,6 +859,7 @@ object UserServiceSpec extends UnitSpecBase:
       val version = UUID.fromString("00000000-0000-0000-0000-000000000007")
       val request = PatchUserRequest(userId, Some(Patch.Modified(email)), Some(Patch.Deleted), None)
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(version)
         _ <- env.userRepository.replaceIdentifiers.succeedsWith(())
         _ <- env.service.patch(request)
@@ -658,6 +880,7 @@ object UserServiceSpec extends UnitSpecBase:
     test("patch fails with UserConflict when the identifier belongs to another user") {
       val env = Env()
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000007"))
         _ <- env.userRepository.replaceIdentifiers.failsWith(UserConflict)
         result <- env.service.patch(PatchUserRequest(userId, Some(Patch.Modified(email)), None, None)).either
@@ -667,6 +890,7 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       val patch = Json.Obj("test" -> Json.Bool(true))
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.authClient.patchUserClaims.succeedsWith(())
         _ <- env.service.patchClaims(userId, patch)
       yield assertTrue(env.authClient.patchUserClaims.calls == List((userId, patch)))
@@ -674,6 +898,7 @@ object UserServiceSpec extends UnitSpecBase:
     test("delete purges the user in auth before removing the index row") {
       val env = Env()
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         order <- Ref.make(List.empty[String])
         _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
         _ <- env.authClient.deleteUser.returnsZIO(_ => order.update(_ :+ "auth"))
@@ -689,6 +914,7 @@ object UserServiceSpec extends UnitSpecBase:
     test("delete fails with UserNotFound for an id that is not indexed and touches nothing") {
       val env = Env()
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.userRepository.find.succeedsWith(None)
         exit <- env.service.delete(userId).exit
       yield assertTrue(
@@ -701,6 +927,7 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       val failure = RuntimeException("auth unavailable")
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
         _ <- env.authClient.deleteUser.failsWith(failure)
         exit <- env.service.delete(userId).exit
@@ -713,6 +940,7 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       val request = UpdateUserRolesRequest(userId, tenantId, Set(RoleId("admin")), Set(RoleId("viewer")))
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.userRepository.enqueueRoleUpdate.succeedsWith(())
         _ <- env.service.updateRoles(request)
       yield assertTrue(
@@ -751,6 +979,7 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       val request = RenamePasskeyRequest(userId, "cred-1", Some("New name"))
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.authClient.renamePasskey.succeedsWith(())
         _ <- env.service.renamePasskey(request)
       yield assertTrue(env.authClient.renamePasskey.calls == List((userId, "cred-1", Some("New name"))))
@@ -758,6 +987,7 @@ object UserServiceSpec extends UnitSpecBase:
     test("deletePasskey delegates to authClient") {
       val env = Env()
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.authClient.deletePasskey.succeedsWith(())
         _ <- env.service.deletePasskey(userId, "cred-1")
       yield assertTrue(env.authClient.deletePasskey.calls == List((userId, "cred-1")))
@@ -766,6 +996,7 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       val request = ResetPasswordRequest(userId, 43200L, Some(DeliveryChannel.show))
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.authClient.resetPassword.succeedsWith(Some("Temp1234!"))
         result <- env.service.resetPassword(request)
       yield assertTrue(
@@ -777,6 +1008,7 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       val request = ResetPasswordRequest(userId, 43200L, Some(DeliveryChannel.email))
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.authClient.resetPassword.succeedsWith(None)
         result <- env.service.resetPassword(request)
       yield assertTrue(result.isEmpty)
@@ -784,8 +1016,75 @@ object UserServiceSpec extends UnitSpecBase:
     test("setPassword delegates to authClient") {
       val env = Env()
       for
+        _ <- env.moves.unfinished.succeedsWith(false)
         _ <- env.authClient.setPassword.succeedsWith(())
         _ <- env.service.setPassword(userId, "Secret123!")
       yield assertTrue(env.authClient.setPassword.calls == List((userId, "Secret123!")))
     },
+    suite("a user with an unfinished move (versolauth/versola#1051)")(
+      test("a change the cell refuses because the move began after central looked is UserMoving too, not a failure") {
+        val env = Env()
+        for
+          _ <- env.moves.unfinished.succeedsWith(false)
+          _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
+          _ <- env.authClient.setPassword.failsWith(AuthClient.UserLeavingCell)
+          _ <- env.authClient.patchUserClaims.failsWith(AuthClient.UserLeavingCell)
+          _ <- env.authClient.deleteUser.failsWith(AuthClient.UserLeavingCell)
+          set <- env.service.setPassword(userId, "Secret123!").either
+          claims <- env.service.patchClaims(userId, Json.Obj()).either
+          delete <- env.service.delete(userId).either
+        yield assertTrue(
+          set == Left(UserMoving),
+          claims == Left(UserMoving),
+          delete == Left(UserMoving),
+          env.userRepository.delete.calls.isEmpty,
+        )
+      },
+      test("every change of the user is refused with UserMoving and reaches neither auth nor the directory nor the outbox") {
+        val env = Env()
+        for
+          _ <- env.moves.unfinished.succeedsWith(true)
+          _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
+          patch <- env.service.patch(PatchUserRequest(userId, Some(Patch.Modified(email)), None, None)).either
+          claims <- env.service.patchClaims(userId, Json.Obj()).either
+          delete <- env.service.delete(userId).either
+          roles <- env.service.updateRoles(UpdateUserRolesRequest(userId, tenantId, Set(RoleId("admin")), Set.empty)).either
+          revoke <- env.service.revokeRefreshTokens(userId, ClientId("app")).either
+          rename <- env.service.renamePasskey(RenamePasskeyRequest(userId, "cred-1", None)).either
+          deletePasskey <- env.service.deletePasskey(userId, "cred-1").either
+          reset <- env.service.resetPassword(ResetPasswordRequest(userId, 43200L, None)).either
+          set <- env.service.setPassword(userId, "Secret123!").either
+        yield assertTrue(
+          List(patch, claims, delete, roles, revoke, rename, deletePasskey, set).forall(_ == Left(UserMoving)),
+          reset == Left(UserMoving),
+          env.userRepository.replaceIdentifiers.calls.isEmpty,
+          env.userRepository.delete.calls.isEmpty,
+          env.userRepository.enqueueRoleUpdate.calls.isEmpty,
+          env.authClient.patchUserClaims.calls.isEmpty,
+          env.authClient.deleteUser.calls.isEmpty,
+          env.authClient.revokeRefreshTokens.calls.isEmpty,
+          env.authClient.renamePasskey.calls.isEmpty,
+          env.authClient.deletePasskey.calls.isEmpty,
+          env.authClient.resetPassword.calls.isEmpty,
+          env.authClient.setPassword.calls.isEmpty,
+        )
+      },
+      test("a user that does not exist is not found, whatever its moves") {
+        val env = Env()
+        for
+          _ <- env.userRepository.find.succeedsWith(None)
+          result <- env.service.delete(userId).either
+        yield assertTrue(result == Left(UserNotFound), env.moves.unfinished.calls.isEmpty)
+      },
+      test("reads are not blocked: the user is found and its roles, sessions and passkeys are read") {
+        val env = Env()
+        for
+          _ <- env.moves.unfinished.succeedsWith(true)
+          _ <- env.authClient.getUserRoles.succeedsWith(List(RoleId("admin")))
+          _ <- env.authClient.listPasskeys.succeedsWith(Nil)
+          roles <- env.service.getRoles(userId, tenantId)
+          passkeys <- env.service.listPasskeys(userId)
+        yield assertTrue(roles == List(RoleId("admin")), passkeys.isEmpty, env.moves.unfinished.calls.isEmpty)
+      },
+    ),
   )

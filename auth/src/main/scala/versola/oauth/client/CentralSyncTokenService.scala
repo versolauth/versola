@@ -13,6 +13,11 @@ trait CentralSyncTokenService:
     */
   def syncRequest(request: Request): ZIO[Scope, Throwable, Response]
 
+  /** Sends `request` to central with a sync token, whatever its method, and never through the [[ConfigSnapshot]]: for a
+    * `GET` whose answer depends on what the caller already has (a delta since a version), so that it is not recorded and
+    * not replayed in place of an answer to another question. */
+  def liveRequest(request: Request): ZIO[Scope, Throwable, Response]
+
 object CentralSyncTokenService:
   private val TokenTtl = 10.minutes
   private val ReloadInterval = 9.minutes
@@ -56,6 +61,8 @@ object CentralSyncTokenService:
 
     override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
       if request.method == Method.GET then snapshot.through(request)(send(request)) else send(request)
+
+    override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = send(request)
 
     private def send(request: Request): ZIO[Scope, Throwable, Response] =
       for

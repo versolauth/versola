@@ -15,12 +15,24 @@ object AuthMetrics:
   private val conversationStartedTotal = Metric.counter("auth_conversation_started_total")
   private val conversationCompletedTotal = Metric.counter("auth_conversation_completed_total")
   private val conversationStepTotal = Metric.counter("auth_conversation_step_total")
+  private val movedAnswersTotal = Metric.counter("auth_moved_answers_total")
+  private val movedOutChangedTotal = Metric.counter("auth_moved_out_changed_total")
   private val refreshTokenReboundTotal = Metric.counter("auth_refresh_token_rebound_total")
 
   /** A certificate-bound grant of a client registered by an edge-group name was bound to another certificate of its group
     * (RFC 8705 §7.1). Its rate is the rate at which sessions move between the edges of a group or meet a renewed certificate. */
   def refreshTokenRebound: UIO[Unit] =
     refreshTokenReboundTotal.increment
+
+  /** A request was answered `421 moved`: the user, or the refresh token, went to another cell (versolauth/versola#1051). `endpoint` is one
+    * of `token`, `userinfo`, `revoke`, `introspect`. Its rate says how many clients still call the cell a user left. */
+  def movedAnswered(endpoint: String): UIO[Unit] =
+    movedAnswersTotal.tagged(label("endpoint", endpoint)).increment
+
+  /** A user's move was completed here although their rows had changed since the export that travelled: what was written in between
+    * did not move with them. Rare; any is worth looking at. */
+  def movedOutChanged: UIO[Unit] =
+    movedOutChangedTotal.increment
 
   def authorizeOutcome(response: AuthorizeResponse): UIO[Unit] =
     response match

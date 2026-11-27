@@ -245,13 +245,16 @@ object AntifraudShadowSpec extends UnitSpecBase:
           names.contains("asn_hosting"),
           names.contains("country_mismatch"),
           names.contains("country_outside_regions"),
-          VelocityRules.rules(VelocityRules.Thresholds().copy(
-            phone = VelocityRules.Limit(1, 1, 1, 1, 1),
-            ip = VelocityRules.Limit(1, 1, 1, 1, 1),
-            device = VelocityRules.Limit(1, 1, 1, 1, 1),
-            asn = VelocityRules.Limit(1, 1, 1, 1, 1),
-            prefix = VelocityRules.Limit(1, 1, 1, 1, 1),
-          ))
+          VelocityRules.rules(
+            VelocityRules.Thresholds().copy(
+              phone = VelocityRules.Limit(1, 1, 1, 1, 1),
+              ip = VelocityRules.Limit(1, 1, 1, 1, 1),
+              device = VelocityRules.Limit(1, 1, 1, 1, 1),
+              asn = VelocityRules.Limit(1, 1, 1, 1, 1),
+              prefix = VelocityRules.Limit(1, 1, 1, 1, 1),
+            ),
+            CellShare.Whole,
+          )
             .forall(r => names.contains(r.name)),
         )
       },

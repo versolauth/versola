@@ -101,11 +101,11 @@ object Antifraud:
 
   /** The engine over the rules of the components that add them: the lists, the velocity limits, the ASN signal and the country signal. A component that adds
     * rules is added here, where the engine is, not in the application's wiring. */
-  val live: URLayer[AntifraudEvents.Settings & AntifraudTuning & AntifraudLists, Antifraud] =
-    ZLayer.fromFunction: (settings: AntifraudEvents.Settings, tuning: AntifraudTuning, lists: AntifraudLists) =>
+  val live: URLayer[AntifraudEvents.Settings & AntifraudTuning & AntifraudLists & CellShare, Antifraud] =
+    ZLayer.fromFunction: (settings: AntifraudEvents.Settings, tuning: AntifraudTuning, lists: AntifraudLists, share: CellShare) =>
       Impl(
         settings.decision,
-        List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning), AsnRules.ruleSet, GeoRules.ruleSet),
+        List(lists.ruleSet, VelocityRules.ruleSet(settings.velocity, tuning, share), AsnRules.ruleSet, GeoRules.ruleSet),
         tuning,
       ): Antifraud
 

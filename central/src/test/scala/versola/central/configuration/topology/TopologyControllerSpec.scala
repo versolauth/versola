@@ -4,6 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.{EdgeGroup, EdgeGroupKind, EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.resources.ResourceService
+import versola.central.users.AuthClient
 import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
@@ -14,6 +15,8 @@ import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
+
+import java.time.Instant
 
 /** The admin API of partitions, regions and cells: what each refusal of the service is answered with, and who may call. */
 object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
@@ -114,10 +117,61 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "the topology is read in one piece: partitions, regions and cells",
       request = Request.get(URL.root / "configuration" / "topology"),
       expectedStatus = Status.Ok,
-      setup = _.topology.get.succeedsWith(Topology(Vector(kz), Vector(almaty), Vector(cell), Map(EdgeId("edge-1") -> almaty.id))),
+      setup = stubs =>
+        stubs.topology.get.succeedsWith(Topology(Vector(kz), Vector(almaty), Vector(cell), Map(EdgeId("edge-1") -> almaty.id))) *>
+          stubs.topology.cellStatuses.succeedsWith(Map(cell.id -> CellStatus(users = 0, moving = 0, departures = None, drainBlocked = None))),
       verify = (response, _) =>
         for body <- response.body.asString
-        yield assertTrue(body.fromJson[TopologyResponse] == Right(TopologyResponse(Vector(kz), Vector(almaty), Vector(cell)))),
+        yield assertTrue(
+          body.fromJson[TopologyResponse] == Right(TopologyResponse(Vector(kz), Vector(almaty), Vector(CellResponse.of(cell, None)))),
+        ),
+    ),
+    testCase(
+      description = "each cell carries its users, its unfinished moves, and what it reports of its refresh tokens",
+      request = Request.get(URL.root / "configuration" / "topology"),
+      expectedStatus = Status.Ok,
+      setup = stubs =>
+        stubs.topology.get.succeedsWith(Topology(Vector(kz), Vector(almaty), Vector(cell), Map.empty)) *>
+          stubs.topology.cellStatuses.succeedsWith(
+            Map(
+              cell.id -> CellStatus(
+                users = 12,
+                moving = 3,
+                departures =
+                  Some(AuthClient.DeparturesSummary(leaving = 1, moved = 9, tokens = 4, tokensUntil = Some(Instant.parse("2027-01-01T00:00:00Z")))),
+                drainBlocked = Some("no_open_cell"),
+              ),
+            ),
+          ),
+      verify = (response, _) =>
+        for body <- response.body.asString.map(_.fromJson[Json.Obj].toOption.get)
+        yield
+          val kz1 = body.fields.collectFirst { case ("cells", Json.Arr(cells)) => cells.head.asInstanceOf[Json.Obj] }.get
+          def field(name: String) = kz1.fields.collectFirst { case (`name`, value) => value }
+          assertTrue(
+            field("users").contains(Json.Num(12)),
+            field("moving").contains(Json.Num(3)),
+            field("tokens").contains(Json.Num(4)),
+            field("tokensUntil").contains(Json.Str("2027-01-01T00:00:00Z")),
+            field("drainBlocked").contains(Json.Str("no_open_cell")),
+            // the record's own fields are where they were
+            field("id").contains(Json.Str("kz-1")),
+            field("state").contains(Json.Str("open")),
+          ),
+    ),
+    testCase(
+      description = "a cell that did not answer has no tokens and no tokensUntil in the answer, and the request is not an error",
+      request = Request.get(URL.root / "configuration" / "topology"),
+      expectedStatus = Status.Ok,
+      setup = stubs =>
+        stubs.topology.get.succeedsWith(Topology(Vector(kz), Vector(almaty), Vector(cell), Map.empty)) *>
+          stubs.topology.cellStatuses.succeedsWith(Map(cell.id -> CellStatus(users = 5, moving = 0, departures = None, drainBlocked = None))),
+      verify = (response, _) =>
+        for body <- response.body.asString.map(_.fromJson[Json.Obj].toOption.get)
+        yield
+          val kz1 = body.fields.collectFirst { case ("cells", Json.Arr(cells)) => cells.head.asInstanceOf[Json.Obj] }.get
+          val names = kz1.fields.map(_._1).toSet
+          assertTrue(names.contains("users"), !names.contains("tokens"), !names.contains("tokensUntil"), !names.contains("drainBlocked")),
     ),
     testCase(
       description = "a cell is created and answered 201",
@@ -156,21 +210,41 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request.delete(cells.addQueryParam("cellId", "kz-1")),
       expectedStatus = Status.NoContent,
       setup = _.topology.deleteCell.succeedsWith(()),
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, false)))),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, false, false)))),
     ),
     testCase(
       description = "a cell said to be lost is deleted as lost, and any other value of the parameter is not that",
       request = Request.delete(cells.addQueryParam("cellId", "kz-1").addQueryParam("lost", "true")),
       expectedStatus = Status.NoContent,
       setup = _.topology.deleteCell.succeedsWith(()),
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, true)))),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, true, false)))),
     ),
     testCase(
       description = "lost=yes is not lost=true: the cell is deleted only if it holds no user",
       request = Request.delete(cells.addQueryParam("cellId", "kz-1").addQueryParam("lost", "yes")),
       expectedStatus = Status.NoContent,
       setup = _.topology.deleteCell.succeedsWith(()),
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, false)))),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, false, false)))),
+    ),
+    testCase(
+      description = "force=true is passed on, and any other value of the parameter is not that",
+      request = Request.delete(cells.addQueryParam("cellId", "kz-1").addQueryParam("force", "true")),
+      expectedStatus = Status.NoContent,
+      setup = _.topology.deleteCell.succeedsWith(()),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, false, true)))),
+    ),
+    testCase(
+      description = "force=1 is not force=true",
+      request = Request.delete(cells.addQueryParam("cellId", "kz-1").addQueryParam("force", "1")),
+      expectedStatus = Status.NoContent,
+      setup = _.topology.deleteCell.succeedsWith(()),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.deleteCell.calls == List((cell.id, false, false)))),
+    ),
+    testCase(
+      description = "a delete refused because of an unfinished move or the tokens a cell still answers for is 409",
+      request = Request.delete(cells.addQueryParam("cellId", "kz-1")),
+      expectedStatus = Status.Conflict,
+      setup = _.topology.deleteCell.failsWith(TopologyError.Conflict("cell 'kz-1' still answers for 4 refresh token(s)")),
     ),
     testCase(
       description = "an edge is put in a region, and a body that names none takes it out",

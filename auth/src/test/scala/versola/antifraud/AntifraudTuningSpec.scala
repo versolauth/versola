@@ -306,7 +306,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
       val limit = AntifraudTestSettings.limit.copy(perHour = 2)
       for
         (store, _, repo) <- storeLayer
-        ruleSet = VelocityRules.ruleSet(AntifraudTestSettings.velocity.copy(enabled = true), store)
+        ruleSet = VelocityRules.ruleSet(AntifraudTestSettings.velocity.copy(enabled = true), store, CellShare.whole)
         before <- ruleSet.rulesFor(ctx)
         _ <- copied(store, repo, base.copy(thresholds = base.thresholds.copy(phone = limit)))
         after <- ruleSet.rulesFor(ctx)

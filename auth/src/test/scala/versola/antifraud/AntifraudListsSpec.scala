@@ -23,13 +23,30 @@ object AntifraudListsSpec extends UnitSpecBase:
     var written: List[ListHit] = Nil
     var hitsAsked: List[List[UUID]] = Nil
 
-    override def replaceAll(entries: List[PolicyListEntry], version: Long): Task[Boolean] =
+    override def replaceAll(entries: List[PolicyListEntry], version: Long, at: Instant, notBefore: Instant): Task[Boolean] =
       ZIO.succeed:
         if ver == version then false
         else
           this.entries = entries
           ver = version
           true
+
+    override def applyChanges(entries: List[PolicyListEntry], removed: List[UUID], from: Long, to: Long): Task[Boolean] =
+      ZIO.succeed:
+        if ver != from then false
+        else
+          this.entries = this.entries.filterNot(e => removed.contains(e.id) || entries.exists(_.id == e.id)) ++ entries
+          ver = to
+          true
+
+    override def copied: Task[AntifraudListRepository.Copy] = ZIO.succeed(AntifraudListRepository.Copy(ver, None))
+
+    var expiredBefore: List[(Instant, Int)] = Nil
+
+    override def removeExpired(before: Instant, limit: Int): Task[Int] =
+      ZIO.succeed:
+        expiredBefore = expiredBefore :+ (before -> limit)
+        0
 
     var previewResult = ListPreview(matched = None, total = 0)
     var previewedFor: List[Option[TenantId]] = Nil
@@ -119,7 +136,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         createdBy = "central",
         createdAt = Instant.EPOCH,
       )
-      _ <- repository.replaceAll(repository.entries :+ stored, repository.ver + 1)
+      _ <- repository.replaceAll(repository.entries :+ stored, repository.ver + 1, Instant.EPOCH, Instant.EPOCH)
       _ <- lists.refresh
     yield stored
 
@@ -158,6 +175,15 @@ object AntifraudListsSpec extends UnitSpecBase:
     AntifraudTestSettings.engine(engine, lists.ruleSet :: others.toList, thresholds).evaluate(c)
 
   def spec = suite("AntifraudLists")(
+    // versolauth/versola#1052
+    test("the clean-up removes the entries that expired more than a day ago, a batch at a time") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      for
+        _ <- TestClock.setTime(Instant.parse("2026-11-20T10:00:00Z"))
+        _ <- lists.cleanUp
+      yield assertTrue(repository.expiredBefore == List((Instant.parse("2026-11-19T10:00:00Z"), 1000)))
+    },
     test("contributes no rule while off, whatever the table holds") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
@@ -390,7 +416,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       for
         first <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.9.9.9/16")
         blocked <- decide(lists)(ctx(ip = Some("10.9.1.1")))
-        _ <- repository.replaceAll(Nil, repository.ver + 1)
+        _ <- repository.replaceAll(Nil, repository.ver + 1, Instant.EPOCH, Instant.EPOCH)
         _ <- lists.refresh
         after <- decide(lists)(ctx(ip = Some("10.9.1.1")))
       yield assertTrue(first.value == "10.9.0.0/16", blocked.action == DecisionAction.Block, after == Decision.allow)

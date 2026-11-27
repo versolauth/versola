@@ -59,6 +59,19 @@ object AuthorizeInternalSpec extends ZIOSpecDefault, ZIOStubs:
       headers = cellId.fold(Map.empty[String, String])(id => Map("cell_id" -> id)),
     )
 
+  /** What an edge presents: `edge_id` in the header, signed with the edge's key. */
+  private def edgeToken(
+      claims: JWT.Claims,
+      ttl: Duration = 1.minute,
+      algorithm: JWT.Algorithm = JWT.Algorithm.RS256,
+  ): Task[String] =
+    JWT.serialize(
+      claims = claims,
+      ttl = ttl,
+      signature = JWT.Signature.Asymmetric(algorithm, edgeKey.keyId, edgeKey.privateKey),
+      headers = Map("edge_id" -> edgeId.toString),
+    )
+
   /** Built by hand, for the tokens [[JWT.serialize]] will not make: no `exp`, HS256 under a kid of a registered key. */
   private def handMade(header: JWSHeader, set: JWTClaimsSet, sign: SignedJWT => Unit): String =
     val jwt = SignedJWT(header, set)
@@ -264,6 +277,51 @@ object AuthorizeInternalSpec extends ZIOSpecDefault, ZIOStubs:
           result <- authorize(Some(token))
         yield assertTrue(caller(result).contains(Caller.Edge(edgeId)), caller(result).flatMap(_.authKey).isEmpty)
       },
+      suite("what an edge's token has to carry")(
+        test("RS256, an expiry, `iss` edge and `aud` central: what every edge signs, and nothing less") {
+          for
+            exact <- edgeToken(JWT.Claims("edge", "edge", List("central"), Json.Obj())).flatMap(token => authorize(Some(token)))
+            // aud may be a list (RFC 7519 4.1.3)
+            several <- edgeToken(JWT.Claims("edge", "edge", List("central", "other"), Json.Obj())).flatMap(token => authorize(Some(token)))
+          yield assertTrue(caller(exact).contains(Caller.Edge(edgeId)), caller(several).contains(Caller.Edge(edgeId)))
+        },
+        test("a token of another issuer, or for another audience, or for none, is refused") {
+          for
+            otherIssuer <- edgeToken(JWT.Claims("auth", "edge", List("central"), Json.Obj())).flatMap(token => authorize(Some(token)))
+            otherAudience <- edgeToken(JWT.Claims("edge", "edge", List("auth"), Json.Obj())).flatMap(token => authorize(Some(token)))
+            noAudience <- edgeToken(JWT.Claims("edge", "edge", Nil, Json.Obj())).flatMap(token => authorize(Some(token)))
+          yield assertTrue(refused(otherIssuer), refused(otherAudience), refused(noAudience))
+        },
+        test("a token with no expiry: JWT.deserialize takes it for one that never ends, and an edge's token must end") {
+          val edgeClaims = JWTClaimsSet.Builder().issuer("edge").subject("edge").audience("central").jwtID("jti-1").issueTime(Date()).build()
+          val withoutExpiry = handMade(
+            JWSHeader.Builder(JWSAlgorithm.RS256).keyID(edgeKey.keyId).`type`(JOSEObjectType.JWT).customParam("edge_id", edgeId.toString).build(),
+            edgeClaims,
+            _.sign(RSASSASigner(edgeKey.privateKey)),
+          )
+          val withExpiry = handMade(
+            JWSHeader.Builder(JWSAlgorithm.RS256).keyID(edgeKey.keyId).`type`(JOSEObjectType.JWT).customParam("edge_id", edgeId.toString).build(),
+            JWTClaimsSet.Builder(edgeClaims).expirationTime(Date.from(Instant.now().plusSeconds(60))).build(),
+            _.sign(RSASSASigner(edgeKey.privateKey)),
+          )
+          for
+            refusedWithout <- authorize(Some(withoutExpiry))
+            accepted <- authorize(Some(withExpiry))
+          yield assertTrue(refused(refusedWithout), caller(accepted).contains(Caller.Edge(edgeId)))
+        },
+        test("an expired token is refused") {
+          for
+            token <- edgeToken(JWT.Claims("edge", "edge", List("central"), Json.Obj()), ttl = -1.minute)
+            result <- authorize(Some(token))
+          yield assertTrue(refused(result))
+        },
+        test("a PS256 token under the edge's key, which verifies it: the algorithm is RS256 and nothing else") {
+          for
+            token <- edgeToken(JWT.Claims("edge", "edge", List("central"), Json.Obj()), algorithm = JWT.Algorithm.PS256)
+            result <- authorize(Some(token))
+          yield assertTrue(refused(result))
+        },
+      ),
       test("a token that names an edge but is signed with an auth's key, or a cell's, is refused") {
         for
           byConfigured <- JWT.serialize(

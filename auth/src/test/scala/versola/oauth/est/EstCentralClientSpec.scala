@@ -14,6 +14,7 @@ object EstCentralClientSpec extends ZIOSpecDefault:
 
   private def tokenService(client: Client): CentralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
+    override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
     override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
 
   private def answering(response: Response) =

@@ -25,6 +25,7 @@ import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, RecordingDepartures, UserDepartures}
 import versola.util.Base64
 import versola.util.audit.AuditEvents
 import versola.util.audit.AuditOutcome
@@ -132,7 +133,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
   )
 
-  class Env:
+  class Env(val departures: UserDepartures = UserDepartures.none):
     val oauthClientService = stub[OAuthConfigurationService]
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
@@ -150,6 +151,7 @@ object RevocationServiceSpec extends UnitSpecBase:
       ZLayer.succeed(accessTokenRevocationService) ++
       ZLayer.succeed(securityService) ++
       ZLayer.succeed(config) ++
+      ZLayer.succeed[UserDepartures](departures) ++
       ZLayer.succeed[AuditEvents](audit) >>> RevocationService.live
 
   val spec = suite("RevocationService")(
@@ -272,6 +274,121 @@ object RevocationServiceSpec extends UnitSpecBase:
           drafts <- env.audit.recorded
         // nothing was revoked, so nothing is said to have been, or recorded
         yield assertTrue(result == (), drafts.isEmpty, env.tokenRepository.deleteByFamily.calls.isEmpty)).provide(env.layer)
+      },
+    ),
+    // versolauth/versola#1051: a user who is leaving is not served, and what belongs to one who moved is told where they went.
+    suite("a user who is leaving or has moved")(
+      test("a refresh token of a user who moved is answered moved, and nothing is revoked") {
+        RecordingDepartures.make(Map.empty, Some("kz-2")).flatMap: departures =>
+          val env = Env(departures)
+          (for
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+            _ <- env.tokenRepository.findToken.succeedsWith(None)
+            service <- ZIO.service[RevocationService]
+            result <- service.revokeRefreshToken(refreshToken1, credentials, None).either
+            drafts <- env.audit.recorded
+            asked <- departures.asked
+          yield assertTrue(
+            result == Left(RevocationError.Moved("kz-2")),
+            asked == List("token"),
+            env.tokenRepository.deleteByFamily.calls.isEmpty,
+            drafts.isEmpty,
+          )).provide(env.layer)
+      },
+      test("a token this cell holds no record of is asked for with the client that presents it, so another client's token is nothing to revoke") {
+        RecordingDepartures.make(Map.empty, None).flatMap: departures =>
+          val env = Env(departures)
+          (for
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+            _ <- env.tokenRepository.findToken.succeedsWith(None)
+            service <- ZIO.service[RevocationService]
+            result <- service.revokeRefreshToken(refreshToken1, credentials, None).either
+            askedFor <- departures.askedFor
+          yield assertTrue(result.isRight, askedFor == List(clientId1), env.tokenRepository.deleteByFamily.calls.isEmpty)).provide(env.layer)
+      },
+      test("a refresh token this cell holds costs one read by user id, and a token no one knows is nothing to revoke as before") {
+        RecordingDepartures.make(Map.empty, None).flatMap: departures =>
+          val env = Env(departures)
+          (for
+            now <- Clock.instant
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+            _ <- env.tokenRepository.findToken.succeedsWith(None)
+            service <- ZIO.service[RevocationService]
+            unknown <- service.revokeRefreshToken(refreshToken1, credentials, None).either
+            _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+            _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
+            _ <- env.tokenRepository.deleteByFamily.succeedsWith(())
+            _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
+            held <- service.revokeRefreshToken(refreshToken1, credentials, None).either
+            asked <- departures.asked
+          yield assertTrue(unknown.isRight, held.isRight, asked == List("token", s"user:$userId1"))).provide(env.layer)
+      },
+      test("a refresh token of a leaving user is answered unavailable, and nothing is revoked or recorded") {
+        RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None).flatMap: departures =>
+          val env = Env(departures)
+          (for
+            now <- Clock.instant
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+            _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
+            service <- ZIO.service[RevocationService]
+            result <- service.revokeRefreshToken(refreshToken1, credentials, None).either
+            drafts <- env.audit.recorded
+          yield assertTrue(
+            result == Left(RevocationError.Unavailable),
+            env.tokenRepository.deleteByFamily.calls.isEmpty,
+            env.accessTokenRevocationService.announceFamily.calls.isEmpty,
+            drafts.isEmpty,
+          )).provide(env.layer)
+      },
+      test("an access token of a user who moved is answered moved, and of a leaving user unavailable; nothing is revoked") {
+        RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Moved("kz-2")), None).zip(
+          RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None),
+        ).flatMap: (gone, leaving) =>
+          val movedEnv = Env(gone)
+          val leavingEnv = Env(leaving)
+          for
+            now <- Clock.instant
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            _ <- movedEnv.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- leavingEnv.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            moved <-
+              ZIO.serviceWithZIO[RevocationService](_.revokeAccessToken(accessTokenPayload(now), credentials, None)).either.provide(movedEnv.layer)
+            unavailable <-
+              ZIO.serviceWithZIO[RevocationService](_.revokeAccessToken(accessTokenPayload(now), credentials, None)).either.provide(leavingEnv.layer)
+          yield assertTrue(
+            moved == Left(RevocationError.Moved("kz-2")),
+            unavailable == Left(RevocationError.Unavailable),
+            movedEnv.accessTokenRevocationService.revoke.calls.isEmpty,
+            leavingEnv.accessTokenRevocationService.revoke.calls.isEmpty,
+          )
+      },
+      test("a caller that cannot authenticate, or that does not own the token, is told nothing about where the user is") {
+        RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Moved("kz-2")), Some("kz-2")).flatMap: departures =>
+          val env = Env(departures)
+          (for
+            now <- Clock.instant
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            _ <- env.oauthClientService.verifySecret.succeedsWith(None)
+            service <- ZIO.service[RevocationService]
+            unauthenticated <- service.revokeAccessToken(accessTokenPayload(now), credentials, None).either
+            unauthenticatedRefresh <- service.revokeRefreshToken(refreshToken1, credentials, None).either
+            _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient.copy(id = ClientId("another"))))
+            notOwner <- service.revokeAccessToken(accessTokenPayload(now), ClientIdWithSecret(ClientId("another"), Some(clientSecret1)), None).either
+            asked <- departures.asked
+          yield assertTrue(
+            unauthenticated == Left(RevocationError.InvalidClient),
+            unauthenticatedRefresh == Left(RevocationError.InvalidClient),
+            notOwner == Left(RevocationError.InvalidClient),
+            asked.isEmpty,
+          )).provide(env.layer)
       },
     ),
     suite("revokeAccessToken")(

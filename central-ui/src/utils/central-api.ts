@@ -380,7 +380,7 @@ function invalidateAllRefData() {
 
 /** What central answered with, when it was JSON: a screen that can show more than the message
  * (the keys a locale is missing, the lines a JSON Schema fails on) reads it from `error.details`. */
-export type ApiError = Error & { status: number; details?: unknown };
+export type ApiError = Error & { status: number; details?: unknown; /** The body as central sent it, for the refusals that are plain text. */ bodyText?: string };
 
 function buildErrorMessage(status: number, bodyText: string): string {
   const trimmed = bodyText.trim();
@@ -503,6 +503,7 @@ async function request<T>(
       const error = new Error(buildErrorMessage(response.status, bodyText)) as ApiError;
       error.status = response.status;
       error.details = parseErrorDetails(bodyText);
+      error.bodyText = bodyText.trim();
       throw error;
     }
 
@@ -1505,7 +1506,7 @@ export async function fetchTopology(): Promise<Topology> {
   return {
     partitions: sortById(response.partitions),
     regions: sortById(response.regions),
-    cells: sortById(response.cells.map(cell => ({ ...cell, mtlsUrl: cell.mtlsUrl ?? null }))),
+    cells: sortById(response.cells.map(cell => ({ ...cell, mtlsUrl: cell.mtlsUrl ?? null, publicKeys: cell.publicKeys ?? [], users: cell.users ?? 0, moving: cell.moving ?? 0 }))),
   };
 }
 
@@ -1521,17 +1522,36 @@ export async function deleteRegion(regionId: string): Promise<void> {
   await requestVoid('/configuration/regions', { method: 'DELETE', query: { regionId } });
 }
 
+/** Only the record's own members go to central: a cell read from the topology also carries `users`, `moving` and the rest. */
+function cellRecord(cell: Cell): Cell {
+  return {
+    id: cell.id,
+    regionId: cell.regionId,
+    state: cell.state,
+    weight: cell.weight,
+    internalUrl: cell.internalUrl,
+    mtlsUrl: cell.mtlsUrl ?? null,
+    trustedCertificates: cell.trustedCertificates,
+    publicKeys: cell.publicKeys,
+  };
+}
+
 export async function createCell(cell: Cell): Promise<void> {
-  await requestVoid('/configuration/cells', { method: 'POST', body: cell });
+  await requestVoid('/configuration/cells', { method: 'POST', body: cellRecord(cell) });
 }
 
-/** Replaces the addresses, the pins, the state and the weight; the id and the region stay. */
+/** Replaces the addresses, the pins, the state, the weight and the keys (the whole set); the id and the region stay. */
 export async function updateCell(cell: Cell): Promise<void> {
-  await requestVoid('/configuration/cells', { method: 'PUT', body: cell });
+  await requestVoid('/configuration/cells', { method: 'PUT', body: cellRecord(cell) });
 }
 
-export async function deleteCell(cellId: string): Promise<void> {
-  await requestVoid('/configuration/cells', { method: 'DELETE', query: { cellId } });
+/** `lost`: the cell is gone for good with its users. `force`: delete although it still answers for carried refresh tokens, which
+ *  become invalid. Neither is sent unless it is true. */
+export async function deleteCell(cellId: string, options: { lost?: boolean; force?: boolean } = {}): Promise<void> {
+  await requestVoid('/configuration/cells', {
+    method: 'DELETE',
+    query: { cellId, ...(options.lost ? { lost: 'true' } : {}), ...(options.force ? { force: 'true' } : {}) },
+  });
 }
 
 /** The region of one of the operator's own edges; `null` takes it out of any region. */

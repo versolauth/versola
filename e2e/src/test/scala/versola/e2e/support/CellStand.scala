@@ -38,7 +38,27 @@ final case class CellStand(
     passwordClient: CellStand.RegisteredClient,
     loginClient: CellStand.RegisteredClient,
     private val setups: Ref[List[Flows.Setup]],
+    private val states: (String, String) => Task[Unit],
 ):
+  private def takingUsers(first: Boolean, second: Boolean): Task[Unit] =
+    states(if first then "open" else "closed", if second then "open" else "closed")
+
+  /** Runs `effect` with cell 2 `draining` and cell 1 open, and puts the stand back whatever happens: while it runs, central
+    * moves the users of cell 2 to cell 1 (versolauth/versola#1051). */
+  def whileSecondDrains[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    (states("open", "draining") *> effect).ensuring(takingUsers(true, false).orDie)
+
+  /** Runs `effect` with cell 2 open and as heavy as cell 1, and closes it again whatever happens: while it runs, a new
+    * sign-in through the edge is placed in either cell, and an address nobody holds may belong to either
+    * (versolauth/versola#1052). The specs run one after another, so nothing else sees it. */
+  def whileSecondTakesUsers[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    (takingUsers(true, true) *> effect).ensuring(takingUsers(true, false).orDie)
+
+  /** Runs `effect` with cell 2 the only cell that takes users, and puts the stand back whatever happens. This is how a
+    * spec makes a user of cell 2: an address nobody holds is registered in the cell central names for it, whichever
+    * cell it was typed in, and with one taking cell that cell is named for every address. */
+  def whileOnlySecondTakesUsers[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    (takingUsers(false, true) *> effect).ensuring(takingUsers(true, false).orDie)
 
   /** A registration client and an address nobody has used. */
   def nextRegistration: Task[Flows.Setup] =
@@ -233,6 +253,7 @@ object CellStand:
           loginClientId,
           "Cell stand: login and password, or a passkey",
           Set(RedirectUri),
+          allowedScopes = Set("openid", "offline_access"),
           authFlow = Some(Flows.loginPasswordPasskeyAuthFlow),
         ).success
         // Each cell is known to central by its own key: the staged auth's, which central's configuration lists as `auth.public-keys`
@@ -272,5 +293,18 @@ object CellStand:
         ),
         passwordClient = RegisteredClient(passwordClientId, passwordClient.secret, RedirectUri),
         loginClient = RegisteredClient(loginClientId, loginClient.secret, RedirectUri),
+        // An open cell takes users with a weight of 100; a closed and a draining one take none.
+        states = (firstState, secondState) =>
+          def placed(id: String, url: String, mutualTlsUrl: String, key: Json.Obj, state: String) =
+            central
+              .put(
+                "/configuration/cells",
+                cell(id, url, mutualTlsUrl, pin, state = state, weight = if state == "open" then 100 else 0, publicKey = key),
+              )
+              .flatMap(accepted(s"the state of cell $id", _))
+          placed(config.authCellId, config.authUrl, config.authMutualTlsUrl, firstPublicKey, firstState) *>
+            placed(SecondCellId, secondUrl, secondMutualTlsUrl, secondPublicKey, secondState) *>
+            edge.syncConfiguration.unit
+        ,
         setups = unused,
       )

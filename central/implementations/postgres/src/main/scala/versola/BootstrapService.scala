@@ -464,6 +464,7 @@ object BootstrapService:
         endpointId("GET", "/users/sessions"),
         endpointId("GET", "/users/user-agents"),
         endpointId("GET", "/users/refresh-tokens"),
+        endpointId("GET", "/users/moves"),
       ),
     ),
     (
@@ -482,6 +483,7 @@ object BootstrapService:
         endpointId("DELETE", "/users/refresh-tokens"),
         endpointId("POST", "/users/limits/reset"),
         endpointId("POST", "/users/password/reset"),
+        endpointId("POST", "/users/move"),
       ),
     ),
     (
@@ -1114,6 +1116,8 @@ object BootstrapService:
     "DELETE" -> "/users/refresh-tokens",
     "POST" -> "/users/limits/reset",
     "POST" -> "/users/password/reset",
+    "GET" -> "/users/moves",
+    "POST" -> "/users/move",
     "GET" -> "/antifraud/lists",
     "POST" -> "/antifraud/lists",
     "DELETE" -> "/antifraud/lists",

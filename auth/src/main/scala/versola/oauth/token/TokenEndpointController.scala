@@ -5,6 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.audit.AuditSupport.*
 import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds, ClientAuthFailures}
+import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, CertificateRelevance, ClientAuthentication}
@@ -24,6 +25,7 @@ import versola.oauth.token.model.{
 }
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
+import versola.user.move.DepartureResponses
 import versola.util.CoreConfig.JwtConfig
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.util.http.{Controller, Observability, extractCredentials}
@@ -106,6 +108,18 @@ object TokenEndpointController extends Controller:
         .addHeader(Header.CacheControl.NoStore)
         .addHeader(Header.Pragma.NoCache))
         .catchAll {
+          // The user is moving, or moved (versolauth/versola#1051): not a refusal of the request, so no `token.refused` event.
+          case TokenEndpointError.Leaving =>
+            Observability.setError(
+              TokenEndpointError.Leaving.error,
+              Some("user_leaving"),
+            ).as(DepartureResponses.leaving.addHeader(Header.CacheControl.NoStore))
+
+          case TokenEndpointError.Moved(cell) =>
+            Observability.setError("moved") *> AuthMetrics.movedAnswered("token") *> ZIO.succeed(
+              DepartureResponses.moved(cell).addHeader(Header.CacheControl.NoStore),
+            )
+
           case error: TokenEndpointError =>
             (Observability.setError(error.error, error.logDescription) *> auditRefused(error)).as:
               val errorResponse = TokenErrorResponse.from(error)

@@ -420,28 +420,33 @@ object AntifraudListServiceSpec extends UnitSpecBase:
         )
       },
     ),
-    suite("active")(
-      test("is what the repository holds at the time of the call") {
+    suite("lists")(
+      test("is what the repository holds at the time of the call, for the version asked") {
         val env = Env()
-        val lists = PolicyLists(version = 4, entries = List(record(None)))
+        val whole = PolicyLists(version = 4, full = true, entries = List(record(None)), removed = Nil)
+        val delta = PolicyLists(version = 6, full = false, entries = Nil, removed = List(UUID.randomUUID()))
         for
           _ <- TestClock.setTime(now)
-          _ <- env.repository.active.succeedsWith(lists)
-          active <- env.service.active
-        yield assertTrue(active == lists, env.repository.active.calls == List(now))
+          _ <- env.repository.lists.succeedsWith(whole)
+          everything <- env.service.lists(None)
+          _ <- env.repository.lists.succeedsWith(delta)
+          changes <- env.service.lists(Some(4))
+        yield assertTrue(everything == whole, changes == delta, env.repository.lists.calls == List((None, now), (Some(4L), now)))
       },
     ),
     suite("cleanUp")(
-      test("purges the expired entries and prunes the audit older than its retention") {
+      test("purges the expired entries and prunes the audit and the changes older than their retention") {
         val env = Env()
         for
           _ <- TestClock.setTime(now)
           _ <- env.repository.purgeExpired.succeedsWith(3)
           _ <- env.repository.pruneAudit.succeedsWith(0)
+          _ <- env.repository.pruneChanges.succeedsWith(0)
           _ <- env.service.cleanUp
         yield assertTrue(
           env.repository.purgeExpired.calls == List((now, 1000)),
           env.repository.pruneAudit.calls == List((now.minusSeconds(AntifraudListService.AuditRetention.toSeconds), 1000)),
+          env.repository.pruneChanges.calls == List((now.minusSeconds(AntifraudListService.ChangesKept.toSeconds), 1000)),
         )
       },
       test("goes on in batches, with a rest between them, until one comes back short") {
@@ -451,6 +456,7 @@ object AntifraudListServiceSpec extends UnitSpecBase:
           batches <- Ref.make(List(1000, 1000, 5))
           _ <- env.repository.purgeExpired.returnsZIO((_, _) => batches.modify(b => (b.head, b.tail)))
           _ <- env.repository.pruneAudit.succeedsWith(0)
+          _ <- env.repository.pruneChanges.succeedsWith(0)
           fiber <- env.service.cleanUp.fork
           _ <- TestClock.adjust(1.second)
           _ <- fiber.join
@@ -462,6 +468,7 @@ object AntifraudListServiceSpec extends UnitSpecBase:
           _ <- TestClock.setTime(now)
           _ <- env.repository.purgeExpired.failsWith(new RuntimeException("database is down"))
           _ <- env.repository.pruneAudit.succeedsWith(0)
+          _ <- env.repository.pruneChanges.succeedsWith(0)
           _ <- env.service.cleanUp
         yield assertTrue(env.repository.purgeExpired.calls.size == 1, env.repository.pruneAudit.calls.size == 1)
       } @@ TestAspect.silentLogging,

@@ -259,5 +259,61 @@ object IntrospectionControllerSpec extends UnitSpecBase:
         verifyService = svc =>
           ZIO.succeed(assertTrue(svc.introspectRefreshToken.calls.isEmpty)),
       ),
+      controllerTestCase(
+        description = "answers refresh token of a user who moved with 421 and exactly the cell, and counts nothing else",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> Base64.urlEncode(Array.fill(32)(1.toByte)))),
+        ).addHeader(authHeader(clientId, clientSecret)),
+        expectedStatus = Status.MisdirectedRequest,
+        setup = svc => svc.introspectRefreshToken.failsWith(IntrospectionError.Moved("kz-2")),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body == """{"error":"moved","cell":"kz-2"}"""),
+      ),
+      controllerTestCase(
+        description = "answers refresh token of a leaving user with 503, Retry-After: 2 and temporarily_unavailable",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> Base64.urlEncode(Array.fill(32)(1.toByte)))),
+        ).addHeader(authHeader(clientId, clientSecret)),
+        expectedStatus = Status.ServiceUnavailable,
+        setup = svc => svc.introspectRefreshToken.failsWith(IntrospectionError.Unavailable),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            response.header(Header.RetryAfter).exists(_.renderedValue == "2"),
+            body.contains(""""error":"temporarily_unavailable""""),
+            !body.contains("moved"),
+          ),
+      ),
+      controllerTestCase(
+        description = "answers access token of a user who moved with 421 and exactly the cell, and counts nothing else",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> accessToken())),
+        ).addHeader(authHeader(clientId, clientSecret)),
+        expectedStatus = Status.MisdirectedRequest,
+        setup = svc => svc.introspectAccessToken.failsWith(IntrospectionError.Moved("kz-2")),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body == """{"error":"moved","cell":"kz-2"}"""),
+      ),
+      controllerTestCase(
+        description = "answers access token of a leaving user with 503, Retry-After: 2 and temporarily_unavailable",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> accessToken())),
+        ).addHeader(authHeader(clientId, clientSecret)),
+        expectedStatus = Status.ServiceUnavailable,
+        setup = svc => svc.introspectAccessToken.failsWith(IntrospectionError.Unavailable),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            response.header(Header.RetryAfter).exists(_.renderedValue == "2"),
+            body.contains(""""error":"temporarily_unavailable""""),
+            !body.contains("moved"),
+          ),
+      ),
     ),
   )

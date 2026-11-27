@@ -136,6 +136,15 @@ object AuthAuditDetails:
   case class RolesUpdated(tenantId: String, added: List[String], removed: List[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
+  /** `user.moved_in` and `user.arrival_discarded`: the other cell, the one the user came from. */
+  case class UserMoved(cell: String) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `user.moved_out`: the cell the user went to, and whether their rows had changed since the export that travelled (what was
+    * written in between is lost: the move is past its flip and is not undone, so it is said here). */
+  case class UserMovedOut(cell: String, changedAfterExport: Boolean) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
   /** `account.claims_updated`: the names of the claims, never their values. */
   case class ClaimsUpdated(claims: List[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)

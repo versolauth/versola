@@ -20,6 +20,7 @@ import versola.antifraud.{
   AntifraudStatusController,
   AntifraudTuning,
   AntifraudTuningStore,
+  CellShare,
   ChallengeVerifier,
   PostgresAntifraudCounterResetRepository,
   PostgresAntifraudEventRepository,
@@ -72,7 +73,7 @@ import versola.oauth.conversation.{
 import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
 import versola.oauth.est.{EstCentralClient, EstController, EstService}
-import versola.oauth.handoff.{CellHandoff, CellRegistry, CellSyncClient}
+import versola.oauth.handoff.{CellEnvelope, CellHandoff, CellRegistry, CellSyncClient}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -84,6 +85,15 @@ import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentReposi
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
+import versola.user.move.{
+  PostgresUserDepartureRepository,
+  PostgresUserMoveRepository,
+  UserDepartureRepository,
+  UserDepartures,
+  UserMoveController,
+  UserMoveRepository,
+  UserMoves,
+}
 import versola.user.{PostgresUserRepository, UserController, UserDirectory, UserRepository, UserService}
 import versola.util.*
 import versola.util.SequentialLayers.*
@@ -150,7 +160,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRouter &
       CellSyncClient &
       CellRegistry &
+      CellShare &
+      CellEnvelope &
       CellHandoff &
+      UserDepartureRepository &
+      UserMoveRepository &
+      UserDepartures &
+      UserMoves &
       ConversationService &
       AntifraudEvents &
       AntifraudCounters &
@@ -213,6 +229,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksController.routes,
       MetadataController.routes,
       UserController.routes,
+      UserMoveController.routes,
       AntifraudListController.routes,
       AntifraudCountersController.routes,
       AntifraudSettingsController.routes,
@@ -288,6 +305,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >++> (
     PostgresWalMetrics.live() >++>
       PostgresUserRepository.live >++>
+      PostgresUserDepartureRepository.live >++>
+      PostgresUserMoveRepository.live >++>
       PostgresConversationRepository.live >++>
       PostgresConsentRepository.live >++>
       PostgresAuthorizationCodeRepository.live >++>
@@ -408,6 +427,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       MetadataSyncClient.live >++>
       JwksService.live >++>
       AuthPropertyGenerator.live >++>
+      // What every request about one user asks first: is the user leaving this cell, or gone from it.
+      UserDepartures.live >++>
       SessionService.live >++>
       BackChannelDispatcher.live >++>
       BackChannelOutbox.live >++>
@@ -453,6 +474,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudLists.live >++>
       AntifraudTuningStore.live >++>
       VelocityCounters.live >++>
+      // The cells' keys a handoff is sealed for and opened with, and the weights a limit by address is shared out by; an
+      // auth that is no cell never reads them.
+      CellSyncClient.live >++>
+      CellRegistry.live >++>
+      CellShare.live >++>
       Antifraud.live >++>
       // The database the ASN of a request's address is looked up in: read from `antifraud.asn.file`, refreshed in the
       // background, nothing at all while the block is absent.
@@ -466,10 +492,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PowChallengeVerifier.live >++>
       CodeAlternativeService.live >++>
       ConversationService.live >++>
-      // The cells' keys a handoff is sealed for and opened with; an auth that is no cell never reads them.
-      CellSyncClient.live >++>
-      CellRegistry.live >++>
+      // Sealing for another cell, and opening what another cell sealed: a handoff and a moved user are both made with it.
+      CellEnvelope.live >++>
       CellHandoff.live >++>
+      UserMoves.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
       AuthorizeEndpointService.live >++>

@@ -445,6 +445,86 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body.contains("invalid_grant"),
           ),
       ),
+      tokenEndpointTestCase(
+        description = "answers a refresh token of a user who moved with 421 and exactly the cell",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "refresh_token",
+              "refresh_token" -> Base64.urlEncode(refreshToken1),
+            ),
+          ),
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.MisdirectedRequest,
+        setup = services => services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.Moved("kz-2")),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body == """{"error":"moved","cell":"kz-2"}""", response.header(Header.RetryAfter).isEmpty),
+      ),
+      tokenEndpointTestCase(
+        description = "answers a code of a user who moved with 421 and exactly the cell",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "authorization_code",
+              "code" -> Base64.urlEncode(authCode1),
+              "redirect_uri" -> redirectUri,
+              "code_verifier" -> codeVerifier1,
+            ),
+          ),
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.MisdirectedRequest,
+        setup = services => services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.Moved("kz-2")),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body == """{"error":"moved","cell":"kz-2"}""", response.header(Header.RetryAfter).isEmpty),
+      ),
+      tokenEndpointTestCase(
+        description = "answers a refresh token of a leaving user with 503, Retry-After: 2 and temporarily_unavailable",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "refresh_token",
+              "refresh_token" -> Base64.urlEncode(refreshToken1),
+            ),
+          ),
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.ServiceUnavailable,
+        setup = services => services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.Leaving),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            response.header(Header.RetryAfter).exists(_.renderedValue == "2"),
+            body.contains(""""error":"temporarily_unavailable""""),
+            !body.contains("moved"),
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "answers a code of a leaving user with 503, Retry-After: 2 and temporarily_unavailable",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "authorization_code",
+              "code" -> Base64.urlEncode(authCode1),
+              "redirect_uri" -> redirectUri,
+              "code_verifier" -> codeVerifier1,
+            ),
+          ),
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.ServiceUnavailable,
+        setup = services => services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.Leaving),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            response.header(Header.RetryAfter).exists(_.renderedValue == "2"),
+            body.contains(""""error":"temporarily_unavailable""""),
+            !body.contains("moved"),
+          ),
+      ),
     ),
     suite("POST /token - Idempotency-Key")(
       {

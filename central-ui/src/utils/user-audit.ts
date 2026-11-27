@@ -236,6 +236,12 @@ const ACCOUNT_TITLES: Record<string, string> = {
   'account.roles_updated': 'Roles updated',
 };
 
+/** The effects of a move between cells; `details.cell` is the other cell: the one the user went to, or came from. */
+const MOVE_TITLES: Record<string, { title: string; direction: string }> = {
+  'user.moved_out': { title: 'Moved to another cell', direction: 'to' },
+  'user.moved_in': { title: 'Moved in from another cell', direction: 'from' },
+};
+
 const ADMIN_TITLES: Record<string, string> = {
   'admin.user.viewed': 'User viewed by an admin',
   'admin.audit.queried': 'Activity report opened',
@@ -294,6 +300,10 @@ export function describeEvent(event: Pick<AuditEvent, 'kind' | 'outcome' | 'reas
     case 'session.ended':
       return { title: 'Session ended', subtitle: SESSION_CAUSES[asText(details.cause) ?? ''] ?? humanize(asText(details.cause) ?? '') };
     default:
+  }
+  if (MOVE_TITLES[kind]) {
+    const cell = asText(details.cell);
+    return { title: MOVE_TITLES[kind].title, subtitle: cell ? `${MOVE_TITLES[kind].direction} ${cell}` : '' };
   }
   if (ACCOUNT_TITLES[kind]) {
     return { title: ACCOUNT_TITLES[kind], subtitle: subtitle(asText(details.via) ? `via ${humanize(asText(details.via)!)}` : undefined) };

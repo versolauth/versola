@@ -145,4 +145,49 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
       TestClient.layer,
       Scope.default,
     ),
+    // versolauth/versola#1052: a delta answer is about the version that was asked for, and is never recorded or replayed.
+    test("liveRequest sends a GET with the Bearer token and not through the configuration snapshot, which syncRequest's GET is") {
+      for
+        recorded <- Ref.make(List.empty[String])
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](req => seen.set(Some(req)).as(Response.ok)).toRoutes)
+        recording = new ConfigSnapshot:
+          override def through(request: Request)(fetch: ZIO[Scope, Throwable, Response]): ZIO[Scope, Throwable, Response] =
+            recorded.update(_ :+ request.url.encode) *> fetch
+        service <- ZIO.service[CentralSyncTokenService].provideSome[Client & Scope](
+          ZLayer.succeed(TestEnvConfig.coreConfig),
+          ZLayer.succeed[ConfigSnapshot](recording),
+          CentralSyncTokenService.live,
+        )
+        _ <- ZIO.scoped(service.liveRequest(Request.get(URL.root / "lists" / "sync").addQueryParam("since", "7")))
+        afterLive <- recorded.get
+        live <- seen.get.someOrFail(RuntimeException("No request seen"))
+        _ <- ZIO.scoped(service.syncRequest(Request.get(URL.root / "lists" / "sync")))
+        afterSync <- recorded.get
+      yield assertTrue(
+        afterLive.isEmpty,
+        afterSync == List("/lists/sync"),
+        live.url.encode == "/lists/sync?since=7",
+        live.header(Header.Authorization).exists(_.isInstanceOf[Header.Authorization.Bearer]),
+      )
+    }.provide(TestClient.layer, Scope.default),
+    test("liveRequest retries with a fresh token on 401 response, as syncRequest does") {
+      for
+        callCount <- Ref.make(0)
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request] { _ =>
+            callCount.getAndUpdate(_ + 1).map(n => if n == 0 then Response.status(Status.Unauthorized) else Response.ok)
+          }.toRoutes,
+        )
+        service <- ZIO.service[CentralSyncTokenService]
+        response <- ZIO.scoped(service.liveRequest(Request.get(URL.empty)))
+        calls <- callCount.get
+      yield assertTrue(response.status == Status.Ok, calls == 2)
+    }.provide(
+      configLayer,
+      CentralSyncTokenService.live,
+      ZLayer.succeed(ConfigSnapshot.disabled),
+      TestClient.layer,
+      Scope.default,
+    ),
   ) @@ silentLogging

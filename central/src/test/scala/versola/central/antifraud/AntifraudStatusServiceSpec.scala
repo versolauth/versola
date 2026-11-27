@@ -10,6 +10,7 @@ object AntifraudStatusServiceSpec extends UnitSpecBase:
     decision = AntifraudDecisionStatus(enabled = enabled),
     lists = AntifraudListsStatus(enabled = true, snapshotAgeSeconds = Some(1), size = 4, skipped = 0, lastRefreshError = None),
     tuning = AntifraudTuningStatus(available = true, version = Some(version), ageSeconds = Some(2), lastRefreshError = None),
+    cellShare = Some(1.0),
   )
 
   def spec = suite("AntifraudStatusService")(

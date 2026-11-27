@@ -51,6 +51,34 @@ paths:
           $ref: '#/components/responses/UserInfo'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '421':
+          description: |
+            The user the token belongs to moved to another cell of the deployment (a user is moved between cells by an operator). The body is
+            exactly `{"error":"moved","cell":"<cell id>"}`: the request is not served here, and an edge repeats it once at the
+            cell named, which holds the user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, cell]
+                properties:
+                  error: {type: string, const: moved}
+                  cell: {type: string, description: The id of the cell that holds the user now.}
+        '503':
+          description: |
+            Temporarily unavailable. The user is on its way to another cell, and this cell serves nothing of theirs until the move is
+            done (a matter of seconds) or abandoned: repeat the request after `Retry-After` (2 seconds). Nothing was changed.
+          headers:
+            Retry-After:
+              schema: {type: integer, const: 2}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: {type: string, const: temporarily_unavailable}
+                  error_description: {type: string}
 
     post:
       operationId: userInfoPost
@@ -65,6 +93,34 @@ paths:
           $ref: '#/components/responses/UserInfo'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '421':
+          description: |
+            The user the token belongs to moved to another cell of the deployment (a user is moved between cells by an operator). The body is
+            exactly `{"error":"moved","cell":"<cell id>"}`: the request is not served here, and an edge repeats it once at the
+            cell named, which holds the user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, cell]
+                properties:
+                  error: {type: string, const: moved}
+                  cell: {type: string, description: The id of the cell that holds the user now.}
+        '503':
+          description: |
+            Temporarily unavailable. The user is on its way to another cell, and this cell serves nothing of theirs until the move is
+            done (a matter of seconds) or abandoned: repeat the request after `Retry-After` (2 seconds). Nothing was changed.
+          headers:
+            Retry-After:
+              schema: {type: integer, const: 2}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: {type: string, const: temporarily_unavailable}
+                  error_description: {type: string}
 
 components:
   securitySchemes:

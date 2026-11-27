@@ -5,6 +5,7 @@ import versola.central.audit.{AuthAuditError, CentralAudit, UserAuditEventsQuery
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.JWT
 import versola.util.audit.AuditContext
@@ -410,6 +411,7 @@ object AuthClientSpec extends ZIOSpecDefault:
         AntifraudDecisionStatus(true),
         AntifraudListsStatus(true, Some(4), 10, 1, None),
         AntifraudTuningStatus(true, Some(2), Some(1), Some("down")),
+        Some(0.34),
       )
       for
         seen <- Ref.make(List.empty[Request])
@@ -482,6 +484,25 @@ object AuthClientSpec extends ZIOSpecDefault:
         forbidden.left.exists(_.isInstanceOf[RuntimeException]),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("a cell's 409 user_leaving or user_moved is UserLeavingCell; any other refusal, also another 409, is a failure of the call") {
+      def answered(status: Status, body: String) =
+        (for
+          _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.json(body).status(status))).toRoutes)
+          client <- ZIO.service[AuthClient]
+          result <- client.setPassword(userId, "Temp1234!").either
+        yield result).provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer)
+      for
+        leaving <- answered(Status.Conflict, """{"error":"user_leaving"}""")
+        moved <- answered(Status.Conflict, """{"error":"user_moved"}""")
+        other <- answered(Status.Conflict, """{"error":"user_exists"}""")
+        elsewhere <- answered(Status.BadRequest, """{"error":"user_leaving"}""")
+      yield assertTrue(
+        leaving == Left(AuthClient.UserLeavingCell),
+        moved == Left(AuthClient.UserLeavingCell),
+        other.left.exists(_ != AuthClient.UserLeavingCell),
+        elsewhere.left.exists(_ != AuthClient.UserLeavingCell),
+      )
+    },
     test("a call made for an administrator names them to auth in its query or its body, a call made by central itself names nobody") {
       val admin = "00000000-0000-0000-0000-0000000000f1"
       for
@@ -728,6 +749,98 @@ object AuthClientSpec extends ZIOSpecDefault:
         sent._3.contains(""""phone":"+15551234567""""),
         !sent._3.contains("login"),
       )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("the calls of a move send what the contract names: method, path, query and body of each, to the cell they are addressed to") {
+      val to = CellId("kz-2")
+      val source = CellId("kz-1")
+      val moveId = UUID.fromString("00000000-0000-7000-8000-0000000000a1")
+      for
+        seen <- Ref.make(Vector.empty[(Method, String, String, String)])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](request =>
+            request.body.asString.orDie.flatMap: body =>
+              seen.update(_ :+ ((request.method, request.url.path.encode, request.url.queryParams.encode, body))).as(
+                if request.url.path.encode.endsWith("export") then Response.json("""{"envelope":"ZW52ZWxvcGU","digest":"ZGlnZXN0"}""")
+                else if request.url.path.encode.endsWith("summary") then
+                  Response.json("""{"leaving":1,"moved":2,"tokens":3,"tokensUntil":"2027-01-01T00:00:00Z"}""")
+                else Response.status(Status.NoContent),
+              ),
+          ).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        _ <- client.depart(source, userId, to, moveId)
+        exported <- client.exportDeparture(source, userId)
+        _ <- client.arrive(to, userId, source, moveId, "ZW52ZWxvcGU")
+        _ <- client.keepArrival(to, userId, moveId)
+        _ <- client.completeDeparture(source, userId, moveId, "ZGlnZXN0")
+        _ <- client.cancelDeparture(source, userId)
+        _ <- client.discardArrival(to, userId, moveId)
+        summary <- client.departuresSummary(source)
+        sent <- seen.get
+        // what the actor of the call adds to a query is left out of the comparison: these are central's own calls
+        withoutActor =
+          sent.map((method, path, query, body) => (method, path.stripPrefix("/"), query.stripPrefix("?").replaceAll("&?actorIp=[^&]*", ""), body))
+        user = "userId" -> Json.Str(userId.toString)
+        move = "moveId" -> Json.Str(moveId.toString)
+      yield assertTrue(
+        exported == AuthClient.DepartureExport("ZW52ZWxvcGU", "ZGlnZXN0"),
+        summary == AuthClient.DeparturesSummary(leaving = 1, moved = 2, tokens = 3, tokensUntil = Some(Instant.parse("2027-01-01T00:00:00Z"))),
+        withoutActor.map(r => (r._1, r._2)) == Vector(
+          (Method.POST, "users/departures"),
+          (Method.GET, "users/departures/export"),
+          (Method.POST, "users/arrivals"),
+          (Method.POST, "users/arrivals/keep"),
+          (Method.POST, "users/departures/complete"),
+          (Method.DELETE, "users/departures"),
+          (Method.DELETE, "users/arrivals"),
+          (Method.GET, "users/departures/summary"),
+        ),
+        withoutActor(0)._4.fromJson[Json.Obj] == Right(Json.Obj(user, "to" -> Json.Str("kz-2"), move)),
+        withoutActor(1)._3 == s"userId=$userId",
+        withoutActor(2)._4.fromJson[Json.Obj] == Right(Json.Obj("envelope" -> Json.Str("ZW52ZWxvcGU"), user, "from" -> Json.Str("kz-1"), move)),
+        withoutActor(3)._4.fromJson[Json.Obj] == Right(Json.Obj(user, move)),
+        withoutActor(4)._4.fromJson[Json.Obj] == Right(Json.Obj(user, move, "digest" -> Json.Str("ZGlnZXN0"))),
+        withoutActor(5)._3 == s"userId=$userId",
+        // the discard names the move: the cell removes the arrival of that move and no other
+        withoutActor(6)._3.split("&").toSet == Set(s"userId=$userId", s"moveId=$moveId"),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test(
+      "a call of a move that the cell does not accept fails with the status and the code, and nothing else of the body; a 404 on a clean-up is done",
+    ) {
+      val moveId = UUID.fromString("00000000-0000-7000-8000-0000000000a1")
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](request =>
+            ZIO.succeed(
+              request.method match
+                case Method.DELETE => Response.text("nothing to cancel").status(Status.NotFound)
+                case _ => Response.json("""{"error":"user_exists","detail":"secret-detail"}""").status(Status.Conflict),
+            ),
+          ).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        departed <- client.depart(CellId("kz-1"), userId, CellId("kz-2"), moveId).either
+        arrived <- client.arrive(CellId("kz-2"), userId, CellId("kz-1"), moveId, "ZW52").either
+        cancelled <- client.cancelDeparture(CellId("kz-1"), userId).either
+        discarded <- client.discardArrival(CellId("kz-2"), userId, moveId).either
+      yield assertTrue(
+        departed == Left(AuthClient.CellRefused(409, Some("user_exists"))),
+        arrived == Left(AuthClient.CellRefused(409, Some("user_exists"))),
+        !departed.left.exists(_.getMessage.contains("secret-detail")),
+        cancelled.isRight,
+        discarded.isRight,
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("an answer of a move that is not a refusal with a code (a proxy's page) is refused with the status and no code") {
+      for
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](_ =>
+          ZIO.succeed(Response.text("<html>bad gateway</html>").status(Status.BadGateway)),
+        ).toRoutes)
+        client <- ZIO.service[AuthClient]
+        exported <- client.exportDeparture(CellId("kz-1"), userId).either
+        kept <- client.keepArrival(CellId("kz-2"), userId, UUID.fromString("00000000-0000-7000-8000-0000000000a1")).either
+      yield assertTrue(exported == Left(AuthClient.CellRefused(502, None)), kept == Left(AuthClient.CellRefused(502, None)))
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("getUserClaims returns None when server responds 204") {
       for

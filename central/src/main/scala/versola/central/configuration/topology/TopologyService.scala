@@ -2,10 +2,10 @@ package versola.central.configuration.topology
 
 import versola.central.CentralConfig
 import versola.central.configuration.edges.{EdgeGroupKind, EdgeId, EdgeRecord, EdgeService, EdgeSigningKey}
-import versola.central.users.UserRepository
+import versola.central.users.{AuthClient, CellDrain, UserMoveRepository, UserRepository}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
-import zio.{IO, Task, URLayer, ZIO, ZLayer}
+import zio.{IO, Task, URLayer, ZIO, ZLayer, durationInt}
 
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
@@ -30,6 +30,16 @@ case class Topology(
     cells: Vector[CellRecord],
     edgeRegions: Map[EdgeId, RegionId],
 )
+
+/** What the cells' own state adds to their records in the topology answer (versolauth/versola#1051).
+  *
+  * @param users how many users the directory places in the cell
+  * @param moving the moves leaving the cell that are not finished
+  * @param departures what the cell says of its departures and of the refresh tokens it still answers `moved` for; `None` when it
+  *   did not answer in time, which is not an error of the request
+  * @param drainBlocked why a draining cell cannot be emptied now ([[CellDrain.NoOpenCell]])
+  */
+case class CellStatus(users: Long, moving: Long, departures: Option[AuthClient.DeparturesSummary], drainBlocked: Option[String])
 
 /** Partitions, regions and cells, and the region of an edge site (#557). The rules of what may be stored live here:
   * the tables hold whatever they are given.
@@ -59,19 +69,38 @@ trait TopologyService:
     * @param lost the cell is gone for good and its users with it (its database was lost, a stand is taken down): it is
     *   deleted although the directory still places users in it. Those users stay in the directory, held by a cell that is
     *   not registered, so their identifiers stay taken and nothing can sign them in until they are deleted. Never the
-    *   way to retire a cell that works: that is moving its users out. The state rule holds either way.
+    *   way to retire a cell that works: that is moving its users out. The state rule holds either way, and the two rules below
+    *   are skipped.
+    *
+    * Refused as well while a move from or to the cell is unfinished, and while the cell reports that it still answers `moved` for
+    * refresh tokens of users that were moved out of it (or does not answer, which says nothing): the edge does not know a deleted
+    * cell, so those tokens would stop working. `force` deletes it anyway and makes those refresh tokens invalid.
     */
-  def deleteCell(id: CellId, lost: Boolean): IO[Throwable | TopologyError, Unit]
+  def deleteCell(id: CellId, lost: Boolean, force: Boolean): IO[Throwable | TopologyError, Unit]
+
+  /** The status of every cell: its users, its unfinished moves, what it reports of its departures, and why a draining one is stuck. */
+  def cellStatuses: Task[Map[CellId, CellStatus]]
 
   /** The region of one of the operator's own edges; `None` takes it out of any region. */
   def setEdgeRegion(edgeId: EdgeId, regionId: Option[RegionId]): IO[Throwable | TopologyError, Unit]
 
 object TopologyService:
-  val live: URLayer[TopologyRepository & EdgeService & UserRepository & CentralConfig & CellRegistry, TopologyService] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _))
+  val live: URLayer[
+    TopologyRepository & EdgeService & UserRepository & CentralConfig & CellRegistry & UserMoveRepository & AuthClient,
+    TopologyService,
+  ] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+
+  /** How long a cell is given to report its departures before the topology answer goes without them. */
+  val SummaryTimeout = 3.seconds
 
   /** How many keys a cell is registered with: the one it signs with, and a second while the first is being replaced. */
   val MaxCellKeys = 2
+
+  /** Ids no cell is registered under: `auth` is what the configured `auth` is known as while it has no cell id, and `central` is
+    * the audience of the tokens an `auth` sends. A cell with either would be indistinguishable from them in a token's header or a log
+    * line. */
+  val ReservedCellIds: Set[String] = Set("auth", "central")
 
   /** What a cell's record has to satisfy whatever is stored already, in the order an operator would fix it. */
   private[topology] def problems(cell: CellRecord): Option[String] =
@@ -152,6 +181,8 @@ object TopologyService:
       users: UserRepository,
       config: CentralConfig,
       registry: CellRegistry,
+      moves: UserMoveRepository,
+      auth: AuthClient,
   ) extends TopologyService:
     override def get: Task[Topology] =
       for
@@ -187,6 +218,7 @@ object TopologyService:
 
     override def createCell(record: CellRecord): IO[Throwable | TopologyError, Unit] =
       for
+        _ <- ZIO.fail(TopologyError.Invalid(s"cell id '${record.id}' is reserved")).when(ReservedCellIds.contains(record.id))
         _ <- ZIO.foreachDiscard(problems(record))(reason => ZIO.fail(TopologyError.Invalid(reason)))
         regions <- repository.getRegions
         _ <- ZIO.fail(TopologyError.Invalid(s"region '${record.regionId}' does not exist")).unless(regions.exists(_.id == record.regionId))
@@ -222,7 +254,7 @@ object TopologyService:
             ZIO.fail(TopologyError.Invalid(reason))
       yield ()
 
-    override def deleteCell(id: CellId, lost: Boolean): IO[Throwable | TopologyError, Unit] =
+    override def deleteCell(id: CellId, lost: Boolean, force: Boolean): IO[Throwable | TopologyError, Unit] =
       for
         cells <- repository.getCells
         current <- ZIO.fromOption(cells.find(_.id == id)).orElseFail(TopologyError.Missing(s"cell '$id' does not exist"))
@@ -231,10 +263,54 @@ object TopologyService:
         held <- if lost then ZIO.succeed(0L) else users.countInCell(id)
         _ <- ZIO.fail(TopologyError.Conflict(s"cell '$id' still holds $held user(s) in the directory: they are moved out first"))
           .when(held > 0)
+        _ <- ZIO.unless(lost)(checkNoMovesOrTokens(id, force))
         _ <- repository.deleteCell(id)
         // its keys stop verifying at once
         _ <- registry.refreshNow
       yield ()
+
+    private def checkNoMovesOrTokens(id: CellId, force: Boolean): IO[Throwable | TopologyError, Unit] =
+      for
+        involved <- moves.involvesUnfinished(id)
+        _ <- ZIO.fail(TopologyError.Conflict(s"cell '$id' is part of a move of a user that is not finished: wait for it"))
+          .when(involved)
+        _ <- ZIO.unless(force):
+          summaryOf(id).flatMap:
+            case None =>
+              ZIO.fail(
+                TopologyError.Conflict(s"cell '$id' did not say whether it still answers for refresh tokens of moved users: try again, or force=true"),
+              )
+            case Some(summary) if summary.tokens > 0 =>
+              ZIO.fail(
+                TopologyError.Conflict(
+                  s"cell '$id' still answers for ${summary.tokens} refresh token(s) of users moved out of it: force=true deletes it and makes them invalid",
+                ),
+              )
+            case Some(_) => ZIO.unit
+      yield ()
+
+    /** What the cell says of its departures; `None` when it does not answer in [[TopologyService.SummaryTimeout]]. The failure is
+      * deliberately not the request's: it is logged, and the caller decides what the absence means. */
+    private def summaryOf(cell: CellId): Task[Option[AuthClient.DeparturesSummary]] =
+      auth.departuresSummary(cell).timeout(TopologyService.SummaryTimeout).catchAllCause: cause =>
+        ZIO.logWarningCause(s"cell '$cell' did not report its departures", cause).as(None)
+
+    override def cellStatuses: Task[Map[CellId, CellStatus]] =
+      for
+        cells <- repository.getCells
+        regions <- repository.getRegions
+        moving <- moves.unfinishedFromCounts
+        statuses <- ZIO.foreachPar(cells): cell =>
+          for
+            held <- users.countInCell(cell.id)
+            summary <- summaryOf(cell.id)
+          yield cell.id -> CellStatus(
+            users = held,
+            moving = moving.getOrElse(cell.id, 0L),
+            departures = summary,
+            drainBlocked = CellDrain.blocked(cell, cells, regions),
+          )
+      yield statuses.toMap
 
     override def setEdgeRegion(edgeId: EdgeId, regionId: Option[RegionId]): IO[Throwable | TopologyError, Unit] =
       for

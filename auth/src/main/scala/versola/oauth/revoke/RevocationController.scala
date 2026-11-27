@@ -1,9 +1,11 @@
 package versola.oauth.revoke
 
+import versola.oauth.AuthMetrics
 import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.{RevocationError, RevocationErrorResponse}
+import versola.user.move.DepartureResponses
 import versola.util.http.{Controller, Observability, extractCredentials}
 import versola.util.{CoreConfig, FormDecoder, JWT}
 import zio.*
@@ -78,6 +80,12 @@ object RevocationController extends Controller:
               revocationService.revokeRefreshToken(refreshToken, credentials, certificate)
       yield Response.ok)
         .catchAll {
+          // The user is moving, or moved (versolauth/versola#1051).
+          case RevocationError.Unavailable =>
+            Observability.setError("temporarily_unavailable", Some("user_leaving")).as(DepartureResponses.leaving)
+          case RevocationError.Moved(cell) =>
+            Observability.setError("moved") *> AuthMetrics.movedAnswered("revoke") *> ZIO.succeed(DepartureResponses.moved(cell))
+
           case error: RevocationError =>
             val response = RevocationErrorResponse.fromError(error)
             Observability.setError(response.error, response.errorDescription).as:

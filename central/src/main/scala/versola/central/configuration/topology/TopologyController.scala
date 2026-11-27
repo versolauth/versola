@@ -11,6 +11,8 @@ import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 import zio.{IO, ZIO}
 
+import java.time.Instant
+
 /** The topology an operator registers (#557): partitions, regions, cells and the region of an edge site. Read with
   * `edges:read` and changed with `edges:manage`, like the edges and their groups it describes.
   */
@@ -48,7 +50,12 @@ object TopologyController extends AuditedController:
       for
         _ <- authorizeBasic(request)
         topology <- ZIO.serviceWithZIO[TopologyService](_.get)
-        response = TopologyResponse(partitions = topology.partitions, regions = topology.regions, cells = topology.cells)
+        statuses <- ZIO.serviceWithZIO[TopologyService](_.cellStatuses)
+        response = TopologyResponse(
+          partitions = topology.partitions,
+          regions = topology.regions,
+          cells = topology.cells.map(cell => CellResponse.of(cell, statuses.get(cell.id))),
+        )
       yield Response.json(response.toJson)
     }
 
@@ -110,8 +117,10 @@ object TopologyController extends AuditedController:
         cellId <- request.url.queryZIO[CellId]("cellId")
         // `lost=true`: the cell is gone for good with the users it held (see `TopologyService.deleteCell`).
         lost = request.url.queryParams.getAll("lost").headOption.contains("true")
+        // `force=true`: delete although the cell still answers `moved` for refresh tokens, which this makes invalid.
+        force = request.url.queryParams.getAll("force").headOption.contains("true")
         _ <- Audit.target(cellId)
-        response <- answered(Status.NoContent)(ZIO.serviceWithZIO[TopologyService](_.deleteCell(cellId, lost)))
+        response <- answered(Status.NoContent)(ZIO.serviceWithZIO[TopologyService](_.deleteCell(cellId, lost, force)))
       yield response
     }
 
@@ -144,8 +153,51 @@ object TopologyController extends AuditedController:
 case class TopologyResponse(
     partitions: Vector[PartitionRecord],
     regions: Vector[RegionRecord],
-    cells: Vector[CellRecord],
+    cells: Vector[CellResponse],
 ) derives Schema, JsonCodec
+
+/** A cell as the console reads it: the record, and what the cell's users and moves add to it (versolauth/versola#1051).
+  *
+  * @param users how many users the directory places in the cell
+  * @param moving how many moves that leave the cell are unfinished
+  * @param tokens refresh tokens of moved users the cell still answers `moved` for, from the cell's own report; absent when the
+  *   cell did not answer
+  * @param tokensUntil when the last of those tokens expires; absent with `tokens`, or when there are none
+  * @param drainBlocked set on a draining cell that no open cell of its partition can take users from (`no_open_cell`)
+  */
+case class CellResponse(
+    id: CellId,
+    regionId: RegionId,
+    internalUrl: String,
+    mtlsUrl: Option[String],
+    trustedCertificates: List[String],
+    state: CellState,
+    weight: Int,
+    publicKeys: List[Json.Obj],
+    users: Long,
+    moving: Long,
+    tokens: Option[Long],
+    tokensUntil: Option[Instant],
+    drainBlocked: Option[String],
+) derives Schema, JsonCodec
+
+object CellResponse:
+  def of(cell: CellRecord, status: Option[CellStatus]): CellResponse =
+    CellResponse(
+      id = cell.id,
+      regionId = cell.regionId,
+      internalUrl = cell.internalUrl,
+      mtlsUrl = cell.mtlsUrl,
+      trustedCertificates = cell.trustedCertificates,
+      state = cell.state,
+      weight = cell.weight,
+      publicKeys = cell.publicKeys,
+      users = status.fold(0L)(_.users),
+      moving = status.fold(0L)(_.moving),
+      tokens = status.flatMap(_.departures).map(_.tokens),
+      tokensUntil = status.flatMap(_.departures).flatMap(_.tokensUntil),
+      drainBlocked = status.flatMap(_.drainBlocked),
+    )
 
 case class SetEdgeRegionRequest(
     regionId: Option[RegionId],

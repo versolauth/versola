@@ -3,6 +3,7 @@ package versola.oauth.userinfo
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.clientauth.ClientAuthentication
@@ -12,6 +13,7 @@ import versola.oauth.model.AccessTokenPayload
 import versola.oauth.mtls.EdgeCertificateTrust
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
+import versola.user.move.{DepartureRefusal, DepartureResponses, UserDepartures}
 import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, Dpop, JWT}
 import zio.*
@@ -40,7 +42,7 @@ import scala.jdk.CollectionConverters.*
 object UserInfoController extends Controller:
   type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService & EdgeCertificateTrust &
     OAuthConfigurationService &
-    ClientAuthentication & AccessTokenRevocationService
+    ClientAuthentication & AccessTokenRevocationService & UserDepartures
 
   private val DpopHeader = "DPoP"
 
@@ -93,6 +95,13 @@ object UserInfoController extends Controller:
             Observability.setRouteLabel("trusted_edge", edgeId) *> refuseBoundToBoth(token)
           case None =>
             checkDpop(request, tokenString, token, scheme, config) *> checkCertificateBinding(request, token)
+
+        // The token's holder has proved the token is theirs: only now are they told the user is leaving or went elsewhere.
+        // One read by the key of `user_departures`: the one query this endpoint gained.
+        _ <- ZIO.serviceWithZIO[UserDepartures](_.refuse(userId)).mapError:
+          case DepartureRefusal.Leaving => UserInfoError.Leaving
+          case DepartureRefusal.Moved(cell) => UserInfoError.Moved(cell)
+          case error: Throwable => error
 
         _ <- ZIO.fail(UserInfoError.InsufficientScope)
           .unless(token.scope.contains(ScopeToken.OpenId))
@@ -152,6 +161,12 @@ object UserInfoController extends Controller:
                     errorDescription = Some("The access token is invalid or expired"),
                   ),
                 )
+
+          case UserInfoError.Leaving =>
+            Observability.setError("temporarily_unavailable", Some("user_leaving")).as(DepartureResponses.leaving)
+
+          case UserInfoError.Moved(cell) =>
+            Observability.setError("moved") *> AuthMetrics.movedAnswered("userinfo") *> ZIO.succeed(DepartureResponses.moved(cell))
 
           case UserInfoError.InsufficientScope =>
             Observability.setError("insufficient_scope").as:

@@ -24,6 +24,10 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
     val events = env.events
     val resets = env.resets
     val f = env.fixtures
+
+    /** A whole copy taken at `when`; at the version of the copy it writes nothing unless the last whole copy is before `notBefore`. */
+    def replace(entries: List[PolicyListEntry], version: Long, when: Instant = at, notBefore: Instant = at) =
+      repository.replaceAll(entries, version, when, notBefore)
     List(
       test("the copy is at version 0 and has nothing before the first replacement") {
         for
@@ -43,7 +47,7 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
               shadow = true,
             ),
           )
-          wrote <- repository.replaceAll(List(e), 4)
+          wrote <- replace(List(e), 4)
           version <- repository.version
           active <- repository.loadActive(at)
         yield assertTrue(
@@ -65,8 +69,8 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
       test("writes nothing when the copy is at that version already, and says so") {
         val kept = entry(value = "kept")
         for
-          first <- repository.replaceAll(List(kept), 2)
-          again <- repository.replaceAll(Nil, 2)
+          first <- replace(List(kept), 2)
+          again <- replace(Nil, 2)
           active <- repository.loadActive(at)
           version <- repository.version
         yield assertTrue(first, !again, active.map(_.id) == List(kept.id), version == 2L)
@@ -76,8 +80,8 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
         val going = entry(value = "going")
         val added = entry(value = "added", listType = "watch")
         for
-          _ <- repository.replaceAll(List(staying, going), 1)
-          wrote <- repository.replaceAll(List(staying.copy(reason = Some("changed"), expiresAt = Some(at.plusSeconds(60))), added), 2)
+          _ <- replace(List(staying, going), 1)
+          wrote <- replace(List(staying.copy(reason = Some("changed"), expiresAt = Some(at.plusSeconds(60))), added), 2)
           active <- repository.loadActive(at)
           version <- repository.version
         yield assertTrue(
@@ -90,8 +94,8 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
       },
       test("an empty list from central empties the copy") {
         for
-          _ <- repository.replaceAll(List(entry(), entry(value = "dev-2")), 1)
-          wrote <- repository.replaceAll(Nil, 2)
+          _ <- replace(List(entry(), entry(value = "dev-2")), 1)
+          wrote <- replace(Nil, 2)
           active <- repository.loadActive(at)
         yield assertTrue(wrote, active.isEmpty)
       },
@@ -99,9 +103,9 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
         val staying = entry(value = "staying")
         val going = entry(value = "going")
         for
-          _ <- repository.replaceAll(List(staying, going), 1)
+          _ <- replace(List(staying, going), 1)
           _ <- repository.addHits(List(ListHit(staying.id, 3, at.plusSeconds(10)), ListHit(going.id, 1, at)))
-          _ <- repository.replaceAll(List(staying.copy(reason = Some("changed"))), 2)
+          _ <- replace(List(staying.copy(reason = Some("changed"))), 2)
           kept <- repository.hits(List(staying.id, going.id))
         yield assertTrue(kept == List(ListHit(staying.id, 3, at.plusSeconds(10))))
       },
@@ -109,7 +113,7 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
         val forever = entry(value = "forever")
         val later = entry(value = "later", expiresAt = Some(at.plusSeconds(10)))
         for
-          _ <- repository.replaceAll(
+          _ <- replace(
             List(
               forever,
               later,
@@ -127,7 +131,7 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
       test("an entry of a kind this version does not know is stored, and skipped when the cache loads") {
         for
           now <- Clock.instant
-          _ <- repository.replaceAll(
+          _ <- replace(
             List(
               entry(listType = "ban", valueType = "ip", value = "x"),
               entry(listType = "deny", valueType = "fingerprint", value = "y"),
@@ -141,16 +145,16 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
       test("an entry of an unknown kind keeps its hit counters across versions like any other") {
         val future = entry(listType = "ban", valueType = "ip", value = "x")
         for
-          _ <- repository.replaceAll(List(future), 1)
+          _ <- replace(List(future), 1)
           _ <- repository.addHits(List(ListHit(future.id, 2, at)))
-          _ <- repository.replaceAll(List(future), 2)
+          _ <- replace(List(future), 2)
           counted <- repository.hits(List(future.id))
         yield assertTrue(counted == List(ListHit(future.id, 2, at)))
       },
       test("adds the hits to the counters, and keeps the latest time") {
         val e = entry()
         for
-          _ <- repository.replaceAll(List(e), 1)
+          _ <- replace(List(e), 1)
           _ <- repository.addHits(List(ListHit(e.id, 3, at.plusSeconds(10)), ListHit(UUID.randomUUID(), 5, at)))
           _ <- repository.addHits(List(ListHit(e.id, 2, at.plusSeconds(5))))
           counted <- repository.hits(List(e.id))
@@ -160,7 +164,7 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
         val hit = entry(value = "hit")
         val quiet = entry(value = "quiet")
         for
-          _ <- repository.replaceAll(List(hit, quiet), 1)
+          _ <- replace(List(hit, quiet), 1)
           _ <- repository.addHits(List(ListHit(hit.id, 1, at)))
           counted <- repository.hits(List(hit.id, quiet.id, UUID.randomUUID()))
           none <- repository.hits(Nil)
@@ -169,7 +173,7 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
       test("counting hits does not move the version") {
         val e = entry()
         for
-          _ <- repository.replaceAll(List(e), 1)
+          _ <- replace(List(e), 1)
           before <- repository.version
           _ <- repository.addHits(List(ListHit(e.id, 1, at)))
           after <- repository.version
@@ -178,9 +182,9 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
       test("keeps the shadow flag, and loads it for the cache") {
         val e = entry(shadow = true)
         for
-          _ <- repository.replaceAll(List(e), 1)
+          _ <- replace(List(e), 1)
           loaded <- repository.loadActive(at)
-          _ <- repository.replaceAll(List(e.copy(shadow = false)), 2)
+          _ <- replace(List(e.copy(shadow = false)), 2)
           changed <- repository.loadActive(at)
         yield assertTrue(loaded.map(_.shadow) == List(true), changed.map(_.shadow) == List(false))
       },
@@ -406,6 +410,131 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
           preview <- repository.preview(AntifraudValueType.prefix, "491512", a, since)
         yield assertTrue(preview == ListPreview(matched = Some(2), total = 3))
       },
+      // versolauth/versola#1052: the lists are copied by delta.
+      test("a whole copy records its time beside the version, and the copy is at no time before it") {
+        for
+          before <- repository.copied
+          _ <- replace(List(entry()), 3, when = at.plusSeconds(5))
+          after <- repository.copied
+        yield assertTrue(
+          before == AntifraudListRepository.Copy(0L, None),
+          after == AntifraudListRepository.Copy(3L, Some(at.plusSeconds(5))),
+        )
+      },
+      test("a whole copy that is due is taken at the version of the copy, and repairs it, once for two callers") {
+        val a = entry(value = "a")
+        val b = entry(value = "b")
+        val later = at.plusSeconds(7 * 3600)
+        for
+          _ <- replace(List(a), 2)
+          // The last whole copy is older than the interval: due, although central's version is the copy's.
+          due <- replace(List(a, b), 2, when = later, notBefore = at.plusSeconds(3600))
+          // The second instance that found it due finds it taken.
+          second <- replace(List(a, b), 2, when = later.plusSeconds(1), notBefore = at.plusSeconds(3600))
+          active <- repository.loadActive(at)
+          copy <- repository.copied
+        yield assertTrue(due, !second, active.map(_.id).toSet == Set(a.id, b.id), copy == AntifraudListRepository.Copy(2L, Some(later)))
+      },
+      test("a delta is applied: the entries are written, the removed ones go with their hit counters, the version moves") {
+        val staying = entry(value = "staying")
+        val going = entry(value = "going")
+        val added = entry(value = "added", listType = "watch")
+        for
+          _ <- replace(List(staying, going), 1)
+          _ <- repository.addHits(List(ListHit(staying.id, 3, at.plusSeconds(10)), ListHit(going.id, 1, at)))
+          wrote <- repository.applyChanges(
+            entries = List(staying.copy(reason = Some("changed")), added),
+            removed = List(going.id),
+            from = 1,
+            to = 4,
+          )
+          active <- repository.loadActive(at)
+          hits <- repository.hits(List(staying.id, going.id))
+          copy <- repository.copied
+        yield assertTrue(
+          wrote,
+          active.map(_.id).toSet == Set(staying.id, added.id),
+          // An entry that stays keeps its hit counters, one that goes loses them.
+          hits == List(ListHit(staying.id, 3, at.plusSeconds(10))),
+          // The time of the last whole copy is the whole copy's.
+          copy == AntifraudListRepository.Copy(4L, Some(at)),
+        )
+      },
+      test("a delta from a version that is not the copy's writes nothing, and says so") {
+        val kept = entry(value = "kept")
+        val late = entry(value = "late")
+        for
+          _ <- replace(List(kept), 5)
+          behind <- repository.applyChanges(List(late), List(kept.id), from = 4, to = 6)
+          ahead <- repository.applyChanges(List(late), List(kept.id), from = 6, to = 7)
+          active <- repository.loadActive(at)
+          version <- repository.version
+        yield assertTrue(!behind, !ahead, active.map(_.id) == List(kept.id), version == 5L)
+      },
+      test("a delta that two callers apply is written once") {
+        val added = entry(value = "added")
+        for
+          _ <- replace(Nil, 1)
+          results <- ZIO.collectAllPar(List.fill(4)(repository.applyChanges(List(added), Nil, from = 1, to = 2)))
+          active <- repository.loadActive(at)
+          version <- repository.version
+        yield assertTrue(results.count(identity) == 1, active.map(_.id) == List(added.id), version == 2L)
+      },
+      test("an entry removed and added again under a new id is a removal and an entry") {
+        val old = entry(value = "same")
+        val renewed = entry(value = "same")
+        for
+          _ <- replace(List(old), 1)
+          _ <- repository.addHits(List(ListHit(old.id, 2, at)))
+          wrote <- repository.applyChanges(List(renewed), List(old.id), from = 1, to = 2)
+          active <- repository.loadActive(at)
+          hits <- repository.hits(List(old.id, renewed.id))
+        yield assertTrue(wrote, active.map(_.id) == List(renewed.id), hits.isEmpty)
+      },
+      test("a row is written only when a copied field differs, by a whole copy and by a delta") {
+        val staying = entry(value = "staying")
+        val other = entry(value = "other")
+        for
+          _ <- replace(List(staying, other), 1)
+          first <- f.rowVersions(List(staying.id, other.id))
+          _ <- replace(List(staying, other), 2)
+          wholeUnchanged <- f.rowVersions(List(staying.id, other.id))
+          _ <- repository.applyChanges(List(staying, other), Nil, from = 2, to = 3)
+          deltaUnchanged <- f.rowVersions(List(staying.id, other.id))
+          _ <- repository.applyChanges(List(staying.copy(reason = Some("changed"))), Nil, from = 3, to = 4)
+          changed <- f.rowVersions(List(staying.id, other.id))
+          // The hit counters are the cell's own and are not a copied field.
+          _ <- repository.addHits(List(ListHit(other.id, 1, at)))
+          hitRow <- f.rowVersions(List(other.id))
+        yield assertTrue(
+          first.size == 2,
+          wholeUnchanged == first,
+          deltaUnchanged == first,
+          changed(staying.id) != first(staying.id),
+          changed(other.id) == first(other.id),
+          hitRow(other.id) != first(other.id),
+        )
+      },
+      test("removing the expired removes the entries that expired before the limit, and no others") {
+        val long = entry(value = "long", expiresAt = Some(at.minusSeconds(3 * 86400)))
+        val recent = entry(value = "recent", expiresAt = Some(at.minusSeconds(3600)))
+        val live = entry(value = "live", expiresAt = Some(at.plusSeconds(60)))
+        val forever = entry(value = "forever")
+        for
+          _ <- replace(List(long, recent, live, forever), 1)
+          removed <- repository.removeExpired(at.minusSeconds(86400), 100)
+          left <- f.rowVersions(List(long.id, recent.id, live.id, forever.id))
+          version <- repository.version
+        yield assertTrue(removed == 1, left.keySet == Set(recent.id, live.id, forever.id), version == 1L)
+      },
+      test("removing the expired removes at most the limit") {
+        val expired = (1 to 3).toList.map(n => entry(value = s"e$n", expiresAt = Some(at.minusSeconds(3 * 86400))))
+        for
+          _ <- replace(expired, 1)
+          first <- repository.removeExpired(at.minusSeconds(86400), 2)
+          second <- repository.removeExpired(at.minusSeconds(86400), 2)
+        yield assertTrue(first == 2, second == 1)
+      },
       test("pruning counter resets removes those older than the limit, except the newest, which the generations count from") {
         val oldAt = at.minusSeconds(400L * 86400)
         for
@@ -444,6 +573,10 @@ object AntifraudListRepositorySpec:
     def stats(tenant: String, prefix: String, minute: Instant, requests: Int): Task[Unit]
 
     def clearStats: Task[Unit]
+
+    /** A number that changes when the row of an entry is written (its transaction), by id; an id that is not in the copy is
+      * left out. What tells a row that was rewritten from one that was left alone. */
+    def rowVersions(ids: List[UUID]): Task[Map[UUID, Long]]
 
   val at: Instant = Instant.parse("2026-10-23T10:00:00Z")
 

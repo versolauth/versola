@@ -35,8 +35,11 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
     """.update.run()
     ()
 
-  private def bumped()(using DbCon): Unit =
-    sql"UPDATE antifraud_list_version SET version = version + 1 WHERE id = 1".update.run()
+  /** Moves the version and writes the change that made it, in the caller's transaction. Concurrent bumps wait on the
+    * version row, so versions are handed out and committed in order. */
+  private def bumped(entryId: UUID, removed: Boolean, at: Instant)(using DbCon): Unit =
+    val version = sql"UPDATE antifraud_list_version SET version = version + 1 WHERE id = 1 RETURNING version".query[Long].run().head
+    sql"INSERT INTO antifraud_list_changes (version, entry_id, removed, at) VALUES ($version, $entryId, $removed, $at)".update.run()
     ()
 
   private def currentVersion()(using DbCon): Long =
@@ -70,14 +73,14 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
       audited(if existing.isDefined then AntifraudListAction.update else AntifraudListAction.create, actor, at, stored, existing)
       // The version moves only when what a cell copies does: a repeat of what is stored changes nothing, and a cell that
       // downloaded and rewrote the lists for it would do it for every instance of every cell.
-      if existing.forall(_.copiedFieldsDiffer(stored)) then bumped()
+      if existing.forall(_.copiedFieldsDiffer(stored)) then bumped(stored.id, removed = false, at)
       stored.toRecord
 
   override def delete(id: UUID, actor: String, at: Instant): Task[Boolean] =
     xa.transactMeasured("delete-antifraud-list-entry"):
       val removed = sql"DELETE FROM antifraud_list_entries WHERE id = $id RETURNING $EntryColumns".query[EntryRow].run().headOption
       removed.foreach(row => audited(AntifraudListAction.delete, actor, at, row, previous = None))
-      if removed.isDefined then bumped()
+      removed.foreach(row => bumped(row.id, removed = true, at))
       removed.isDefined
 
   override def find(id: UUID): Task[Option[ListEntryRecord]] =
@@ -102,16 +105,50 @@ class PostgresAntifraudListRepository(xa: TransactorZIO) extends AntifraudListRe
         LIMIT $limit OFFSET $offset
       """.query[EntryRow].run().map(_.toRecord).toList
 
-  override def active(now: Instant): Task[PolicyLists] =
-    xa.transactMeasured("load-antifraud-list-entries"):
-      // One snapshot for the version and the rows: a version read apart from them could be that of other rows, and the cell
-      // that stored them under it would not read the lists again.
+  override def active(now: Instant): Task[PolicyLists] = lists(since = None, now)
+
+  override def lists(since: Option[Long], now: Instant): Task[PolicyLists] =
+    xa.transactMeasured("load-antifraud-lists"):
+      // One snapshot for the version, the changes and the rows: a version read apart from them could be that of other rows,
+      // and the cell that stored them under it would not read the lists again.
       sql"SET TRANSACTION ISOLATION LEVEL REPEATABLE READ".update.run()
       val version = currentVersion()
-      val entries = sql"""
-        SELECT $EntryColumns FROM antifraud_list_entries WHERE expires_at IS NULL OR expires_at > $now
-      """.query[EntryRow].run().map(_.toRecord).toList
-      PolicyLists(version = version, entries = entries)
+      def whole =
+        val entries = sql"""
+          SELECT $EntryColumns FROM antifraud_list_entries WHERE expires_at IS NULL OR expires_at > $now
+        """.query[EntryRow].run().map(_.toRecord).toList
+        PolicyLists(version = version, full = true, entries = entries, removed = Nil)
+      since match
+        case Some(from) if from == version => PolicyLists(version = version, full = false, entries = Nil, removed = Nil)
+        case Some(from) if from < version =>
+          // A delta only when there is a change for every version after `from`: one pruned, or never written, makes the
+          // delta miss an entry, and the cell would keep a copy that is wrong with nothing to say so.
+          val kept = sql"SELECT count(*) FROM antifraud_list_changes WHERE version > $from AND version <= $version".query[Long].run().head
+          if kept != version - from then whole
+          else
+            val entries = sql"""
+              SELECT $EntryColumns FROM antifraud_list_entries
+              WHERE (expires_at IS NULL OR expires_at > $now)
+                AND id IN (SELECT entry_id FROM antifraud_list_changes WHERE version > $from AND version <= $version)
+            """.query[EntryRow].run().map(_.toRecord).toList
+            val removed = sql"""
+              SELECT DISTINCT c.entry_id FROM antifraud_list_changes c
+              WHERE c.version > $from AND c.version <= $version
+                AND NOT EXISTS (
+                  SELECT 1 FROM antifraud_list_entries e WHERE e.id = c.entry_id AND (e.expires_at IS NULL OR e.expires_at > $now)
+                )
+            """.query[UUID].run().toList
+            PolicyLists(version = version, full = false, entries = entries, removed = removed)
+        case _ => whole
+
+  override def pruneChanges(before: Instant, limit: Int): Task[Int] =
+    xa.connectMeasured("prune-antifraud-list-changes"):
+      sql"""
+        WITH due AS MATERIALIZED (
+          SELECT version FROM antifraud_list_changes WHERE at < $before ORDER BY version LIMIT $limit FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM antifraud_list_changes c USING due WHERE c.version = due.version
+      """.update.run()
 
   override def purgeExpired(now: Instant, limit: Int): Task[Int] =
     xa.transactMeasured("purge-antifraud-list-entries"):

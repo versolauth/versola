@@ -102,3 +102,18 @@ object TokenEndpointError:
     val error = ErrorCode.UseDpopNonce
     val errorDescription = Some("Authorization server requires a nonce in the DPoP proof")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9449#section-8")
+
+  /** The user is moving to another cell (versolauth/versola#1051): try again shortly. `503` with `Retry-After`. */
+  case object Leaving extends TokenEndpointError:
+    val status = Status.ServiceUnavailable
+    val error = ErrorCode.TemporarilyUnavailable
+    val errorDescription = Some("The server is temporarily unable to handle the request")
+    val errorUri = None
+
+  /** The user, or the refresh token presented, moved to `cell`: `421` with `{"error":"moved","cell":"..."}`, which an edge follows
+    * once. */
+  case class Moved(cell: String) extends TokenEndpointError:
+    val status = Status.MisdirectedRequest
+    val error = ErrorCode.Moved
+    val errorDescription = None
+    val errorUri = None

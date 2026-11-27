@@ -106,7 +106,14 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
   private case class Registered(code: String, cookie: Option[String], tokens: TokenResult.Success)
 
   /** The email-and-code conversation of `setup` at `cell` up to the code step's answer. */
-  private def submitCode(cell: CellStand.Cell, setup: Flows.Setup, email: String): Task[(AuthorizeResult, SubmitResult)] =
+  private def submitCode(cell: CellStand.Cell, setup: Flows.Setup, email: String): RIO[CellStand, (AuthorizeResult, SubmitResult)] =
+    ZIO.serviceWithZIO[CellStand]: s =>
+      // An address nobody holds is registered in the cell central names for it (versolauth/versola#1052): for a user of
+      // cell 2, cell 2 is the one cell that takes users while the address is typed.
+      if cell.id == s.second.id then s.whileOnlySecondTakesUsers(codeSubmitted(cell, setup, email))
+      else codeSubmitted(cell, setup, email)
+
+  private def codeSubmitted(cell: CellStand.Cell, setup: Flows.Setup, email: String): Task[(AuthorizeResult, SubmitResult)] =
     for
       authorize <- cell.auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri))
         .assertChallengeRedirect
@@ -117,7 +124,7 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
       submitted <- cell.auth.submitOtp(cookie, fixedOtp, otp.csrf)
     yield (authorize, submitted)
 
-  private def register(cell: CellStand.Cell, setup: Flows.Setup, email: String): Task[Registered] =
+  private def register(cell: CellStand.Cell, setup: Flows.Setup, email: String): RIO[CellStand, Registered] =
     for
       (authorize, submitted) <- submitCode(cell, setup, email)
       code <- submitted.assertRedirect
@@ -136,28 +143,38 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
   /** Registers a user at cell 2 and gives it a login and a password through central, which sets both in the cell that
     * holds the user. The login travels by central's outbox, so a sign-in at cell 2 is repeated, within a bound, until
     * cell 2 knows the login. */
-  private def loginUserOfSecond(s: CellStand): ZIO[OAuthClient & CentralApi, Throwable, LoginUser] =
+  private def loginUserOfSecond(s: CellStand): ZIO[OAuthClient & CentralApi & CellStand, Throwable, LoginUser] =
+    loginUserOf(s, s.second)
+
+  /** The same for a user of `cell`. */
+  private def loginUserOf(s: CellStand, cell: CellStand.Cell): ZIO[OAuthClient & CentralApi & CellStand, Throwable, LoginUser] =
     for
       auth <- ZIO.service[OAuthClient]
       central <- ZIO.service[CentralApi]
       setup <- s.nextRegistration
-      registered <- register(s.second, setup, setup.email.get)
+      registered <- register(cell, setup, setup.email.get)
       sub <- subject(registered.tokens.accessToken)
       userId <- ZIO.fromOption(sub).mapBoth(_ => RuntimeException("the token has no sub"), java.util.UUID.fromString)
-      login <- CentralApi.login("cell2")
+      login <- CentralApi.login("cell")
       password = "Cell-Stand-Pass-2!"
       patched <- central.patch("/users", Json.Obj("id" -> Json.Str(userId.toString), "login" -> Json.Str(login)))
       _ <- ZIO.fail(RuntimeException(s"central refused the login: ${patched.status} ${patched.body}")).unless(patched.status.isSuccess)
       _ <- auth.flushUserOutbox()
       _ <- auth.setUserPassword(userId, password)
       user = LoginUser(userId, sub, login, password)
-      _ <- signInAt(s.second, s.loginClient, user).retry(Schedule.spaced(200.millis) && Schedule.recurs(50))
+      _ <- signInAt(cell, s.loginClient, user).retry(Schedule.spaced(200.millis) && Schedule.recurs(50))
     yield user
 
   /** A sign-in with the login and password at `cell` itself, to its tokens. */
-  private def signInAt(cell: CellStand.Cell, client: CellStand.RegisteredClient, user: LoginUser): Task[TokenResult.Success] =
+  private def signInAt(
+      cell: CellStand.Cell,
+      client: CellStand.RegisteredClient,
+      user: LoginUser,
+      scope: String = "openid",
+  ): Task[TokenResult.Success] =
     for
-      authorize <- cell.auth.authorize(clientId = Some(client.clientId), redirectUri = Some(client.redirectUri)).assertChallengeRedirect
+      authorize <- cell.auth.authorize(scope = scope, clientId = Some(client.clientId), redirectUri = Some(client.redirectUri))
+        .assertChallengeRedirect
       cookie = authorize.conversationCookie.get
       card <- cell.auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
       code <- cell.auth.submitLoginPassword(cookie, user.login, user.password, card.csrf).flatMap(_.assertRedirect)
@@ -192,6 +209,32 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
 
   private def sentTo(cell: CellStand.Cell, result: SubmitResult): Boolean =
     result.response.status == Status.TemporaryRedirect && result.location.contains(s"/challenge/handoff?handoff=v1.${cell.id}.")
+
+  /** Asks central to move the user to `cell` and waits, within a bound, until the move is done: central does it in the
+    * background, a phase at a time, and the user's record names the cell and the move. */
+  private def moved(central: CentralApi, userId: String, cell: String): Task[Json.Obj] =
+    for
+      started <- central.post("/users/move", Json.Obj("userId" -> Json.Str(userId), "cell" -> Json.Str(cell)))
+      _ <- ZIO.fail(RuntimeException(s"central did not start the move: ${started.status} ${started.body}"))
+        .unless(started.status == Status.Accepted)
+      record <- central.get("/users", "id" -> userId).flatMap(_.items("users")).map(_.headOption)
+        .repeat(
+          Schedule.recurUntil[Option[Json.Obj]](_.exists(user =>
+            user.str("cell").contains(cell) && user.get("move").flatMap(_.asObject).flatMap(_.str("phase")).contains("done"),
+          )) && Schedule.spaced(500.millis) && Schedule.recurs(120),
+        ).map(_._1)
+      user <- ZIO.fromOption(record).orElseFail(RuntimeException("central lost the user"))
+      _ <- ZIO.fail(RuntimeException(s"the move did not finish within a minute: ${user.toJson}"))
+        .unless(user.get("move").flatMap(_.asObject).flatMap(_.str("phase")).contains("done"))
+    yield user
+
+  /** What the topology says of a cell. */
+  private def cellOfTopology(central: CentralApi, id: String): Task[Json.Obj] =
+    central.get("/configuration/topology").flatMap(_.items("cells")).flatMap: cells =>
+      ZIO.fromOption(cells.find(_.str("id").contains(id))).orElseFail(RuntimeException(s"the topology has no cell $id"))
+
+  private def number(of: Json.Obj, name: String): Option[Long] =
+    of.get(name).flatMap(_.asNumber).map(_.value.longValue)
 
   private case class IdTokenSid(sid: String) derives JsonDecoder
 
@@ -521,6 +564,80 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         assertTrue(hinted.conversationCookie.isEmpty).label("and sets no cookie of a conversation that is over") &&
         assertTrue(code.startsWith(s"v1.${s.second.id}."), subAgain == sub).label("the sign-in goes on and finishes in cell 2")
     },
+    // versolauth/versola#1052: an address nobody holds belongs to a cell too, chosen by central, so that being sent on
+    // does not say that an address is registered.
+    test("an address nobody holds is sent to the cell central names for it from either cell, and registers there; held or not looks the same") {
+      for
+        s <- stand
+        config <- ZIO.service[E2EConfig]
+        client <- ZIO.service[Client]
+        front <- front
+        setup <- s.nextRegistration
+        emails <- ZIO.foreach(List.range(0, 12))(_ => CentralApi.email("placed"))
+        // Typed at one cell: on with the sign-in there (the address is that cell's), or sent to the other.
+        typedAt = (cell: CellStand.Cell, email: String) =>
+          for
+            authorize <- cell.auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri)).assertChallengeRedirect
+            cookie = authorize.conversationCookie.get
+            card <- cell.auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+            typed <- cell.auth.submitEmail(cookie, email, card.csrf)
+          yield (authorize, typed)
+        cellFor = (asked: CellStand.Cell, other: CellStand.Cell, typed: SubmitResult) =>
+          if typed.location.contains(s"/challenge/handoff?handoff=v1.${other.id}.") then other.id else asked.id
+        result <- s.whileSecondTakesUsers:
+          for
+            // Every address, asked at both cells, before anybody holds it.
+            placed <- ZIO.foreach(emails): email =>
+              for
+                (_, atFirst) <- typedAt(s.first, email)
+                (_, atSecond) <- typedAt(s.second, email)
+              yield (
+                email,
+                cellFor(s.first, s.second, atFirst),
+                cellFor(s.second, s.first, atSecond),
+                atFirst.response.status,
+                atSecond.response.status,
+              )
+            // One that central gave to cell 2: typed in cell 1, it is sent on and the registration is made in cell 2.
+            (email, _, _, _, _) <- ZIO.fromOption(placed.find(_._2 == s.second.id))
+              .orElseFail(RuntimeException(s"none of ${emails.size} addresses was placed in cell 2: $placed"))
+            (authorize, typed) <- typedAt(s.first, email)
+            handoffUrl <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}${typed.location}")).mapError(RuntimeException(_))
+            taken <- client.batched(Request.get(handoffUrl))
+            secondCookie <- ZIO.fromOption(
+              taken.headers.getAll(Header.SetCookie).collectFirst {
+                case h if h.value.name == "__Host-SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
+              },
+            ).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${taken.status} ${typed.location}"))
+            otp <- front.auth.getChallenge(secondCookie).assertStep(ConversationStep.Otp)
+            code <- front.auth.submitOtp(secondCookie, fixedOtp, otp.csrf).flatMap(_.assertRedirect)
+            tokens <- s.second.auth.token(
+              code,
+              authorize.verifier,
+              clientId = Some(setup.clientId),
+              clientSecret = Some(setup.clientSecret),
+              redirectUri = Some(setup.redirectUri),
+            ).success
+            registeredIn <- cellHeader(tokens.accessToken)
+            // The same address again, now that cell 2 holds it: cell 1 answers exactly as it did when nobody held it.
+            (_, again) <- typedAt(s.first, email)
+          yield (placed, typed, code, registeredIn, again)
+        (placed, typed, code, registeredIn, again) = result
+        shape = (answer: SubmitResult) =>
+          (
+            answer.response.status,
+            answer.location.takeWhile(_ != '=') + "=" + answer.location.dropWhile(_ != '=').drop(1).split('.').take(2).mkString("."),
+          )
+      yield assertTrue(placed.forall((_, first, second, _, _) => first == second))
+        .label(s"both cells name the same cell for an address: ${placed.map(p => (p._2, p._3))}") &&
+        assertTrue(placed.map(_._2).toSet == Set(s.first.id, s.second.id)).label("and over a dozen addresses both cells are named") &&
+        assertTrue(placed.forall((_, _, _, first, second) => first == Status.SeeOther && second == Status.SeeOther))
+          .label("each answer is the same 303, whichever it is") &&
+        assertTrue(code.startsWith(s"v1.${s.second.id}."), registeredIn.contains(s.second.id))
+          .label(s"the registration was made in the cell central named: $code") &&
+        assertTrue(shape(again) == shape(typed))
+          .label(s"held or not, cell 1 answers alike: ${shape(typed)} then ${shape(again)}")
+    },
     // versolauth/versola#1048: what names the user only when it is submitted is repeated in the cell that holds the user.
     test("a login and password typed where the sign-in was placed are checked in the cell that holds the user, once, and not asked twice") {
       for
@@ -706,5 +823,107 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
       yield assertTrue(cell.contains(s.first.id)).label(s"the session's token is of cell 1, got $cell") &&
         assertTrue(items.status == Status.Ok).label(s"the edge proxies for the session: ${items.status}") &&
         assertTrue(profile.status == Status.Ok).label(s"the edge asked userinfo at the token's cell: ${profile.status} ${profile.body}")
+    },
+    // versolauth/versola#1051: a user changes its cell. Central drives the move; the cells hand the rows to each other sealed.
+    test(
+      "a user moved to another cell signs in there with the same password and passkey; its refresh token is answered moved by the old cell and replaced by the new one",
+    ) {
+      for
+        s <- stand
+        central <- ZIO.service[CentralApi]
+        front <- front
+        user <- loginUserOfSecond(s)
+        passkey <- enrollPasskeyAtSecond(s, user)
+        before <- signInAt(s.second, s.loginClient, user, scope = "openid offline_access")
+        carried <- ZIO.fromOption(before.refreshToken).orElseFail(RuntimeException("cell 2 issued no refresh token"))
+        record <- moved(central, user.userId.toString, s.first.id)
+        // The old cell does not have the token any more, and says where it went.
+        atOld <- s.second.auth.refresh(carried, clientId = Some(s.loginClient.clientId), clientSecret = Some(s.loginClient.clientSecret))
+        oldAnswer = atOld match
+          case TokenResult.Failure(response, body) => (response.status.code, body)
+          case _: TokenResult.Success => (200, "")
+        // The new cell takes the token cell 2 issued, once, and answers with one of its own.
+        atNew <- s.first.auth.refresh(carried, clientId = Some(s.loginClient.clientId), clientSecret = Some(s.loginClient.clientSecret)).success
+        own <- ZIO.fromOption(atNew.refreshToken).orElseFail(RuntimeException("cell 1 answered a carried token with no refresh token"))
+        newCell <- cellHeader(atNew.accessToken)
+        newSub <- subject(atNew.accessToken)
+        again <- s.first.auth.refresh(own, clientId = Some(s.loginClient.clientId), clientSecret = Some(s.loginClient.clientSecret)).success
+        // Through edge, as a browser: the sign-in is placed in cell 1, which now holds the login and its password.
+        (authorize, cookie, card) <- placed(front, s.loginClient)
+        code <- front.auth.submitLoginPassword(cookie, user.login, user.password, card.csrf).flatMap(_.assertRedirect)
+        byPassword <- s.first.auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.loginClient.clientId),
+          clientSecret = Some(s.loginClient.clientSecret),
+          redirectUri = Some(s.loginClient.redirectUri),
+        ).success
+        passwordSub <- subject(byPassword.accessToken)
+        // The passkey enrolled in cell 2, used in cell 1 with no address typed.
+        (_, passkeyCookie, passkeyCard) <- placed(front, s.loginClient)
+        options <- front.auth.getPasskeyOptions(passkeyCookie).flatMap(_.body.asString)
+        assertion <- TestAuthenticator.get(passkey, options, Flows.passkeyOrigin, user.userId)
+        byPasskey <- front.auth.submitPasskeyAssertion(passkeyCookie, assertion.toJson, passkeyCard.csrf)
+        passkeyCode <- byPasskey.assertRedirect
+        // Typed at cell 2 itself, the login is another cell's now: the browser is sent to cell 1.
+        atSecond <- s.second.auth.authorize(clientId = Some(s.loginClient.clientId), redirectUri = Some(s.loginClient.redirectUri))
+          .assertChallengeRedirect
+        secondCard <- s.second.auth.getChallenge(atSecond.conversationCookie.get).assertStep(ConversationStep.Credential)
+        typedAtSecond <- s.second.auth.submitLoginPassword(atSecond.conversationCookie.get, user.login, user.password, secondCard.csrf)
+        old <- cellOfTopology(central, s.second.id)
+      yield assertTrue(record.str("cell").contains(s.first.id)).label(s"the directory names cell 1: ${record.toJson}") &&
+        assertTrue(oldAnswer._1 == 421, oldAnswer._2.contains("\"moved\""), oldAnswer._2.contains(s.first.id))
+          .label(s"cell 2 answers the carried token with moved and the cell: $oldAnswer") &&
+        assertTrue(own != carried, own.startsWith(s"v1.${s.first.id}."), newCell.contains(s.first.id), newSub == user.sub)
+          .label(s"cell 1 replaced the carried token with one of its own: $own") &&
+        assertTrue(again.refreshToken.nonEmpty).label("the replacement is refreshed at cell 1 like any token of it") &&
+        assertTrue(code.startsWith(s"v1.${s.first.id}."), passwordSub == user.sub).label(s"the password signs the user in at cell 1: $code") &&
+        assertTrue(passkeyCode.startsWith(s"v1.${s.first.id}.")).label(s"the passkey signs the user in at cell 1: $passkeyCode") &&
+        assertTrue(sentTo(s.first, typedAtSecond))
+          .label(s"cell 2 no longer holds the user and hands it on: ${typedAtSecond.response.status} ${typedAtSecond.location}") &&
+        assertTrue(number(old, "tokens").exists(_ >= 1)).label(s"cell 2 reports the tokens it still answers moved for: ${old.toJson}")
+    },
+    test("an edge session of a user moved to another cell goes on: userinfo is asked again at the cell the old one names") {
+      for
+        s <- stand
+        central <- ZIO.service[CentralApi]
+        auth <- ZIO.service[OAuthClient]
+        edge <- ZIO.service[EdgeApi]
+        f <- ZIO.service[EdgeFixture]
+        // A user the directory places in cell 1 (the fixture's own user was made before there were cells, and is in none).
+        user <- loginUserOf(s, s.first)
+        // The role that permits the fixture's endpoints: it travels with the user.
+        _ <- auth.assignUserRoles(user.userId, Set(f.roleId))
+        _ <- auth.flushUserOutbox()
+        session <- edge.browserLogin(auth, f.presetId, user.login, user.password)
+        before <- edge.proxy(Method.GET, f.resourceId, "/profile", session.auth)
+        record <- moved(central, user.userId.toString, s.second.id)
+        // The session's token still names cell 1, which answers moved; the edge asks cell 2, which holds the user now.
+        profile <- edge.proxy(Method.GET, f.resourceId, "/profile", session.auth)
+      yield assertTrue(before.status == Status.Ok).label(s"the session works before the move: ${before.status}") &&
+        assertTrue(record.str("cell").contains(s.second.id)).label(s"the directory names cell 2: ${record.toJson}") &&
+        assertTrue(profile.status == Status.Ok).label(s"the edge got userinfo from the user's new cell: ${profile.status} ${profile.body}")
+    },
+    test("a draining cell is emptied into the open cell of its partition, and a user of it signs in there") {
+      for
+        s <- stand
+        central <- ZIO.service[CentralApi]
+        user <- loginUserOfSecond(s)
+        // Central moves a few users at a time; awaited until the directory places nobody in cell 2 and no move is under way.
+        emptied <- s.whileSecondDrains:
+          cellOfTopology(central, s.second.id)
+            .repeat(
+              Schedule.recurUntil[Json.Obj](cell => number(cell, "users").contains(0L) && number(cell, "moving").contains(0L)) &&
+                Schedule.spaced(1.second) && Schedule.recurs(240),
+            ).map(_._1)
+        _ <- ZIO.fail(RuntimeException(s"cell 2 was not emptied within four minutes: ${emptied.toJson}"))
+          .unless(number(emptied, "users").contains(0L) && number(emptied, "moving").contains(0L))
+        record <- central.get("/users", "id" -> user.userId.toString).flatMap(_.items("users")).map(_.headOption)
+        tokens <- signInAt(s.first, s.loginClient, user)
+        sub <- subject(tokens.accessToken)
+      yield assertTrue(number(emptied, "users").contains(0L), number(emptied, "moving").contains(0L))
+        .label(s"cell 2 was emptied: ${emptied.toJson}") &&
+        assertTrue(record.flatMap(_.str("cell")).contains(s.first.id)).label(s"the directory names cell 1 for its user: ${record.map(_.toJson)}") &&
+        assertTrue(sub == user.sub).label("the user signs in at cell 1 with the password it had in cell 2")
     },
   )

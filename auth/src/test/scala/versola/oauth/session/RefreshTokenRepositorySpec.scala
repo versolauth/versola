@@ -463,6 +463,19 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           tipAfter.isEmpty,
         )
       },
+      test("findRetiredTokenOwner names the user of a token rotated away, for its client only, and of no token that is live or unknown") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1, None)
+
+          retired <- env.repository.findRetiredTokenOwner(refreshToken1, clientId1)
+          otherClient <- env.repository.findRetiredTokenOwner(refreshToken1, clientId2)
+          live <- env.repository.findRetiredTokenOwner(refreshToken2, clientId1)
+          unknown <- env.repository.findRetiredTokenOwner(refreshToken3, clientId1)
+        yield assertTrue(retired.contains(userId1), otherClient.isEmpty, live.isEmpty, unknown.isEmpty)
+      },
       test("revokeFamily ignores a token that was never issued") {
         for
           now <- Clock.instant

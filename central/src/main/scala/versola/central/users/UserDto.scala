@@ -47,9 +47,14 @@ case class LookupUserRequest(
     login: Option[Login],
 ) derives JsonCodec, Schema
 
-/** Where a sign-in that names a login, or a user, is to be sent (versolauth/versola#1048): asked by a cell that does not
-  * hold it. Exactly one of the two is given. */
-case class HomeCellRequest(login: Option[Login], userId: Option[UserId]) derives JsonCodec, Schema
+/** Where a sign-in that names a login, a user or an address is to be sent (versolauth/versola#1048, #1052): asked by a
+  * cell that does not hold it. Exactly one of the four is given; anything else is answered as "nowhere". */
+case class HomeCellRequest(
+    login: Option[Login],
+    userId: Option[UserId],
+    email: Option[Email],
+    phone: Option[Phone],
+) derives JsonCodec, Schema
 
 case class HomeCellResponse(cell: CellId) derives JsonCodec, Schema
 
@@ -89,6 +94,8 @@ case class UserSearchRecord(
     phone: Option[Phone],
     login: Option[Login],
     claims: Json.Obj,
+    cell: Option[CellId],
+    move: Option[UserMoveResponse],
 ) derives JsonCodec, Schema
 
 case class UserSearchResponse(users: Vector[UserSearchRecord]) derives JsonCodec, Schema

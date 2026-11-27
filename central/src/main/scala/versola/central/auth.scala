@@ -54,7 +54,13 @@ enum Caller:
 private val InternalAuthIssuer = "auth"
 private val InternalAuthAudience = "central"
 
-/** Who calls (#1050). A token with an `edge_id` header is an edge's, checked against that edge's key as it always was. Any other
+/** What an edge's token says of itself: `edge` issued it (`CentralSyncTokenService`, `PartnerEnrollment`) for `central`. */
+private val InternalEdgeIssuer = "edge"
+private val InternalEdgeAudience = "central"
+
+/** Who calls (#1050). A token with an `edge_id` header is an edge's, checked against that edge's key and, like an `auth`'s, as RS256
+  * and nothing else, with an `exp`, `iss` `edge` and `aud` `central`: what every edge signs (a token that lacks one of them was
+  * made by nothing in this repository, and is refused). Any other
   * is an `auth`'s: its `kid` finds the public key among the keys of the registered cells and `auth.public-keys`, the signature
   * is verified with it as RS256 and nothing else (a token under the old shared secret, HS256, is refused), and `iss` is `auth`,
   * `aud` has `central` and it has not expired. The caller is the cell whose key verified, else the configured `auth`; a key in
@@ -71,8 +77,14 @@ def authorizeInternal(request: Request): ZIO[CentralConfig & EdgeService & CellR
             for
               edgeService <- ZIO.service[EdgeService]
               edge <- edgeService.find(id).someOrFail(Unauthorized)
-              _ <- JWT.deserialize[InternalAuthClaims](raw, edge.asPublicKeys, JWT.Type.JWT)
+              // RS256 and nothing else, as for an `auth`: an RSA key verifies PS256 too, which [[JWT.deserialize]] would accept
+              _ <- ZIO.fail(Unauthorized).unless(header.alg.contains("RS256"))
+              claims <- JWT.deserialize[InternalAuthClaims](raw, edge.asPublicKeys, JWT.Type.JWT)
                 .orElseFail(Unauthorized)
+              // [[JWT.deserialize]] takes a token with no `exp` for one that does not expire; an edge's expires (ten minutes)
+              _ <- ZIO.fail(Unauthorized).unless(
+                claims.exp.isDefined && claims.iss.contains(InternalEdgeIssuer) && claims.audiences.contains(InternalEdgeAudience),
+              )
             yield Caller.Edge(id)
           case None => authorizeAuthToken(raw, header)
       yield caller
@@ -234,8 +246,8 @@ case class InternalAuthHeader(
     @jsonField("cell_id") cellId: Option[String],
 ) derives JsonCodec
 
-/** The claims central looks at, of a token that has been verified: an edge's are not looked at (as ever), an `auth`'s `iss`, `aud`
-  * and that it has an `exp`. `aud` is a string or a list of them (RFC 7519 §4.1.3). */
+/** The claims central looks at, of a token that has been verified: its `iss`, `aud` and that it has an `exp`. `aud` is a string or a
+  * list of them (RFC 7519 §4.1.3). */
 case class InternalAuthClaims(
     iss: Option[String],
     aud: Option[Json],

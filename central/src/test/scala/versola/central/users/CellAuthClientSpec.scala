@@ -50,6 +50,7 @@ object CellAuthClientSpec extends UnitSpecBase:
     decision = AntifraudDecisionStatus(enabled = true),
     lists = AntifraudListsStatus(enabled = true, snapshotAgeSeconds = Some(1), size = 4, skipped = 0, lastRefreshError = None),
     tuning = AntifraudTuningStatus(available = true, version = Some(version), ageSeconds = Some(2), lastRefreshError = None),
+    cellShare = Some(1.0),
   )
 
   private val reset = ResetCountersRequest(CounterScope.velocity, Some(CounterValueType.phone), Some("+77011234567"), userId)
@@ -65,6 +66,7 @@ object CellAuthClientSpec extends UnitSpecBase:
     val topology = stub[TopologyRepository]
     val client = CellAuthClient(
       configured = configured,
+      configuredCell = Some(CellId("local-1")),
       at = (url: URL, cell: CellId) =>
         Unsafe.unsafe(u ?=> Runtime.default.unsafe.run(asked.update(_ :+ url.encode) *> audiences.update(_ :+ cell))(using summon, u).getOrThrow())
         ofCells(url.encode)
@@ -113,7 +115,7 @@ object CellAuthClientSpec extends UnitSpecBase:
         env.users.find.calls.isEmpty,
       )
     },
-    test("a deletion addressed to a cell that is not registered any more, or to no cell, goes to the configured auth") {
+    test("a deletion addressed to the cell the configured auth is, while it is not registered, or to no cell, goes to the configured auth") {
       val env = Env()
       for
         _ <- env.topology.getCells.succeedsWith(cells)
@@ -123,7 +125,7 @@ object CellAuthClientSpec extends UnitSpecBase:
         asked <- env.asked.get
       yield assertTrue(env.configured.deleteUser.calls == List(userId, userId), env.ofCells.values.forall(_.deleteUser.calls.isEmpty), asked.isEmpty)
     },
-    test("a user of no cell, of a cell that is not registered, and one the directory does not have go to the configured auth") {
+    test("a user of no cell, of the unregistered cell the configured auth is, and one the directory does not have go to the configured auth") {
       val env = Env()
       for
         _ <- env.topology.getCells.succeedsWith(cells)
@@ -136,6 +138,25 @@ object CellAuthClientSpec extends UnitSpecBase:
         _ <- env.client.getUserClaims(userId)
         asked <- env.asked.get
       yield assertTrue(env.configured.getUserClaims.calls.size == 3, asked.isEmpty)
+    },
+    test("a user of a cell that is gone is asked of no auth: a read or a change fails, a deletion has nothing to delete") {
+      val env = Env()
+      for
+        _ <- env.topology.getCells.succeedsWith(cells)
+        _ <- env.held(Some("kz-9"))
+        read <- env.client.getUserClaims(userId).either
+        change <- env.client.setPassword(userId, "irrelevant").either
+        _ <- env.client.deleteUser(userId)
+        _ <- env.client.deleteUserOf(Some(CellId("kz-9")), userId)
+        asked <- env.asked.get
+      yield assertTrue(
+        read == Left(AuthClient.CellNotRegistered(CellId("kz-9"))),
+        change == Left(AuthClient.CellNotRegistered(CellId("kz-9"))),
+        env.configured.getUserClaims.calls.isEmpty,
+        env.configured.setPassword.calls.isEmpty,
+        env.configured.deleteUser.calls.isEmpty,
+        asked.isEmpty,
+      )
     },
     test("a superseded session is ended in the cell that holds the user, and nowhere else") {
       val env = Env()
@@ -151,7 +172,7 @@ object CellAuthClientSpec extends UnitSpecBase:
         env.configured.supersedeSession.calls.isEmpty,
       )
     },
-    test("a superseded session of a user of no cell, or of a cell that is not registered, goes to the configured auth") {
+    test("a superseded session of a user of no cell, or of the unregistered cell the configured auth is, goes to the configured auth") {
       val env = Env()
       for
         _ <- env.topology.getCells.succeedsWith(cells)
@@ -408,6 +429,7 @@ object CellAuthClientSpec extends UnitSpecBase:
           _ <- topology.getCells.succeedsWith(cells)
           client = CellAuthClient(
             configured = AuthClient.Impl(http, config.auth.url, tokens, AuthTokenService.audienceOfConfigured(config)),
+            configuredCell = config.auth.cellId,
             at = (url, cell) => AuthClient.Impl(http, url, tokens, cell),
             users = users,
             topology = topology,
@@ -435,6 +457,53 @@ object CellAuthClientSpec extends UnitSpecBase:
         plain.filter(_._1 == "localhost").map(_._2) == List((service, List("auth"))),
         // with one, it is that
         namedCalls.filter(_._1 == "localhost").map(_._2) == List((service, List("eu-1"))),
+      )
+    },
+    test("a call of a move goes to the cell it is addressed to, whatever cell the directory names for the user, and to no other") {
+      val env = Env()
+      val moveId = UUID.fromString("00000000-0000-7000-8000-0000000000a1")
+      val sealedRows = AuthClient.DepartureExport("e", "d")
+      for
+        _ <- env.topology.getCells.succeedsWith(cells)
+        _ <- ZIO.foreach(env.ofCells.values.toList)(c =>
+          c.depart.succeedsWith(()) *> c.arrive.succeedsWith(()) *> c.exportDeparture.succeedsWith(sealedRows) *> c.keepArrival.succeedsWith(()) *>
+            c.completeDeparture.succeedsWith(()) *> c.discardArrival.succeedsWith(()),
+        )
+        _ <- env.client.depart(CellId("kz-1"), userId, CellId("kz-2"), moveId)
+        exported <- env.client.exportDeparture(CellId("kz-1"), userId)
+        _ <- env.client.arrive(CellId("kz-2"), userId, CellId("kz-1"), moveId, exported.envelope)
+        _ <- env.client.keepArrival(CellId("kz-2"), userId, moveId)
+        _ <- env.client.completeDeparture(CellId("kz-1"), userId, moveId, exported.digest)
+        _ <- env.client.discardArrival(CellId("kz-2"), userId, moveId)
+      yield assertTrue(
+        env.ofCells(kz1).depart.calls == List((CellId("kz-1"), userId, CellId("kz-2"), moveId)),
+        env.ofCells(kz1).exportDeparture.calls == List((CellId("kz-1"), userId)),
+        env.ofCells(kz2).arrive.calls == List((CellId("kz-2"), userId, CellId("kz-1"), moveId, "e")),
+        env.ofCells(kz2).keepArrival.calls == List((CellId("kz-2"), userId, moveId)),
+        env.ofCells(kz1).completeDeparture.calls == List((CellId("kz-1"), userId, moveId, "d")),
+        env.ofCells(kz2).discardArrival.calls == List((CellId("kz-2"), userId, moveId)),
+        env.ofCells(kz2).depart.calls.isEmpty,
+        env.ofCells(kz1).arrive.calls.isEmpty,
+        env.ofCells(kz1).keepArrival.calls.isEmpty,
+        env.ofCells(kz2).completeDeparture.calls.isEmpty,
+        // the directory is not asked: the move talks to both cells whatever it says
+        env.users.find.calls.isEmpty,
+        env.configured.depart.calls.isEmpty,
+        env.configured.arrive.calls.isEmpty,
+        env.configured.keepArrival.calls.isEmpty,
+      )
+    },
+    test("a call of a move to a cell that is not registered fails and does not fall back to the configured auth") {
+      val env = Env()
+      for
+        _ <- env.topology.getCells.succeedsWith(cells)
+        departed <- env.client.depart(CellId("kz-9"), userId, CellId("kz-2"), UUID.randomUUID()).either
+        summarised <- env.client.departuresSummary(CellId("kz-9")).either
+      yield assertTrue(
+        departed == Left(AuthClient.CellNotRegistered(CellId("kz-9"))),
+        summarised == Left(AuthClient.CellNotRegistered(CellId("kz-9"))),
+        env.configured.depart.calls.isEmpty,
+        env.configured.departuresSummary.calls.isEmpty,
       )
     },
   )

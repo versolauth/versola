@@ -6,7 +6,7 @@ import zio.Task
 import java.time.Instant
 import java.util.UUID
 
-/** The lists (`antifraud_list_entries`), their audit and their version. */
+/** The lists (`antifraud_list_entries`), their audit, their version and the changes that made it (`antifraud_list_changes`). */
 trait AntifraudListRepository:
   /** Adds the entry, or refreshes the expiry, reason, source and shadow flag of the one that is there already (same
     * list, value type, value and tenant), and writes the audit record in the same transaction: `create` for a new
@@ -30,8 +30,25 @@ trait AntifraudListRepository:
     * `now` it is given, so an expired entry stops matching without the lists being read again. */
   def version: Task[Long]
 
-  /** Every entry that has not expired at `now`, and the version they were read at, in one snapshot: what a cell copies. */
+  /** Every entry that has not expired at `now`, and the version they were read at, in one snapshot: what a cell copies.
+    * Always `full`. */
   def active(now: Instant): Task[PolicyLists]
+
+  /** What a cell that holds the lists as of version `since` copies to catch up (versolauth/versola#1052), read in one
+    * snapshot with the version:
+    *
+    *  - `since` equal to the version: nothing changed, an empty delta (not `full`);
+    *  - `since` below it, and a change is kept for EVERY version in `(since, version]`: a delta (not `full`) -- the entries
+    *    those changes name that are stored and have not expired at `now`, once each, as they are now, and the ids they
+    *    name that are not (deleted, or expired), which the cell is to drop;
+    *  - no `since`, `since` ahead of the version (central restored from a backup), or a version without a change (it was
+    *    pruned, or the change was never written): [[active]], `full`.
+    *
+    * The gap is judged by counting, so a delta is never answered with a missing change in it. */
+  def lists(since: Option[Long], now: Instant): Task[PolicyLists]
+
+  /** Removes up to `limit` changes written before `before`; fewer than `limit` means no more are due. */
+  def pruneChanges(before: Instant, limit: Int): Task[Int]
 
   /** Removes up to `limit` entries that expired at or before `now` and records each as expired. Returns how many;
     * fewer than `limit` means no more are due. Does not move the [[version]]: [[active]] leaves these entries out already.

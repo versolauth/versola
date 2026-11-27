@@ -3,12 +3,13 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, formStyles, recordStyles, tagStyles } from '../styles/components';
-import type { OAuthClient, PasskeyInfo, Role, User, UserDevice, UserRefreshToken, UserSession } from '../types';
-import { fetchAllClients, getRoles } from '../utils/central-api';
+import type { CellStatus, OAuthClient, PasskeyInfo, Region, Role, User, UserDevice, UserMove, UserRefreshToken, UserSession } from '../types';
+import { fetchAllClients, fetchTopology, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { formatDate, formatDateTime, formatShortDateTime, localZone, offsetLabel, wallClock } from '../utils/date-format';
 import { copyToClipboard, getLocalizedDescription } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
+import { MOVE_PHASES, errorLabel, moveUnfinished, phaseLabel } from '../utils/user-moves';
 import {
   MAX_TEMPORARY_PASSWORD_TTL_HOURS,
   MIN_TEMPORARY_PASSWORD_TTL_HOURS,
@@ -35,6 +36,7 @@ import {
   searchUsers,
   updateUser,
   updateUserRoles,
+  moveUser,
 } from '../utils/users-api';
 import './claim-edit';
 import './danger-card';
@@ -133,6 +135,13 @@ export class VersolaUserRecord extends LitElement {
   @state() private saveError = '';
 
   @state() private limitsDone = false;
+  /** The cells and regions, for the move picker; empty when the topology cannot be read. */
+  @state() private cells: CellStatus[] = [];
+  @state() private regions: Region[] = [];
+  @state() private pendingMove = false;
+  @state() private moveTarget = '';
+  @state() private moveError = '';
+  @state() private moving = false;
   @state() private passwordDone = false;
   @state() private pendingReset = false;
   @state() private resetChannel: 'email' | 'sms' | 'show' | null = null;
@@ -820,6 +829,63 @@ export class VersolaUserRecord extends LitElement {
     void this.loadTokens();
     void this.loadPasskeys();
     void this.loadClientNames();
+    void this.loadCellInfo();
+  }
+
+  /** The topology, for the move picker. It is not needed to read the page, so a failure only hides what depends on it. */
+  private async loadCellInfo() {
+    const seq = this.loadSeq;
+    try {
+      const topology = await fetchTopology();
+      if (seq !== this.loadSeq) return;
+      this.cells = topology.cells;
+      this.regions = topology.regions;
+    } catch {
+      if (seq !== this.loadSeq) return;
+      this.cells = [];
+      this.regions = [];
+    }
+  }
+
+  /** The cell the directory places the user in, as the user record says; null: the user belongs to no cell. */
+  private get currentCell(): string | null {
+    return this.user?.cell ?? null;
+  }
+
+  /** The user's latest move when it is not over: the user's data and changes are unavailable meanwhile. */
+  private get unfinishedMove(): UserMove | null {
+    const move = this.user?.move ?? null;
+    return move && moveUnfinished(move) ? move : null;
+  }
+
+  /** Cells a user can be moved to: not draining, not its own, and in its partition when that is known. */
+  private get moveTargets(): CellStatus[] {
+    const own = this.currentCell;
+    const partition = own ? this.regions.find(region => region.id === this.cells.find(cell => cell.id === own)?.regionId)?.partitionId : null;
+    return this.cells.filter(cell => cell.state !== 'draining' && cell.id !== own
+      && (!partition || this.regions.find(region => region.id === cell.regionId)?.partitionId === partition));
+  }
+
+  private openMove() {
+    this.moveTarget = this.moveTargets[0]?.id ?? '';
+    this.moveError = '';
+    this.pendingMove = true;
+  }
+
+  private async confirmMove() {
+    const target = this.moveTarget;
+    if (!target || this.moving) return;
+    this.moving = true;
+    this.moveError = '';
+    try {
+      await moveUser(this.userId, target);
+      this.pendingMove = false;
+      await this.loadUser();
+    } catch (error) {
+      this.moveError = error instanceof Error ? error.message : 'Failed to start the move';
+    } finally {
+      this.moving = false;
+    }
   }
 
   private async loadUser(seq = this.loadSeq) {
@@ -1476,7 +1542,62 @@ export class VersolaUserRecord extends LitElement {
           ?disabled=${noTenant || this.busy.has('limits')}
           title=${noTenant ? 'Select a tenant to reset limits' : ''}
           @click=${this.resetLimits}>Reset limits</button></div>` : html`<div></div>`}
-      </div>`);
+      </div>
+      ${this.user?.cell || this.user?.move ? this.renderCellRow() : nothing}`);
+  }
+
+  /** Shown while the user is on its way; the identifiers and claims are left out then, because the record comes back empty, which says nothing about the user. */
+  private renderMovingCard(move: UserMove) {
+    return html`
+      <div class="banner warn" role="status" data-testid="user-moving">
+        <div class="banner-text">
+          <div class="banner-title">${statusIcon('alert')}This user is being moved from ${move.from} to ${move.to}</div>
+          <div>Identifiers, claims and changes to the user are unavailable until the move ends. ${phaseLabel(move.phase)}: ${MOVE_PHASES.find(phase => phase.id === move.phase)?.text}</div>
+        </div>
+      </div>`;
+  }
+
+  private renderCellRow() {
+    const move = this.user?.move ?? null;
+    const unfinished = this.unfinishedMove !== null;
+    const own = this.currentCell;
+    const noTarget = this.moveTargets.length === 0;
+    const reason = unfinished ? 'A move of this user is not finished' : noTarget ? 'No other cell can take the user: a draining cell does not' : '';
+    return html`
+      <div class="record-row">
+        <div class="record-label">Cell</div>
+        <div class="record-value">
+          ${own ? html`<span class="mono">${own}</span>` : html`<span class="muted">No cell</span>`}
+          ${move && unfinished ? html`<div class="status-line">${phaseLabel(move.phase)}: ${MOVE_PHASES.find(phase => phase.id === move.phase)?.text}</div>` : nothing}
+          ${move?.phase === 'failed' ? html`<div class="hint">The last move, ${move.from} → ${move.to}, failed${move.error ? `: ${errorLabel(move.error)}` : ''}</div>` : nothing}
+        </div>
+        ${this.canManage && own ? html`<div><button type="button" class="btn btn-secondary btn-sm"
+          ?disabled=${unfinished || noTarget || this.busy.has('move')}
+          title=${reason} @click=${this.openMove}>Move to another cell…</button></div>` : html`<div></div>`}
+      </div>`;
+  }
+
+  private renderMoveDialog() {
+    if (!this.pendingMove) return nothing;
+    const targets = this.moveTargets;
+    return html`
+      <dialog class="modal" aria-labelledby="move-title" @close=${() => { this.pendingMove = false; }}>
+        <h2 id="move-title">Move to another cell</h2>
+        <p class="lead">The user's data is carried to the other cell in the background. Browser sessions end and the person signs in again; an app holding a refresh token keeps working. Changes to the user are refused until the move is over.</p>
+        <div class="form-group" style="margin-bottom:var(--spacing-lg)">
+          <label for="move-target">Target cell</label>
+          <select id="move-target" .value=${this.moveTarget} aria-describedby=${this.moveError ? 'move-error' : 'move-hint'}
+            @change=${(e: Event) => { this.moveTarget = (e.target as HTMLSelectElement).value; }}>
+            ${targets.map(cell => html`<option value=${cell.id} ?selected=${cell.id === this.moveTarget}>${cell.id} (${cell.regionId}, ${cell.state})</option>`)}
+          </select>
+          <div id="move-hint" class="hint">${this.currentCell ? `Cells of the same partition as ${this.currentCell}, except draining ones.` : 'Central refuses a cell of another partition, or the cell the user is already in.'}</div>
+          ${this.moveError ? html`<div id="move-error" class="error-message" role="alert">${this.moveError}</div>` : nothing}
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" @click=${() => { this.pendingMove = false; }}>Cancel</button>
+          <button type="button" class="btn btn-primary" ?disabled=${!this.moveTarget || this.moving} @click=${this.confirmMove}>Move user</button>
+        </div>
+      </dialog>`;
   }
 
   private renderResetDialog() {
@@ -1632,11 +1753,12 @@ export class VersolaUserRecord extends LitElement {
         return html`<versola-user-activity .userId=${this.userId} .canReadAudit=${this.canReadAudit} .params=${this.tabParams}></versola-user-activity>`;
       default:
         return html`
-          ${this.card('identifiers', 'Identifiers', 'Any one of them signs the user in.', this.editButton('identifiers'), html`
-            ${this.row('Email', user.email ?? html`<span class="muted">—</span>`)}
-            ${this.row('Phone', user.phone ?? html`<span class="muted">—</span>`)}
-            ${this.row('Login', user.login ? html`<span class="mono">${user.login}</span>` : html`<span class="muted">—</span>`)}`)}
-          ${this.renderClaimsCard(user)}
+          ${this.unfinishedMove ? nothing : html`
+            ${this.card('identifiers', 'Identifiers', 'Any one of them signs the user in.', this.editButton('identifiers'), html`
+              ${this.row('Email', user.email ?? html`<span class="muted">—</span>`)}
+              ${this.row('Phone', user.phone ?? html`<span class="muted">—</span>`)}
+              ${this.row('Login', user.login ? html`<span class="mono">${user.login}</span>` : html`<span class="muted">—</span>`)}`)}
+            ${this.renderClaimsCard(user)}`}
           ${this.renderSecurityCard()}
 
           <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`
@@ -1667,6 +1789,8 @@ export class VersolaUserRecord extends LitElement {
         .meta=${html`<span class="chip">User</span>${signedIn ? html`<span class="chip ok">Signed in</span>` : nothing}`}
       ></versola-record-header>
 
+      ${this.unfinishedMove ? this.renderMovingCard(this.unfinishedMove) : nothing}
+
       ${this.tenantId ? nothing : html`<div class="banner info" role="status"><div class="banner-text">Select a tenant to see roles and reset limits.</div></div>`}
 
 
@@ -1676,6 +1800,7 @@ export class VersolaUserRecord extends LitElement {
       </versola-tabs>
 
       ${this.renderResetDialog()}
+      ${this.renderMoveDialog()}
       ${this.renderRevealedDialog()}
     `;
   }

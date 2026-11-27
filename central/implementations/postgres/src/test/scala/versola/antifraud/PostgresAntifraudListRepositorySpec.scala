@@ -19,5 +19,6 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
       _ <- xa.connect:
         sql"DELETE FROM antifraud_list_entries".update.run()
         sql"DELETE FROM antifraud_list_audit".update.run()
+        sql"DELETE FROM antifraud_list_changes".update.run()
         sql"UPDATE antifraud_list_version SET version = 0".update.run()
     yield ()

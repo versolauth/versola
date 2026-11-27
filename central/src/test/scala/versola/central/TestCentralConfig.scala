@@ -1,5 +1,6 @@
 package versola.central
 
+import versola.central.configuration.edges.{EdgeGroup, EdgeGroupKind, EdgeId, EdgeRecord}
 import versola.central.configuration.topology.{CellId, CellRecord, CellRegistry, CellState, RegionId}
 import versola.util.{Base64Url, JWT, RsaKeyPair, Secret}
 import zio.durationInt
@@ -97,4 +98,31 @@ object TestCentralConfig:
       ttl = 1.minute,
       signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyPair.keyId, keyPair.privateKey),
       headers = cellId.fold(Map.empty[String, String])(id => Map("cell_id" -> id)),
+    )
+
+  /** A registered edge and the token it signs for central: RS256 with its key, `edge_id` in the header, `iss` `edge`, `aud` `central`
+    * and an expiry, which is what an edge's `CentralSyncTokenService` makes. Which routes refuse it is what a spec using it checks. */
+  val edgeKeyPair: RsaKeyPair = newKeyPair("edge-test")
+  val edgeId: EdgeId = EdgeId("edge-test-1")
+
+  val edgeRecord: EdgeRecord = EdgeRecord(
+    edgeId,
+    Some(edgeKeyPair.toPublicJwk),
+    None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = EdgeGroup.DefaultId,
+    groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
+  )
+
+  val edgeToken: Task[String] =
+    JWT.serialize(
+      claims = JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+      ttl = 1.minute,
+      signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, edgeKeyPair.keyId, edgeKeyPair.privateKey),
+      headers = Map("edge_id" -> edgeId.toString),
     )

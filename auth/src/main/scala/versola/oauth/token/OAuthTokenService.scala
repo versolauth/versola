@@ -24,9 +24,10 @@ import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenFamilyI
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, UserDepartures}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
-import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, RoutingKey, Secret, SecurityService}
 import zio.prelude.These
 import zio.{Duration, IO, Task, UIO, ZIO, ZLayer}
 
@@ -97,7 +98,7 @@ object OAuthTokenService:
   /** Admin-console client; admin roles are only embedded in tokens issued for it. */
   val centralAdminClientId: ClientId = ClientId("central-admin")
 
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
@@ -111,7 +112,24 @@ object OAuthTokenService:
       schemaValidator: JsonSchemaValidator,
       config: CoreConfig,
       audit: AuditEvents,
+      departures: UserDepartures,
   ) extends OAuthTokenService:
+
+    /** A user who is leaving this cell, or has left it, is not served here (versolauth/versola#1051): `503` for the first, `421 moved`
+      * for the second. One read by user id, on a request that has found the user's record already. */
+    private def refuseDeparture(userId: UserId): IO[Throwable | TokenEndpointError, Unit] =
+      departures.refuse(userId).mapError(toTokenError)
+
+    private def toTokenError(error: Throwable | DepartureRefusal): Throwable | TokenEndpointError = error match
+      case DepartureRefusal.Leaving => TokenEndpointError.Leaving
+      case DepartureRefusal.Moved(cell) => TokenEndpointError.Moved(cell)
+      case other: Throwable => other
+
+    /** Whether the presented token came from another cell: its string does not carry this cell's routing key (or carries none, in
+      * a cell). Such a token is replaced at its first use, bound or not, by one that does (versolauth/versola#1051). */
+    private def carriedFromAnotherCell(token: RefreshToken): Boolean =
+      config.cellId.exists: own =>
+        !RoutingKey.decode(RefreshToken.present(token)).exists(_.cell.contains(own))
 
     /** `token.issued`. The refresh grant is an event only where the client's tenant asked for it (`auditSettings.tokenRefresh` of its Security settings):
       * it is the most frequent event there is. The client is the actor, the user (when there is one) the subject. */
@@ -283,6 +301,9 @@ object OAuthTokenService:
         _ <- Observability.setSessionId(codeRecord.publicSessionId)
         _ <- Observability.setUserId(codeRecord.userId.toString)
 
+        // Before the code is used: a client told to retry has its code still.
+        _ <- refuseDeparture(codeRecord.userId)
+
         _ <- authorizationCodeRepository.markAsUsed(codeMac).flatMap:
           case Left(family) =>
             for
@@ -371,11 +392,13 @@ object OAuthTokenService:
 
         resolved <- sessionRepository.findToken(refreshTokenMac).flatMap:
           case Some(record) if record.clientId == client.id =>
-            ZIO.succeed(Resolved(refreshTokenMac, record, retried = false))
+            refuseDeparture(record.userId).as(Resolved(refreshTokenMac, record, retried = false))
           case Some(_) =>
             ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenClientMismatch)
+          // Not here: the token of a user who moved is told where they went, before it is read as a replay of one rotated away.
           case None =>
-            resolveRetry(client, refreshTokenMac, idempotencyKeyMac)
+            departures.refuseToken(refreshTokenMac, client.id).mapError(toTokenError) *>
+              resolveRetry(client, refreshTokenMac, idempotencyKeyMac)
 
         issuedTokens <- continueRefresh(
           client,
@@ -507,7 +530,11 @@ object OAuthTokenService:
           // generations it retains and the idempotency key that makes rotation retryable all
           // stop paying for themselves.
           // A retry can only be reached through a retired row, which a bound token never has.
-          boundRenewal = Option.when(tokenRecord.cnf.isDefined && !resolved.retried)(
+          //
+          // Except a token that came from another cell: it is consumed as a rotation consumes one, and a token of this cell takes its
+          // place in the response, with the same binding in its record (versolauth/versola#1051). The client does not hold this
+          // cell's form of it until then, and the cell that issued the old one will answer `moved` for it, not renew it.
+          boundRenewal = Option.when(tokenRecord.cnf.isDefined && !resolved.retried && !carriedFromAnotherCell(refreshToken))(
             BoundRenewal(
               token = refreshToken,
               mac = resolved.previousToken,
@@ -573,7 +600,7 @@ object OAuthTokenService:
         .fold(ZIO.none)(sessionRepository.findIdempotentRetry(refreshTokenMac, client.id, _))
         .flatMap:
           case Some((tip, record)) =>
-            ZIO.succeed(Resolved(tip, record, retried = true))
+            refuseDeparture(record.userId).as(Resolved(tip, record, retried = true))
           case None =>
             detectReplay(client, refreshTokenMac).flatMap: replayed =>
               ZIO.fail:
@@ -604,29 +631,32 @@ object OAuthTokenService:
       * from a token that never existed -- both fail the request identically, but only the
       * former is worth surfacing in the request's error context.
       */
-    private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Boolean] =
-      sessionRepository.revokeFamily(replayed, client.id, RevocationTerms.forFamily(client, RevocationCause.RefreshReuse)).flatMap:
-        case Some(family) =>
-          // The access tokens the chain issued are not in hand, and are not recorded anywhere
-          // either: the revocation, written with the family's expiry above, and the push name the
-          // family they all carry as their `fam` claim, which reaches every generation --
-          // including ones this table no longer holds a row for. The bound is the client's
-          // current accessTokenTtl from now, the only measure left once no token is being named
-          // individually. It is mutable, so a TTL lowered since a token was minted makes the
-          // entry expire before that token does; the alternative, recording every issued token's
-          // expiry against the chain, is what naming the family exists to avoid.
-          zio.Clock.instant
-            .flatMap: revokedAt =>
-              accessTokenRevocationService.announceFamily(
-                client = client,
-                family = family.familyId,
-                subject = family.userId.toString,
-                expiresAt = revokedAt.plus(client.accessTokenTtl),
-              )
-            .zipRight(auditReuse(client, "refresh_token", family.familyId, family.userId))
-            .as(true)
-        case None =>
-          ZIO.succeed(false)
+    private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): IO[Throwable | TokenEndpointError, Boolean] =
+      // A user who is leaving is not touched: expiring the family here, after the rows were exported, would leave the copy the
+      // other cell holds live (versolauth/versola#1051). The caller is told to retry, as for any other request about the user.
+      sessionRepository.findRetiredTokenOwner(replayed, client.id).flatMap(ZIO.foreachDiscard(_)(refuseDeparture)) *>
+        sessionRepository.revokeFamily(replayed, client.id, RevocationTerms.forFamily(client, RevocationCause.RefreshReuse)).flatMap:
+          case Some(family) =>
+            // The access tokens the chain issued are not in hand, and are not recorded anywhere
+            // either: the revocation, written with the family's expiry above, and the push name the
+            // family they all carry as their `fam` claim, which reaches every generation --
+            // including ones this table no longer holds a row for. The bound is the client's
+            // current accessTokenTtl from now, the only measure left once no token is being named
+            // individually. It is mutable, so a TTL lowered since a token was minted makes the
+            // entry expire before that token does; the alternative, recording every issued token's
+            // expiry against the chain, is what naming the family exists to avoid.
+            zio.Clock.instant
+              .flatMap: revokedAt =>
+                accessTokenRevocationService.announceFamily(
+                  client = client,
+                  family = family.familyId,
+                  subject = family.userId.toString,
+                  expiresAt = revokedAt.plus(client.accessTokenTtl),
+                )
+              .zipRight(auditReuse(client, "refresh_token", family.familyId, family.userId))
+              .as(true)
+          case None =>
+            ZIO.succeed(false)
 
     /** RFC 9396 §6: a token request may ask for the authorization details of the underlying
       * grant or fewer of them, never for more; §6.1 compares the requested objects with the

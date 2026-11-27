@@ -79,7 +79,21 @@ import versola.central.configuration.system.{SystemSettingsController, SystemSet
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.configuration.topology.{CellId, CellRegistry, TopologyController, TopologyRepository, TopologyService}
-import versola.central.users.{AuthClient, DirectoryKey, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
+import versola.central.users.{
+  AuthClient,
+  CellDrain,
+  DirectoryKey,
+  ServiceController,
+  UserController,
+  UserMoveController,
+  UserMoveProcessor,
+  UserMoveRepository,
+  UserMoveService,
+  UserMoveSettings,
+  UserOutboxProcessor,
+  UserRepository,
+  UserService,
+}
 import versola.central.{CentralConfig, refuseEdgeCallers}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.clients.{
@@ -111,7 +125,7 @@ import versola.configuration.system.PostgresSystemSettingsRepository
 import versola.configuration.tenants.PostgresTenantRepository
 import versola.configuration.themes.PostgresThemeRepository
 import versola.configuration.topology.PostgresTopologyRepository
-import versola.users.PostgresUserRepository
+import versola.users.{PostgresUserMoveRepository, PostgresUserRepository}
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.audit.{AuditEventRepository, AuditEvents, AuditTenants}
@@ -188,7 +202,10 @@ object PostgresCentralApp extends VersolaApp("central"):
       CacheSyncService &
       SecurityService &
       UserRepository &
+      UserMoveRepository &
       UserService &
+      UserMoveService &
+      UserMoveSettings &
       AntifraudListRepository &
       AntifraudSettingsRepository &
       AntifraudListService &
@@ -203,6 +220,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuditTenants &
       AuditReportService &
       UserOutboxProcessor &
+      UserMoveProcessor &
+      CellDrain &
       ClientCertificateIssuanceRepository &
       EdgeCertificateEnrollmentRepository &
       ClientEstRepository &
@@ -245,6 +264,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsController.endpoints,
       DeliverySettingsController.endpoints,
       UserController.endpoints,
+      UserMoveController.endpoints,
       AntifraudListController.endpoints,
       AntifraudSettingsController.endpoints,
       AntifraudPolicyController.endpoints,
@@ -326,7 +346,8 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresJwksRepository.live >++>
           PostgresServerMetadataRepository.live >++>
           PostgresAuditEventRepository.live >++>
-          PostgresUserRepository.live
+          PostgresUserRepository.live >++>
+          PostgresUserMoveRepository.live
       )
 
   /** This process in the audit log: its host, which is what tells the instances of a deployment apart, and a part that is its own
@@ -382,6 +403,9 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeService.live >++>
       EdgeGroupService.live >++>
       CellRegistry.live >++>
+      // before the topology: it asks the cells what they report of their departures
+      AuthClient.routed >++>
+      UserMoveSettings.live >++>
       TopologyService.live >++>
       EdgeIdentityService.live >++>
       LocaleCompletenessValidator.live >++> LocaleService.live >++>
@@ -392,17 +416,19 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsService.live >++>
       DeliverySettingsService.live >++>
       CacheSyncService.live >++>
-      AuthClient.routed >++>
       PartnerClientService.live >++>
       PartnerService.live >++>
       AuditReportService.live >++>
       DirectoryKey.live >++>
       UserService.live >++>
+      UserMoveService.live >++>
       AntifraudListService.live >++>
       AntifraudSettingsService.live >++>
       AntifraudCountersService.live >++>
       AntifraudStatusService.live >++>
       UserOutboxProcessor.live >++>
+      UserMoveProcessor.live >++>
+      CellDrain.live >++>
       // Renews the certificates central issued, for as long as it runs. A no-op where
       // `client-certificates` is not configured.
       ClientCertificateService.renewal >++>

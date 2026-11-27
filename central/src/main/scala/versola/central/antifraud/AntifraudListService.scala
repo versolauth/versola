@@ -33,8 +33,9 @@ trait AntifraudListService:
 
   def audit(entryId: Option[UUID], limit: Option[PageLimit], caller: AntifraudCaller): IO[AntifraudListError | Throwable, AuditResponse]
 
-  /** What a cell copies: every entry that has not expired, and the version they were read at. */
-  def active: Task[PolicyLists]
+  /** What a cell copies: the whole list, or the changes since `since` the version of its copy (see
+    * [[AntifraudListRepository.lists]]), and the version they were read at. */
+  def lists(since: Option[Long]): Task[PolicyLists]
 
 object AntifraudListService:
 
@@ -43,6 +44,10 @@ object AntifraudListService:
 
   /** The share is judged only over at least this many events. */
   val ShareMinEvents = 100L
+
+  /** How long the changes behind each version of the lists are kept (versolauth/versola#1052): a cell that was away
+    * longer is answered the whole list. */
+  val ChangesKept: Duration = 7.days
 
   /** How long the audit records of changes are kept. */
   val AuditRetention: Duration = 365.days
@@ -151,7 +156,7 @@ object AntifraudListService:
     override def audit(entryId: Option[UUID], limit: Option[PageLimit], caller: AntifraudCaller): IO[Failure, AuditResponse] =
       repository.audit(entryId = entryId, limit = limit.getOrElse(PageLimit.Default), visibleTo = caller.visibleTo).map(AuditResponse(_))
 
-    override def active: Task[PolicyLists] = Clock.instant.flatMap(repository.active)
+    override def lists(since: Option[Long]): Task[PolicyLists] = Clock.instant.flatMap(repository.lists(since, _))
 
     /** The entries with how often they matched, which the cells say. */
     private def counted(entries: List[ListEntryRecord]): Task[List[ListEntryResponse]] =
@@ -183,4 +188,5 @@ object AntifraudListService:
 
     private[antifraud] val cleanUp: UIO[Unit] =
       inBatches(repository.purgeExpired(_, PurgeBatch)) *>
-        inBatches(now => repository.pruneAudit(now.minusSeconds(AuditRetention.toSeconds), PurgeBatch))
+        inBatches(now => repository.pruneAudit(now.minusSeconds(AuditRetention.toSeconds), PurgeBatch)) *>
+        inBatches(now => repository.pruneChanges(now.minusSeconds(ChangesKept.toSeconds), PurgeBatch))

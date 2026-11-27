@@ -4,7 +4,7 @@ import com.nimbusds.jose.jwk.gen.{ECKeyGenerator, RSAKeyGenerator}
 import com.nimbusds.jose.jwk.{Curve, JWK}
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.edges.{EdgeGroup, EdgeGroupId, EdgeGroupKind, EdgeId, EdgeRecord, EdgeService}
-import versola.central.users.UserRepository
+import versola.central.users.{AuthClient, UserMoveRepository, UserRepository}
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.TestCertificates
 import zio.*
@@ -62,13 +62,15 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val repository = stub[TopologyRepository]
     val edges = stub[EdgeService]
     val users = stub[UserRepository]
+    val moves = stub[UserMoveRepository]
+    val auth = stub[AuthClient]
 
     /** Counts how often the cells in memory were brought up to date: a change of a cell is to be seen at once. */
     val refreshed = Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(0))
     val registry: CellRegistry = new CellRegistry:
       override def all: UIO[Vector[CellRecord]] = ZIO.succeed(Vector.empty)
       override def refreshNow: Task[Unit] = refreshed.update(_ + 1)
-    val service = TopologyService.Impl(repository, edges, users, config, registry)
+    val service = TopologyService.Impl(repository, edges, users, config, registry, moves, auth)
 
     def stored(
         regions: Vector[RegionRecord] = Vector(almaty, astana),
@@ -81,6 +83,14 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
         repository.getCells.succeedsWith(cells) *>
         repository.getEdgeRegions.succeedsWith(edgeRegions) *>
         edges.getAllEdges.succeedsWith(registeredEdges)
+
+  private def summary(tokens: Long) =
+    AuthClient.DeparturesSummary(
+      leaving = 0,
+      moved = 2,
+      tokens = tokens,
+      tokensUntil = Option.when(tokens > 0)(java.time.Instant.parse("2027-01-01T00:00:00Z")),
+    )
 
   private def invalid(result: Either[Throwable | TopologyError, Unit]) = result.left.exists(_.isInstanceOf[TopologyError.Invalid])
   private def missing(result: Either[Throwable | TopologyError, Unit]) = result.left.exists(_.isInstanceOf[TopologyError.Missing])
@@ -148,6 +158,19 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
           results <- ZIO.foreach(refused)((name, record) => env.service.createCell(record).either.map(name -> _))
         yield assertTrue(results.filterNot(result => invalid(result._2)).map(_._1).isEmpty, env.repository.createCell.calls.isEmpty)
       },
+      test("a cell is not registered under an id that is reserved: `auth` and `central` are what an auth's token is made by and for") {
+        val env = new Env
+        for
+          _ <- env.stored()
+          reservedAuth <- env.service.createCell(cell.copy(id = CellId("auth"))).either
+          reservedCentral <- env.service.createCell(cell.copy(id = CellId("central"))).either
+        yield assertTrue(
+          invalid(reservedAuth),
+          invalid(reservedCentral),
+          env.repository.createCell.calls.isEmpty,
+          TopologyService.ReservedCellIds == Set("auth", "central"),
+        )
+      },
       test("a weight of zero, no mutual-TLS listener and no pins are allowed: a cell that takes no new users and is reached in the clear") {
         val env = new Env
         val plain = cell.copy(mtlsUrl = None, trustedCertificates = Nil, weight = 0)
@@ -185,10 +208,12 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.stored(cells = Vector(cell, closed, draining))
           _ <- env.repository.deleteCell.succeedsWith(true)
           _ <- env.users.countInCell.succeedsWith(0L)
-          open <- env.service.deleteCell(cell.id, lost = false).either
-          emptying <- env.service.deleteCell(draining.id, lost = false).either
-          unknown <- env.service.deleteCell(CellId("kz-9"), lost = false).either
-          _ <- env.service.deleteCell(closed.id, lost = false)
+          _ <- env.moves.involvesUnfinished.succeedsWith(false)
+          _ <- env.auth.departuresSummary.succeedsWith(summary(0))
+          open <- env.service.deleteCell(cell.id, lost = false, force = false).either
+          emptying <- env.service.deleteCell(draining.id, lost = false, force = false).either
+          unknown <- env.service.deleteCell(CellId("kz-9"), lost = false, force = false).either
+          _ <- env.service.deleteCell(closed.id, lost = false, force = false)
         yield assertTrue(
           conflict(open),
           conflict(emptying),
@@ -205,13 +230,76 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.stored(cells = Vector(closed))
           _ <- env.repository.deleteCell.succeedsWith(true)
           _ <- env.users.countInCell.succeedsWith(3L)
-          result <- env.service.deleteCell(closed.id, lost = false).either
+          result <- env.service.deleteCell(closed.id, lost = false, force = false).either
         yield assertTrue(
           conflict(result),
           result.left.exists(_.asInstanceOf[TopologyError].message.contains("3 user")),
           env.users.countInCell.calls == List(closed.id),
           env.repository.deleteCell.calls.isEmpty,
         )
+      },
+      test("a cell with a move from or to it that is not finished is refused, and nothing is deleted") {
+        val env = new Env
+        val closed = cell.copy(id = CellId("kz-2"), state = CellState.Closed)
+        for
+          _ <- env.stored(cells = Vector(closed))
+          _ <- env.repository.deleteCell.succeedsWith(true)
+          _ <- env.users.countInCell.succeedsWith(0L)
+          _ <- env.moves.involvesUnfinished.succeedsWith(true)
+          result <- env.service.deleteCell(closed.id, lost = false, force = true).either
+        yield assertTrue(
+          conflict(result),
+          env.moves.involvesUnfinished.calls == List(closed.id),
+          // the cell is not asked about its tokens, and `force` does not lift this rule
+          env.auth.departuresSummary.calls.isEmpty,
+          env.repository.deleteCell.calls.isEmpty,
+        )
+      },
+      test("a cell that still answers moved for refresh tokens is refused, unless force is given, which deletes it") {
+        val env = new Env
+        val closed = cell.copy(id = CellId("kz-2"), state = CellState.Closed)
+        for
+          _ <- env.stored(cells = Vector(closed))
+          _ <- env.repository.deleteCell.succeedsWith(true)
+          _ <- env.users.countInCell.succeedsWith(0L)
+          _ <- env.moves.involvesUnfinished.succeedsWith(false)
+          _ <- env.auth.departuresSummary.succeedsWith(summary(4))
+          refused <- env.service.deleteCell(closed.id, lost = false, force = false).either
+          afterRefusal = env.repository.deleteCell.calls
+          _ <- env.service.deleteCell(closed.id, lost = false, force = true)
+        yield assertTrue(
+          conflict(refused),
+          refused.left.exists(_.asInstanceOf[TopologyError].message.contains("4 refresh token")),
+          afterRefusal.isEmpty,
+          env.repository.deleteCell.calls == List(closed.id),
+        )
+      },
+      test("a cell that does not answer is not known to hold no tokens: refused unless force, or lost") {
+        val env = new Env
+        val closed = cell.copy(id = CellId("kz-2"), state = CellState.Closed)
+        for
+          _ <- env.stored(cells = Vector(closed))
+          _ <- env.repository.deleteCell.succeedsWith(true)
+          _ <- env.users.countInCell.succeedsWith(0L)
+          _ <- env.moves.involvesUnfinished.succeedsWith(false)
+          _ <- env.auth.departuresSummary.failsWith(new RuntimeException("connection refused"))
+          refused <- env.service.deleteCell(closed.id, lost = false, force = false).either
+          forced <- env.service.deleteCell(closed.id, lost = false, force = true).either
+          lost <- env.service.deleteCell(closed.id, lost = true, force = false).either
+        yield assertTrue(conflict(refused), forced.isRight, lost.isRight, env.repository.deleteCell.calls == List(closed.id, closed.id))
+      },
+      test("a cell that is slow to answer is waited for no longer than the timeout and counts as not answering") {
+        val env = new Env
+        val closed = cell.copy(id = CellId("kz-2"), state = CellState.Closed)
+        for
+          _ <- env.stored(cells = Vector(closed))
+          _ <- env.users.countInCell.succeedsWith(0L)
+          _ <- env.moves.involvesUnfinished.succeedsWith(false)
+          _ <- env.auth.departuresSummary.returnsZIO(_ => ZIO.never)
+          fiber <- env.service.deleteCell(closed.id, lost = false, force = false).either.fork
+          _ <- TestClock.adjust(TopologyService.SummaryTimeout + 1.second)
+          result <- fiber.join
+        yield assertTrue(conflict(result))
       },
       test("a cell said to be lost is deleted with the users the directory places in it, and only when it is closed") {
         val env = new Env
@@ -221,14 +309,46 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.stored(cells = Vector(closed, draining))
           _ <- env.repository.deleteCell.succeedsWith(true)
           _ <- env.users.countInCell.succeedsWith(3L)
-          emptying <- env.service.deleteCell(draining.id, lost = true).either
-          _ <- env.service.deleteCell(closed.id, lost = true)
+          emptying <- env.service.deleteCell(draining.id, lost = true, force = false).either
+          _ <- env.service.deleteCell(closed.id, lost = true, force = false)
         yield assertTrue(
           conflict(emptying),
           env.repository.deleteCell.calls == List(closed.id),
-          // the directory is not what decides here
+          // the directory, the moves and the cell itself are not what decides here
           env.users.countInCell.calls.isEmpty,
+          env.moves.involvesUnfinished.calls.isEmpty,
+          env.auth.departuresSummary.calls.isEmpty,
         )
+      },
+      test("the status of a cell: its users, its unfinished moves, what it reports, and why a draining one is stuck") {
+        val env = new Env
+        val draining = cell.copy(id = CellId("kz-3"), state = CellState.Draining)
+        val silent = cell.copy(id = CellId("kz-4"), regionId = astana.id)
+        for
+          _ <- env.stored(cells = Vector(draining, silent))
+          _ <- env.users.countInCell.returnsZIO(id => ZIO.succeed(if id == draining.id then 7L else 2L))
+          _ <- env.moves.unfinishedFromCounts.succeedsWith(Map(draining.id -> 3L))
+          _ <-
+            env.auth.departuresSummary.returnsZIO(id => if id == draining.id then ZIO.succeed(summary(5)) else ZIO.fail(new RuntimeException("down")))
+          statuses <- env.service.cellStatuses
+        yield assertTrue(
+          statuses(draining.id) == CellStatus(users = 7, moving = 3, departures = Some(summary(5)), drainBlocked = None),
+          // the cell that does not answer is not an error of the request, and a cell that is not draining is never "blocked"
+          statuses(silent.id) == CellStatus(users = 2, moving = 0, departures = None, drainBlocked = None),
+        )
+      },
+      test("a draining cell is blocked when no open cell of its partition can take its users") {
+        val env = new Env
+        val draining = cell.copy(id = CellId("kz-3"), state = CellState.Draining)
+        val closed = cell.copy(id = CellId("kz-2"), state = CellState.Closed)
+        val weightless = cell.copy(id = CellId("kz-5"), weight = 0)
+        for
+          _ <- env.stored(cells = Vector(draining, closed, weightless))
+          _ <- env.users.countInCell.succeedsWith(1L)
+          _ <- env.moves.unfinishedFromCounts.succeedsWith(Map.empty)
+          _ <- env.auth.departuresSummary.succeedsWith(summary(0))
+          statuses <- env.service.cellStatuses
+        yield assertTrue(statuses(draining.id).drainBlocked.contains("no_open_cell"))
       },
     ),
     suite("the keys of a cell")(
@@ -336,7 +456,9 @@ object TopologyServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.stored(cells = Vector(closed))
           _ <- env.repository.deleteCell.succeedsWith(true)
           _ <- env.users.countInCell.succeedsWith(0L)
-          _ <- env.service.deleteCell(closed.id, lost = false)
+          _ <- env.moves.involvesUnfinished.succeedsWith(false)
+          _ <- env.auth.departuresSummary.succeedsWith(summary(0))
+          _ <- env.service.deleteCell(closed.id, lost = false, force = false)
           refreshed <- env.refreshed.get
         yield assertTrue(refreshed == 1)
       },

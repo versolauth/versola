@@ -144,6 +144,40 @@ trait AuthClient:
   /** Clears counters in every cell; each answers 202 with the generation of its reset, and the highest is answered. */
   def resetAntifraudCounters(request: ResetCountersRequest): IO[AntifraudListError | Throwable, ResetCountersResponse]
 
+  /** The calls of moving a user between cells (versolauth/versola#1051), each addressed to the cell `cell` and not routed by the
+    * user: the directory names one cell for the user while the move is under way and the move talks to both. A cell that is not
+    * registered fails the call with [[AuthClient.CellNotRegistered]], an answer that is not a success with
+    * [[AuthClient.CellRefused]]. All are idempotent.
+    *
+    * The user is leaving `cell` for `to` from the commit on: the cell refuses everything that reads or changes the user. `moveId`
+    * names the move at both cells. A repeat with the same id is a success; another id for a user who is leaving is `409`. */
+  def depart(cell: CellId, userId: UserId, to: CellId, moveId: UUID): Task[Unit]
+
+  /** The user's rows, sealed by `cell` for the cell the departure names: the envelope, which central cannot read, and the digest of
+    * the rows in it, which is the same for two exports of rows that did not change and differs when one did. */
+  def exportDeparture(cell: CellId, userId: UserId): Task[AuthClient.DepartureExport]
+
+  /** `cell` opens `envelope` (sealed by `from`, for it) and takes the user in, as the arrival of the move `moveId`. A repeat of the
+    * same move while the arrival is pending replaces what it holds: that is how the rows are delivered again after the source
+    * changed. */
+  def arrive(cell: CellId, userId: UserId, from: CellId, moveId: UUID, envelope: String): Task[Unit]
+
+  /** `cell` keeps the arrival of the move `moveId`: the directory names it now, and the arrival is no longer to be discarded. */
+  def keepArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit]
+
+  /** `cell` drops what it holds of the user, the departure being over. `digest` is the digest of what the target was given: the
+    * cell says (audit, counter) when what it drops is not that. */
+  def completeDeparture(cell: CellId, userId: UserId, moveId: UUID, digest: String): Task[Unit]
+
+  /** `cell` serves the user again: the move was abandoned. Nothing to cancel is not a failure. */
+  def cancelDeparture(cell: CellId, userId: UserId): Task[Unit]
+
+  /** `cell` removes what the move `moveId` left of the user, if it is still pending there. Nothing there is not a failure. */
+  def discardArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit]
+
+  /** How many departures `cell` is part of and how many refresh tokens of moved users it still answers `moved` for. */
+  def departuresSummary(cell: CellId): Task[AuthClient.DeparturesSummary]
+
   /** The catalogue of rule names, and what one auth instance says of its antifraud. */
   def antifraudRules: IO[AntifraudListError | Throwable, AntifraudRulesResponse]
 
@@ -168,6 +202,7 @@ object AuthClient:
       (client: Client, config: CentralConfig, tokens: AuthTokenService, users: UserRepository, topology: TopologyRepository) =>
         CellAuthClient(
           configured = Impl(client, config.auth.url, tokens, AuthTokenService.audienceOfConfigured(config)),
+          configuredCell = config.auth.cellId,
           at = (url, cell) => Impl(client, url, tokens, cell),
           users = users,
           topology = topology,
@@ -187,6 +222,37 @@ object AuthClient:
   private case class AuditBusy(after: Duration) extends Exception("auth is busy with other audit reads")
 
   private[users] case object TokenExpiredError extends Exception("central→auth token expired; retrying with fresh token")
+
+  /** A cell refused a call about a user because the user is leaving it, or has left it, for another cell (`409` with the
+    * code `user_leaving` or `user_moved`): a move started between central's own check and the call. */
+  case object UserLeavingCell extends Exception("the user is being moved to another cell")
+
+  private case class Refusal(error: String) derives JsonDecoder
+
+  /** A cell answered a call of a move with a status that is not a success. `code` is the `error` of the body, when it had one: it
+    * is matched against the codes the processor knows and is never shown, logged or stored as it is. */
+  final case class CellRefused(status: Int, code: Option[String]) extends Exception(s"cell answered $status")
+
+  object CellRefused:
+    def apply(status: Int): CellRefused = CellRefused(status, None)
+
+  /** `GET /users/departures/export`: the sealed rows and their digest. */
+  case class DepartureExport(envelope: String, digest: String) derives JsonCodec
+
+  /** The cell a call of a move is addressed to is not registered, or its address is not one. */
+  final case class CellNotRegistered(cell: CellId) extends Exception(s"cell '$cell' is not registered or has no valid address")
+
+  /** `GET /users/departures/summary` of a cell: departures under way (`leaving`), finished (`moved`), and the refresh tokens that
+    * are answered `moved` still (`tokens`), the latest of which expires at `tokensUntil`. */
+  case class DeparturesSummary(leaving: Long, moved: Long, tokens: Long, tokensUntil: Option[Instant]) derives JsonCodec
+
+  private case class DepartPayload(userId: UserId, to: CellId, moveId: UUID) derives JsonCodec
+
+  private case class CompletePayload(userId: UserId, moveId: UUID, digest: String) derives JsonCodec
+
+  private case class ArrivalPayload(envelope: String, userId: UserId, from: CellId, moveId: UUID) derives JsonCodec
+
+  private case class KeepPayload(userId: UserId, moveId: UUID) derives JsonCodec
 
   private case class UpsertUserPayload(
       id: UserId,
@@ -325,6 +391,8 @@ object AuthClient:
     private val antifraudRulesUrl: URL = base / "antifraud" / "rules"
     private val antifraudStatusUrl: URL = base / "antifraud" / "status"
     private val configSyncUrl: URL = base / "service" / "configuration" / "sync"
+    private val departuresUrl: URL = usersUrl / "departures"
+    private val arrivalsUrl: URL = usersUrl / "arrivals"
     private val auditEventsUrl: URL = usersUrl / "audit-events"
     private val auditSummaryUrl: URL = usersUrl / "audit-summary"
 
@@ -554,6 +622,61 @@ object AuthClient:
           case _ => failResponse(response)
       .flatMap(ZIO.fromEither(_))
 
+    // One `auth` is addressed by the cell that holds it, so `cell` is not read: the cell is the `auth` at `base`.
+    override def depart(cell: CellId, userId: UserId, to: CellId, moveId: UUID): Task[Unit] =
+      moveCall(Request(method = Method.POST, url = departuresUrl, body = Body.from(DepartPayload(userId, to, moveId))))(_ => ZIO.unit)
+
+    override def exportDeparture(cell: CellId, userId: UserId): Task[DepartureExport] =
+      moveCall(Request.get((departuresUrl / "export").addQueryParam("userId", userId.toString))): response =>
+        response.body.asString.flatMap: body =>
+          ZIO.fromEither(body.fromJson[DepartureExport]).mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
+
+    override def arrive(cell: CellId, userId: UserId, from: CellId, moveId: UUID, envelope: String): Task[Unit] =
+      moveCall(
+        Request(method = Method.POST, url = arrivalsUrl, body = Body.from(ArrivalPayload(envelope, userId, from, moveId))),
+      )(_ => ZIO.unit)
+
+    override def keepArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit] =
+      moveCall(Request(method = Method.POST, url = arrivalsUrl / "keep", body = Body.from(KeepPayload(userId, moveId))))(_ => ZIO.unit)
+
+    override def completeDeparture(cell: CellId, userId: UserId, moveId: UUID, digest: String): Task[Unit] =
+      moveCall(
+        Request(method = Method.POST, url = departuresUrl / "complete", body = Body.from(CompletePayload(userId, moveId, digest))),
+      )(_ => ZIO.unit)
+
+    override def cancelDeparture(cell: CellId, userId: UserId): Task[Unit] =
+      moveCall(
+        Request(method = Method.DELETE, url = departuresUrl.addQueryParam("userId", userId.toString), body = Body.empty),
+        missingIsDone = true,
+      )(_ => ZIO.unit)
+
+    override def discardArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit] =
+      moveCall(
+        Request(
+          method = Method.DELETE,
+          url = arrivalsUrl.addQueryParam("userId", userId.toString).addQueryParam("moveId", moveId.toString),
+          body = Body.empty,
+        ),
+        missingIsDone = true,
+      )(_ => ZIO.unit)
+
+    override def departuresSummary(cell: CellId): Task[DeparturesSummary] =
+      moveCall(Request.get(departuresUrl / "summary")): response =>
+        response.body.asString.flatMap: body =>
+          ZIO.fromEither(body.fromJson[DeparturesSummary]).mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
+
+    /** A call of a move: a status that is not a success fails with [[AuthClient.CellRefused]], which carries the status and the
+      * `error` code of the body, nothing else of it, and is not logged here (the processor of the move reports it once). */
+    private def moveCall[A](request: Request, missingIsDone: Boolean = false)(success: Response => Task[A]): Task[A] =
+      execute(request): response =>
+        response.status match
+          case Status.NotFound if missingIsDone => success(response)
+          case status if status.isSuccess => success(response)
+          case status =>
+            // a body that is not `{"error": ...}` (a proxy's page) has no code; the status is what is left
+            response.body.asString.map(_.fromJson[AuthClient.Refusal].toOption.map(_.error)).orElseSucceed(None)
+              .flatMap(code => ZIO.fail(AuthClient.CellRefused(status.code, code)))
+
     override def deleteUserOf(cell: Option[CellId], userId: UserId): Task[Unit] = deleteUser(userId)
 
     override def deleteUser(userId: UserId): Task[Unit] =
@@ -672,8 +795,12 @@ object AuthClient:
 
     private def failResponse(response: Response): Task[Nothing] =
       response.body.asString.flatMap: body =>
-        ZIO.logError(s"Auth call failed: ${response.status.code} $body") *>
-          ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body"))
+        val leaving = response.status == Status.Conflict &&
+          body.fromJson[AuthClient.Refusal].exists(refusal => refusal.error == "user_leaving" || refusal.error == "user_moved")
+        if leaving then ZIO.fail(AuthClient.UserLeavingCell)
+        else
+          ZIO.logError(s"Auth call failed: ${response.status.code} $body") *>
+            ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body"))
 
     /** Retries on transient connection failures (stale pooled channel after auth restart). */
     private def withConnectionRetry[A](effect: Task[A]): Task[A] =

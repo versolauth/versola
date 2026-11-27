@@ -13,6 +13,7 @@ import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionService
 import versola.user.UserController
 import versola.user.UserRepository
+import versola.user.move.UserDepartures
 import versola.util.RsaKeyPair
 import versola.util.audit.*
 import versola.util.http.{NoopTracing, Observability}
@@ -420,13 +421,14 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
   /** What the other routes of the controller need and the report never touches: a call of one of them would fail the test. */
   private val unused: ZEnvironment[
     UserRepository & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService & AuditEvents &
-      OAuthConfigurationService & AccessTokenRevocationService,
+      OAuthConfigurationService & AccessTokenRevocationService & UserDepartures,
   ] =
     ZEnvironment[UserRepository](stub[UserRepository]) ++ ZEnvironment[LogoutService](stub[LogoutService]) ++
       ZEnvironment[SessionService](stub[SessionService]) ++ ZEnvironment[ChallengeThrottleRepository](stub[ChallengeThrottleRepository]) ++
       ZEnvironment[PasskeyRepository](stub[PasskeyRepository]) ++ ZEnvironment[PasswordService](stub[PasswordService]) ++
       ZEnvironment[AuditEvents](stub[AuditEvents]) ++ ZEnvironment[OAuthConfigurationService](stub[OAuthConfigurationService]) ++
-      ZEnvironment[AccessTokenRevocationService](stub[AccessTokenRevocationService])
+      ZEnvironment[AccessTokenRevocationService](stub[AccessTokenRevocationService]) ++
+      ZEnvironment[UserDepartures](UserDepartures.none)
 
   private val key: RsaKeyPair = TestEnvConfig.centralKeyPair
   private val wrongKey: RsaKeyPair = TestEnvConfig.impostorKeyPair

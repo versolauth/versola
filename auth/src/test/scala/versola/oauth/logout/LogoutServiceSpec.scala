@@ -19,6 +19,7 @@ import versola.oauth.session.model.{
   UserDevice,
 }
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, RecordingDepartures, UserDepartures}
 import versola.util.audit.AuditOutcome
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
@@ -101,8 +102,11 @@ object LogoutServiceSpec extends UnitSpecBase:
   private val logoutUriB = URL.decode("https://rp-b.example/logout").toOption.get
     .addQueryParams(List("iss" -> TestEnvConfig.coreConfig.jwt.issuer, "sid" -> publicSessionId1))
 
-  class Env:
+  class Env(departures: UserDepartures = UserDepartures.none):
     val sessionService = stub[SessionService]
+    // The session the logout names is the user's: asked for before it is ended (versolauth/versola#1051).
+    sessionService.find.returnsWith(ZIO.succeed(Some(sessionInfo1)))
+    sessionService.findOwner.returnsWith(ZIO.succeed(Some(userId)))
     val configuration = stub[OAuthConfigurationService]
     val outbox = stub[BackChannelOutbox]
     val audit = CapturingAuditEvents.shared()
@@ -112,6 +116,7 @@ object LogoutServiceSpec extends UnitSpecBase:
       TestEnvConfig.coreConfig,
       outbox,
       audit,
+      departures,
     )
 
   private val agent = UserAgentRecord(
@@ -139,6 +144,43 @@ object LogoutServiceSpec extends UnitSpecBase:
 
   def spec = suite("LogoutService")(
     suite("logout")(
+      test(
+        "a user who is leaving keeps the session: refused as leaving, by the cookie's session and by the public id, and nothing is ended or sent",
+      ) {
+        for
+          departures <- RecordingDepartures.make(Map(userId -> DepartureRefusal.Leaving), tokensTo = None)
+          env = Env(departures)
+          byCookie <- env.service.logout(Right(rawSessionId), Some(redirectUri), None).either
+          byHint <- env.service.logout(Left(publicSessionId1), Some(redirectUri), None).either
+          asked <- departures.asked
+        yield assertTrue(
+          byCookie == Left(DepartureRefusal.Leaving),
+          byHint == Left(DepartureRefusal.Leaving),
+          asked == List(s"user:$userId", s"user:$userId"),
+          env.sessionService.invalidate.calls.isEmpty,
+          env.outbox.submit.calls.isEmpty,
+        )
+      },
+      test("a user who is served has the session ended as before, and is asked for once") {
+        for
+          departures <- RecordingDepartures.make(Map.empty, tokensTo = None)
+          env = Env(departures)
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(None)
+          result <- env.service.logout(Left(publicSessionId1), None, None).either
+          asked <- departures.asked
+        yield assertTrue(result.isRight, asked == List(s"user:$userId"), env.sessionService.invalidate.calls.size == 1)
+      },
+      test("a session this cell does not have is not asked about, and logs out as it did: nothing to end") {
+        for
+          departures <- RecordingDepartures.make(Map(userId -> DepartureRefusal.Leaving), tokensTo = None)
+          env = Env(departures)
+          _ = env.sessionService.findOwner.returnsWith(ZIO.succeed(None))
+          _ <- env.sessionService.invalidate.succeedsWith(None)
+          result <- env.service.logout(Left(publicSessionId1), None, None).either
+          asked <- departures.asked
+        yield assertTrue(result.isRight, asked.isEmpty)
+      },
       test("returns empty logoutUris and drops the redirect when no session is found") {
         val env = Env()
         for
@@ -577,6 +619,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           TestEnvConfig.coreConfig,
           env.outbox,
           CapturingAuditEvents.shared(unavailable = true),
+          UserDepartures.none,
         )
         for
           _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
@@ -597,6 +640,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           TestEnvConfig.coreConfig,
           env.outbox,
           CapturingAuditEvents.shared(unavailable = true),
+          UserDepartures.none,
         )
         val recordA = record1.copy(clients = List(ClientEntry(clientA.id, Instant.EPOCH)))
         for
@@ -614,6 +658,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           TestEnvConfig.coreConfig,
           env.outbox,
           CapturingAuditEvents.shared(unavailable = true),
+          UserDepartures.none,
         )
         for
           _ <- env.sessionService.listDevicesByUser.succeedsWith(List(UserDevice(Some(agent), None, Nil)))

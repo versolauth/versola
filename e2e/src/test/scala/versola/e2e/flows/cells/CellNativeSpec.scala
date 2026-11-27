@@ -97,19 +97,24 @@ object CellNativeSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeF
       auth <- ZIO.service[OAuthClient]
       central <- ZIO.service[CentralApi]
       setup <- s.nextRegistration
-      authorize <- s.second.auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri)).assertChallengeRedirect
-      cookie = authorize.conversationCookie.get
-      card <- s.second.auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
-      _ <- s.second.auth.submitEmail(cookie, setup.email.get, card.csrf)
-      otp <- s.second.auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
-      code <- s.second.auth.submitOtp(cookie, fixedOtp, otp.csrf).flatMap(_.assertRedirect)
-      tokens <- s.second.auth.token(
-        code,
-        authorize.verifier,
-        clientId = Some(setup.clientId),
-        clientSecret = Some(setup.clientSecret),
-        redirectUri = Some(setup.redirectUri),
-      ).success
+      // An address nobody holds is registered in the cell central names for it: cell 2 is the one that takes users
+      // while this user registers.
+      tokens <- s.whileOnlySecondTakesUsers:
+        for
+          authorize <- s.second.auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri)).assertChallengeRedirect
+          cookie = authorize.conversationCookie.get
+          card <- s.second.auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+          _ <- s.second.auth.submitEmail(cookie, setup.email.get, card.csrf)
+          otp <- s.second.auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+          code <- s.second.auth.submitOtp(cookie, fixedOtp, otp.csrf).flatMap(_.assertRedirect)
+          tokens <- s.second.auth.token(
+            code,
+            authorize.verifier,
+            clientId = Some(setup.clientId),
+            clientSecret = Some(setup.clientSecret),
+            redirectUri = Some(setup.redirectUri),
+          ).success
+        yield tokens
       claims <- segment(tokens.accessToken, 1)
       userId <- ZIO.fromOption(claims.str("sub")).mapBoth(_ => RuntimeException("the token has no sub"), UUID.fromString)
       login <- CentralApi.login("cellnative")

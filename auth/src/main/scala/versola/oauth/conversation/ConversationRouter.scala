@@ -20,6 +20,8 @@ import versola.oauth.client.model.{
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.handoff.CellHandoff
 import versola.oauth.session.model.SupersededSession
+import versola.user.model.{UserId, UserRecord}
+import versola.user.move.{DepartureRefusal, UserDepartures}
 import versola.user.{UserDirectory, UserRepository}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
@@ -62,7 +64,7 @@ trait ConversationRouter:
     */
   def submitHanded(
       authId: AuthId,
-      submission: LoginPasswordSubmission | PasskeyAssertionSubmission,
+      submission: ConversationRouter.HandedSubmission,
       passkeyRequest: Option[String],
       uiLocale: Option[String],
       ipAddress: Option[String],
@@ -76,7 +78,12 @@ trait ConversationRouter:
   def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit]
 
 object ConversationRouter:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
+  /** What a cell takes in as handed to it: a login and password or a passkey that another cell sealed
+    * (`AuthorizeEndpointController.handedSubmissionRoute`), and the address a sign-in handed by `GET /challenge/handoff`
+    * starts with, which is answered here without asking central again. */
+  type HandedSubmission = LoginPasswordSubmission | PasskeyAssertionSubmission | EmailSubmission | PhoneSubmission
+
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -89,7 +96,29 @@ object ConversationRouter:
       handoff: CellHandoff,
       config: CoreConfig,
       webAuthnService: WebAuthnService,
+      departures: UserDepartures,
   ) extends ConversationRouter:
+
+    /** A user who is leaving this cell (versolauth/versola#1051) is not signed in: the step is the "service unavailable" any step
+      * has when something it needs is not there, and the conversation stays where it was. `None` when the user is served here.
+      * A user that has moved is no user of this cell either, and is refused alike (a sign-in for their address goes through
+      * the directory, which names the cell they are in). One read by user id, where the user is looked at anyway. */
+    private def refusedDeparture(userId: Option[UserId]): Task[Option[ConversationResult.Render]] =
+      userId.fold(ZIO.none: Task[Option[ConversationResult.Render]]): id =>
+        departures.refuse(id).foldZIO(
+          {
+            case _: DepartureRefusal => Observability.setError("user_leaving").as(Some(ConversationResult.ServiceUnavailable))
+            case failure: Throwable => ZIO.fail(failure)
+          },
+          _ => ZIO.none,
+        )
+
+    /** The result of a step that has identified a user, unless that user is leaving. */
+    private def unlessLeaving(result: ConversationResult.Render): Task[ConversationResult.Render] =
+      val identified = result match
+        case complete: ConversationResult.Complete => Some(complete.userAgentData.userId)
+        case _ => None
+      refusedDeparture(identified).map(_.getOrElse(result))
 
     /** Sets `auth.user_id` and `auth.user_agent_id` as soon as an already-identified conversation
       * is fetched, so every log line for the rest of this request carries them — even when this
@@ -178,7 +207,7 @@ object ConversationRouter:
 
     override def submitHanded(
         authId: AuthId,
-        submission: LoginPasswordSubmission | PasskeyAssertionSubmission,
+        submission: HandedSubmission,
         passkeyRequest: Option[String],
         uiLocale: Option[String],
         ipAddress: Option[String],
@@ -223,6 +252,17 @@ object ConversationRouter:
         ipAddress: Option[String],
         handed: Boolean,
     ): Task[ConversationResult.Render] =
+      refusedDeparture(conversation.userId).flatMap:
+        case Some(refused) => ZIO.succeed(refused)
+        case None => dispatchStep(authId, conversation, submission, ipAddress, handed)
+
+    private def dispatchStep(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        submission: Submission,
+        ipAddress: Option[String],
+        handed: Boolean,
+    ): Task[ConversationResult.Render] =
       (submission, conversation) match
         // An identity is given on the credential card, and only to a conversation that has none yet: one that already knows the
         // user (a step-up, a re-authentication) or is past the card (a code, a password, a registration step) is not asked.
@@ -236,10 +276,10 @@ object ConversationRouter:
           conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("credential"))
 
         case (submitted: EmailSubmission, _) =>
-          afterCredential(authId, conversation, Left(submitted.email), submitted.proof).tap(observeCredential)
+          afterCredential(authId, conversation, Left(submitted.email), submitted.proof, handed).tap(observeCredential)
 
         case (submitted: PhoneSubmission, _) =>
-          afterCredential(authId, conversation, Right(submitted.phone), submitted.proof).tap(observeCredential)
+          afterCredential(authId, conversation, Right(submitted.phone), submitted.proof, handed).tap(observeCredential)
 
         case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _)) =>
           conversationService.checkOtp(conversation, otp, submitted.code, authId)
@@ -279,13 +319,22 @@ object ConversationRouter:
             held = userRepository.findByLogin(submitted.login).map(_.isDefined),
             home = directory.homeOfLogin(submitted.login),
           ).someOrElseZIO:
-            conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password)
-              .tap(observeDecision("credential"))
-              .flatMap:
-                case ConversationResult.StepPassed(updated) =>
-                  afterFactor(authId, updated, nextFactorIndex = 0)
-                case other: ConversationResult.Render =>
-                  ZIO.succeed(other)
+            // The user is resolved and refused BEFORE the credential is looked at: a right and a wrong password answer alike while
+            // the user is leaving, and a password check is not charged to a user who is not served here (versolauth/versola#1051).
+            // (An auth that is no cell moves nobody, so it has no departure to ask about.)
+            ZIO.when(config.cellId.isDefined)(userRepository.findByLogin(submitted.login))
+              .flatMap(found => refusedDeparture(found.flatten.map(_.id))).flatMap:
+              case Some(refused) => ZIO.succeed(refused)
+              case None =>
+                conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password)
+                  .tap(observeDecision("credential"))
+                  .flatMap:
+                    case ConversationResult.StepPassed(updated) =>
+                      refusedDeparture(updated.userId).flatMap:
+                        case Some(refused) => ZIO.succeed(refused)
+                        case None => afterFactor(authId, updated, nextFactorIndex = 0)
+                    case other: ConversationResult.Render =>
+                      ZIO.succeed(other)
 
         // A passkey submitted from the code page satisfies the factor the code was for, and the conversation goes on as it would
         // after the code: a passkey that proves the user is not a reason to skip what comes after.
@@ -306,6 +355,7 @@ object ConversationRouter:
           passkeyElsewhere(authId, conversation, submitted.response, handed).someOrElseZIO:
             conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
               .tap(observePasskeyAssertion)
+              .flatMap(unlessLeaving)
 
         case (_: PasskeyUnavailableSubmission, ConversationRecord.PasskeyOnly(_)) =>
           conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("passkey"))
@@ -485,23 +535,18 @@ object ConversationRouter:
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
         proof: ProofInput,
+        handed: Boolean,
     ): Task[ConversationResult.Render] =
       userRepository.findByCredential(credential).flatMap:
         case Some(user) =>
-          val identified = conversation.withoutIdentityState.copy(
-            userId = Some(user.id),
-            credential = Some(credential),
-            userEmail = user.email,
-            userPhone = user.phone,
-            userLogin = user.login,
-            userClaims = Some(user.claims),
-          )
-          afterAuthenticationCredential(authId, identified, credential, proof)
+          refusedDeparture(Some(user.id)).flatMap:
+            case Some(refused) => ZIO.succeed(refused)
+            case None => identifiedByCredential(authId, conversation, credential, proof, user)
 
-        // Not a user of this cell. A cell asks the directory whether another one holds the user before it treats the
-        // address as new, and sends the sign-in there (versolauth/versola#1046).
+        // Not a user of this cell. A cell asks the directory which cell the address goes to before it treats the address
+        // as new, and sends the sign-in there (versolauth/versola#1046, versolauth/versola#1052).
         case None =>
-          homeElsewhere(credential).flatMap:
+          homeElsewhere(credential, handed).flatMap:
             case Left(unavailable) => ZIO.succeed(unavailable)
             case Right(Some(home)) =>
               handoff.seal(conversation, credential, home).foldZIO(
@@ -519,19 +564,43 @@ object ConversationRouter:
               )
             case Right(None) => afterUnknownCredential(authId, conversation, credential, proof)
 
-    /** The cell that holds the user of `credential`, when it is another than this one. An `auth` that is no cell asks
-      * nothing: it is the only place a user can be. Central unreachable is the step's "service unavailable": going on
-      * would send a code for an address this cell cannot say is new. */
-    private def homeElsewhere(credential: Either[Email, Phone]): UIO[Either[ConversationResult.Render, Option[RoutingKey.CellId]]] =
+    private def identifiedByCredential(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        proof: ProofInput,
+        user: UserRecord,
+    ): Task[ConversationResult.Render] =
+      val identified = conversation.withoutIdentityState.copy(
+        userId = Some(user.id),
+        credential = Some(credential),
+        userEmail = user.email,
+        userPhone = user.phone,
+        userLogin = user.login,
+        userClaims = Some(user.claims),
+      )
+      afterAuthenticationCredential(authId, identified, credential, proof)
+
+    /** The cell `credential` goes to, when it is another than this one: the cell that holds the user, and for an address
+      * nobody holds the cell central's keyed hash picks, so that the redirect does not say whether the address is
+      * registered (versolauth/versola#1052). An `auth` that is no cell asks nothing: it is the only place a user can
+      * be. A sign-in that was handed here is answered here whatever central would say now (the weights may have changed
+      * since): the cell that sent it has done the choosing, and a second choice could send it back and forth. Central
+      * unreachable is the step's "service unavailable": going on would send a code for an address this cell cannot say
+      * is new. */
+    private def homeElsewhere(
+        credential: Either[Email, Phone],
+        handed: Boolean,
+    ): UIO[Either[ConversationResult.Render, Option[RoutingKey.CellId]]] =
       config.cellId match
-        case None => ZIO.right(None)
-        case Some(own) =>
-          directory.lookup(credential).foldCauseZIO(
+        case Some(own) if !handed =>
+          directory.homeOfAddress(credential).foldCauseZIO(
             cause =>
-              ZIO.logWarningCause("Could not ask the directory which cell holds a credential; the step is refused", cause) *>
+              ZIO.logWarningCause("Could not ask the directory which cell an address goes to; the step is refused", cause) *>
                 Observability.setError("directory_unavailable").as(Left(ConversationResult.ServiceUnavailable)),
-            found => ZIO.right(found.flatMap(_.cell).filterNot(_ == own)),
+            found => ZIO.right(found.filterNot(_ == own)),
           )
+        case _ => ZIO.right(None)
 
     /** Where a submission that names its user goes when this cell does not hold that user: the cell that does
       * (versolauth/versola#1048); `None` when it is answered here. It is answered here by an `auth` that is no cell, when
@@ -579,7 +648,7 @@ object ConversationRouter:
         handed: Boolean,
     ): Task[Option[ConversationResult.Render]] =
       val pending = conversation.step match
-        case card: ConversationStep.Credential if !handed && conversation.authFlow.passkey.isDefined => card.passkeyRequest
+        case card: ConversationStep.Credential if conversation.authFlow.passkey.isDefined => card.passkeyRequest
         case _ => None
       pending match
         case None => ZIO.none
@@ -587,10 +656,14 @@ object ConversationRouter:
           webAuthnService.userFromResponse(response).flatMap:
             case None => ZIO.none
             case Some(userId) =>
-              sentOn(authId, conversation, handed, passkeyRequest = Some(request))(
-                held = userRepository.find(userId).map(_.isDefined),
-                home = directory.homeOfUser(userId),
-              )
+              // Before the credential is looked at: a passkey of a user who is leaving is not used (and its counter not written).
+              refusedDeparture(Some(userId)).flatMap:
+                case Some(refused) => ZIO.some(refused)
+                case None =>
+                  sentOn(authId, conversation, handed, passkeyRequest = Some(request))(
+                    held = userRepository.find(userId).map(_.isDefined),
+                    home = directory.homeOfUser(userId),
+                  )
 
     private def afterUnknownCredential(
         authId: AuthId,

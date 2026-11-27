@@ -100,6 +100,9 @@ object AntifraudLists:
 
   private val PurgeBatch = 1000
 
+  /** How long an entry that has expired stays in the copy. */
+  val ExpiredKept: Duration = 1.day
+
   /** The most entries one call asks the hits of. */
   val MaxLimit = 500
 
@@ -367,10 +370,12 @@ object AntifraudLists:
       def loop: Task[Unit] = Clock.instant.flatMap(step).flatMap(n => if n >= PurgeBatch then ZIO.sleep(100.millis) *> loop else ZIO.unit)
       loop.catchAllCause(ZIO.logWarningCause("could not clean up the antifraud lists", _))
 
-    // An expired entry is removed by central, which the copy follows; until then it is not enforced, because the expiry is
-    // honoured when a value is looked up.
-    private val cleanUp: UIO[Unit] =
-      inBatches(now => repository.pruneCounterResets(now.minusSeconds(settings.auditRetention.toSeconds), PurgeBatch))
+    // An entry that has expired is not enforced, because the expiry is honoured when a value is looked up. Central's purge of
+    // the expired ones moves no version, so it does not reach this copy as a change: the cell removes them itself, a day
+    // after they expired (versolauth/versola#1052).
+    private[antifraud] val cleanUp: UIO[Unit] =
+      inBatches(now => repository.pruneCounterResets(now.minusSeconds(settings.auditRetention.toSeconds), PurgeBatch)) *>
+        inBatches(now => repository.removeExpired(now.minusSeconds(ExpiredKept.toSeconds), PurgeBatch))
 
     /** Waits for the first successful load, up to `startup-timeout`, so that the lists are enforced from the first
       * request (the layer is built before the server listens). If the table cannot be read in time the service

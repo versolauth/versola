@@ -47,7 +47,16 @@ function backendPath(pathname: string): string {
   return pathname.replace(/^\/central(?=\/|$)/, '');
 }
 
-type CellDto = { id: string; regionId: string; internalUrl: string; mtlsUrl?: string | null; trustedCertificates: string[]; state: 'open' | 'closed' | 'draining'; weight: number };
+type CellDto = {
+  id: string; regionId: string; internalUrl: string; mtlsUrl?: string | null; trustedCertificates: string[]; state: 'open' | 'closed' | 'draining'; weight: number;
+  publicKeys?: Array<Record<string, unknown>>;
+  /** What the topology adds to a cell: the users the directory places in it, the carried refresh tokens it reports (0 when absent; `null`: it did not answer), a blocked drain. */
+  users?: number; tokens?: number | null; tokensUntil?: string; drainBlocked?: 'no_open_cell';
+};
+type UserMoveDto = {
+  userId: string; from: string; to: string; phase: 'leaving' | 'exported' | 'arrived' | 'flipped' | 'abandoning' | 'done' | 'failed'; reason: 'admin' | 'drain';
+  startedAt: string; updatedAt: string; attempts: number; error?: string;
+};
 type SecurityProfileDto = 'standard' | 'fapi2';
 type TenantDto = { id: string; description: string; edgeGroupId?: string | null; securityProfile?: SecurityProfileDto; signingKeyId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
@@ -453,6 +462,11 @@ export type MockConfigState = {
   partitions: Array<{ id: string }>;
   regions: Array<{ id: string; partitionId: string }>;
   cells: CellDto[];
+  /** The latest move of each user (`GET /users/moves`), and which cell the directory places each user in (what `POST /users/move` checks the target against). */
+  moves: UserMoveDto[];
+  userCells: Record<string, string>;
+  /** Users whose per-user writes answer `409 user_moving`. */
+  movingUsers: string[];
   /** The partners of every tenant (#549) and their approval requests. */
   partners: PartnerDto[];
   partnerApprovals: PartnerApprovalDto[];
@@ -590,6 +604,9 @@ const defaultState: MockConfigState = {
   partitions: [],
   regions: [],
   cells: [],
+  moves: [],
+  userCells: {},
+  movingUsers: [],
   partners: [],
   partnerApprovals: [],
   authorizationPresets: {},
@@ -634,6 +651,9 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     partitions: clone(overrides.partitions ?? defaultState.partitions),
     regions: clone(overrides.regions ?? defaultState.regions),
     cells: clone(overrides.cells ?? defaultState.cells),
+    moves: clone(overrides.moves ?? defaultState.moves),
+    userCells: clone(overrides.userCells ?? defaultState.userCells),
+    movingUsers: clone(overrides.movingUsers ?? defaultState.movingUsers),
     partners: clone(overrides.partners ?? defaultState.partners),
     partnerApprovals: clone(overrides.partnerApprovals ?? defaultState.partnerApprovals),
     overloadRejection: overrides.overloadRejection,
@@ -1553,7 +1573,14 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
     // The topology (#557), with the rules central applies: a region needs its partition and is deleted only when empty, a cell
     // needs its region and is deleted only when closed.
     if (pathname === '/configuration/topology' && method === 'GET') {
-      await route.fulfill(json({ partitions: state.partitions, regions: state.regions, cells: state.cells }));
+      const unfinished = (move: UserMoveDto) => move.phase !== 'done' && move.phase !== 'failed';
+      const cells = state.cells.map(({ tokens, ...cell }) => ({
+        ...cell,
+        ...(tokens === null ? {} : { tokens: tokens ?? 0 }),
+        users: cell.users ?? 0,
+        moving: state.moves.filter(move => move.from === cell.id && unfinished(move)).length,
+      }));
+      await route.fulfill(json({ partitions: state.partitions, regions: state.regions, cells }));
       return;
     }
 
@@ -1602,6 +1629,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       if (method === 'POST' || method === 'PUT') {
         const payload = body as CellDto;
         const existing = state.cells.find(cell => cell.id === payload.id);
+        const keys = payload.publicKeys ?? [];
+        if (keys.length < 1 || keys.length > 2) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'publicKeys must hold one or two keys' });
+          return;
+        }
+        if (keys.some(key => key.kty !== 'RSA' || !key.kid || ['d', 'p', 'q', 'dp', 'dq', 'qi'].some(member => member in key))) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'publicKeys[0] is not a public RSA JWK with a kid' });
+          return;
+        }
         if (payload.weight < 0) {
           await route.fulfill({ status: 400, contentType: 'text/plain', body: 'weight must not be negative' });
           return;
@@ -1614,7 +1650,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           await route.fulfill({ status: 404, contentType: 'text/plain', body: `cell '${payload.id}' does not exist` });
           return;
         }
-        state.cells = method === 'POST' ? [...state.cells, payload] : state.cells.map(cell => cell.id === payload.id ? { ...payload, regionId: cell.regionId } : cell);
+        state.cells = method === 'POST' ? [...state.cells, payload] : state.cells.map(cell => cell.id === payload.id ? { ...cell, ...payload, regionId: cell.regionId } : cell);
         await route.fulfill({ status: method === 'POST' ? 201 : 204, body: '' });
         return;
       }
@@ -1623,6 +1659,26 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const cell = state.cells.find(candidate => candidate.id === cellId);
         if (cell && cell.state !== 'closed') {
           await route.fulfill({ status: 409, contentType: 'text/plain', body: `cell '${cellId}' is ${cell.state}: only a closed cell is deleted` });
+          return;
+        }
+        // The refusals of central, in the order it applies them: users it still holds, a move not finished, refresh tokens it still answers for.
+        const lost = url.searchParams.get('lost') === 'true';
+        const force = url.searchParams.get('force') === 'true';
+        const refuse = (text: string) => route.fulfill({ status: 409, contentType: 'text/plain', body: text });
+        if (cell && !lost && (cell.users ?? 0) > 0) {
+          await refuse(`cell '${cellId}' still holds ${cell.users} user(s) in the directory: they are moved out first`);
+          return;
+        }
+        if (cell && !lost && state.moves.some(move => (move.from === cellId || move.to === cellId) && move.phase !== 'done' && move.phase !== 'failed')) {
+          await refuse(`cell '${cellId}' is part of a move of a user that is not finished: wait for it`);
+          return;
+        }
+        if (cell && !lost && !force && cell.tokens === null) {
+          await refuse(`cell '${cellId}' did not say whether it still answers for refresh tokens of moved users: try again, or force=true`);
+          return;
+        }
+        if (cell && !lost && !force && (cell.tokens ?? 0) > 0) {
+          await refuse(`cell '${cellId}' still answers for ${cell.tokens} refresh token(s) of users moved out of it: force=true deletes it and makes them invalid`);
           return;
         }
         state.cells = state.cells.filter(candidate => candidate.id !== cellId);
@@ -2322,13 +2378,22 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       body,
     });
 
-    const userToRecord = (user: UserDto) => ({
-      id: user.id,
-      ...(user.email !== undefined ? { email: user.email } : {}),
-      ...(user.phone !== undefined ? { phone: user.phone } : {}),
-      ...(user.login !== undefined ? { login: user.login } : {}),
-      claims: user.claims ?? {},
-    });
+    // The record as central answers it: the cell the directory places the user in (the new one from the flip on), the latest move,
+    // and no identifiers or claims while the old cell is not answering for the user.
+    const userToRecord = (user: UserDto) => {
+      const move = state.moves.find(candidate => candidate.userId === user.id) ?? null;
+      const cell = move && (move.phase === 'flipped' || move.phase === 'done') ? move.to : state.userCells[user.id] ?? null;
+      const leaving = move !== null && (move.phase === 'leaving' || move.phase === 'exported' || move.phase === 'arrived');
+      return {
+        id: user.id,
+        ...(!leaving && user.email !== undefined ? { email: user.email } : {}),
+        ...(!leaving && user.phone !== undefined ? { phone: user.phone } : {}),
+        ...(!leaving && user.login !== undefined ? { login: user.login } : {}),
+        claims: leaving ? {} : user.claims ?? {},
+        cell,
+        move,
+      };
+    };
 
     if (pathname === '/users/audit' && method === 'GET') {
       const audit = state.userAudit[url.searchParams.get('id') ?? ''] ?? { events: [] };
@@ -2367,6 +2432,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         ...(audit.truncated ? { truncated: true } : {}),
       }));
       return;
+    }
+
+    // Per-user writes while the user has a move that is not finished (`409 user_moving`).
+    if (['/users', '/users/claims', '/users/roles'].includes(pathname) && method === 'PATCH') {
+      const userId = (body as { id?: string; userId?: string } | null)?.id ?? (body as { userId?: string } | null)?.userId;
+      if (userId && state.movingUsers.includes(userId)) {
+        await route.fulfill({ status: 409, contentType: 'text/plain', body: 'the user is being moved to another cell, try again when the move is over' });
+        return;
+      }
     }
 
     if (pathname === '/users') {
@@ -2447,6 +2521,37 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 202, body: '' });
         return;
       }
+    }
+
+    if (pathname === '/users/move' && method === 'POST') {
+      const payload = body as { userId: string; cell: string };
+      const refuse = (status: number, text: string) => route.fulfill({ status, contentType: 'text/plain', body: text });
+      if (!state.users.some(candidate => candidate.id === payload.userId)) return refuse(404, 'there is no such user');
+      if (state.moves.some(move => move.userId === payload.userId && move.phase !== 'done' && move.phase !== 'failed')) return refuse(409, 'a move of the user is in progress');
+      const from = state.userCells[payload.userId];
+      if (!from) return refuse(400, 'the user is in no cell');
+      const target = state.cells.find(cell => cell.id === payload.cell);
+      if (!target) return refuse(400, 'the target cell is not registered');
+      if (target.id === from) return refuse(400, 'the target cell is the cell the user is in');
+      const regionOf = (cellId: string) => state.regions.find(region => region.id === state.cells.find(cell => cell.id === cellId)?.regionId);
+      if (regionOf(from)?.partitionId !== regionOf(target.id)?.partitionId) return refuse(400, 'the target cell is in another partition');
+      if (target.state === 'draining') return refuse(400, 'the target cell is being drained');
+      const now = new Date().toISOString();
+      state.moves = [{ userId: payload.userId, from, to: target.id, phase: 'leaving', reason: 'admin', startedAt: now, updatedAt: now, attempts: 0 },
+        ...state.moves.filter(move => move.userId !== payload.userId)];
+      await route.fulfill({ status: 202, body: '' });
+      return;
+    }
+
+    if (pathname === '/users/moves' && method === 'GET') {
+      const cell = url.searchParams.get('cell');
+      const phase = url.searchParams.get('phase');
+      const limit = Number(url.searchParams.get('limit') ?? 100);
+      const moves = state.moves
+        .filter(move => (!cell || move.from === cell || move.to === cell) && (!phase || move.phase === phase))
+        .slice(0, limit);
+      await route.fulfill(json({ moves }));
+      return;
     }
 
     if (pathname === '/users/claims' && method === 'PATCH') {

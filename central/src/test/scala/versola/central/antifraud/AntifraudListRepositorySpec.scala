@@ -312,6 +312,228 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
           left.forall(_.action == AntifraudListAction.expire),
         )
       },
+      // versolauth/versola#1052: the lists by delta
+      test("lists without `since` is the whole list, full, with the version") {
+        for
+          a <- repository.upsert(entry(value = "a"), "x", at)
+          b <- repository.upsert(entry(value = "b", expiresAt = Some(at.plusSeconds(60))), "x", at)
+          _ <- repository.upsert(entry(value = "expired", expiresAt = Some(at.minusSeconds(1))), "x", at)
+          version <- repository.version
+          lists <- repository.lists(None, at)
+          active <- repository.active(at)
+        yield assertTrue(
+          lists.full,
+          lists.version == version,
+          lists.entries.map(_.id).toSet == Set(a.id, b.id),
+          lists.removed.isEmpty,
+          active == lists,
+        )
+      },
+      test("lists with `since` equal to the version is an empty delta") {
+        for
+          _ <- repository.upsert(entry(), "x", at)
+          version <- repository.version
+          lists <- repository.lists(Some(version), at)
+        yield assertTrue(lists == PolicyLists(version = version, full = false, entries = Nil, removed = Nil))
+      },
+      test("lists on an empty database with `since` 0 is an empty delta") {
+        for lists <- repository.lists(Some(0), at)
+        yield assertTrue(lists == PolicyLists(version = 0, full = false, entries = Nil, removed = Nil))
+      },
+      test("one upsert is that entry, and only it") {
+        for
+          _ <- repository.upsert(entry(value = "old"), "x", at)
+          since <- repository.version
+          e <- repository.upsert(entry(value = "new"), "x", at.plusSeconds(1))
+          version <- repository.version
+          lists <- repository.lists(Some(since), at)
+        yield assertTrue(lists.full == false, lists.version == version, lists.entries == List(e), lists.removed.isEmpty)
+      },
+      test("one delete is its id in `removed`") {
+        for
+          e <- repository.upsert(entry(), "x", at)
+          since <- repository.version
+          _ <- repository.delete(e.id, "x", at.plusSeconds(1))
+          version <- repository.version
+          lists <- repository.lists(Some(since), at)
+        yield assertTrue(lists == PolicyLists(version = version, full = false, entries = Nil, removed = List(e.id)))
+      },
+      test("an upsert then a delete of the same entry is only a removal") {
+        for
+          since <- repository.version
+          e <- repository.upsert(entry(), "x", at)
+          _ <- repository.delete(e.id, "x", at.plusSeconds(1))
+          version <- repository.version
+          lists <- repository.lists(Some(since), at)
+        yield assertTrue(version == since + 2, lists == PolicyLists(version = version, full = false, entries = Nil, removed = List(e.id)))
+      },
+      test("a delete then a new entry of the same value is the old id removed and the new entry added") {
+        for
+          old <- repository.upsert(entry(value = "same"), "x", at)
+          since <- repository.version
+          _ <- repository.delete(old.id, "x", at.plusSeconds(1))
+          fresh <- repository.upsert(entry(value = "same"), "x", at.plusSeconds(2))
+          lists <- repository.lists(Some(since), at)
+        yield assertTrue(
+          fresh.id != old.id,
+          !lists.full,
+          lists.entries == List(fresh),
+          lists.removed == List(old.id),
+        )
+      },
+      test("an entry changed twice is in the answer once, as it is now") {
+        val base = entry(expiresAt = Some(at.plusSeconds(60)))
+        for
+          first <- repository.upsert(base, "x", at)
+          since <- repository.version
+          _ <- repository.upsert(base.copy(reason = Some("second")), "x", at.plusSeconds(1))
+          third <- repository.upsert(base.copy(reason = Some("third")), "x", at.plusSeconds(2))
+          lists <- repository.lists(Some(since), at)
+        yield assertTrue(
+          third.id == first.id,
+          !lists.full,
+          lists.entries == List(third),
+          lists.entries.head.reason.contains("third"),
+          lists.removed.isEmpty,
+        )
+      },
+      test("an entry a change names that has expired since is in `removed`, not in `entries`") {
+        for
+          since <- repository.version
+          soon <- repository.upsert(entry(value = "soon", expiresAt = Some(at.plusSeconds(10))), "x", at)
+          later <- repository.upsert(entry(value = "later", expiresAt = Some(at.plusSeconds(100))), "x", at)
+          lists <- repository.lists(Some(since), at.plusSeconds(20))
+          before <- repository.lists(Some(since), at)
+        yield assertTrue(
+          !lists.full,
+          lists.entries.map(_.id) == List(later.id),
+          lists.removed == List(soon.id),
+          before.entries.map(_.id).toSet == Set(soon.id, later.id),
+          before.removed.isEmpty,
+        )
+      },
+      test("an entry expired and purged is in `removed` as well") {
+        for
+          since <- repository.version
+          soon <- repository.upsert(entry(expiresAt = Some(at.plusSeconds(10))), "x", at)
+          _ <- repository.purgeExpired(at.plusSeconds(20), 10)
+          lists <- repository.lists(Some(since), at.plusSeconds(20))
+        yield assertTrue(!lists.full, lists.entries.isEmpty, lists.removed == List(soon.id))
+      },
+      test("`since` ahead of the version is the whole list") {
+        for
+          e <- repository.upsert(entry(), "x", at)
+          version <- repository.version
+          ahead <- repository.lists(Some(version + 1), at)
+          far <- repository.lists(Some(version + 1000), at)
+        yield assertTrue(
+          ahead.full,
+          far.full,
+          ahead.version == version,
+          ahead.entries == List(e),
+          ahead.removed.isEmpty,
+        )
+      },
+      test("a negative `since` is the whole list") {
+        for
+          e <- repository.upsert(entry(), "x", at)
+          lists <- repository.lists(Some(-5), at)
+        yield assertTrue(lists.full, lists.entries == List(e))
+      },
+      test("a gap in the changes is the whole list, and a delta is answered only where every version has its change") {
+        for
+          a <- repository.upsert(entry(value = "a"), "x", at)
+          b <- repository.upsert(entry(value = "b"), "x", at.plusSeconds(100))
+          c <- repository.upsert(entry(value = "c"), "x", at.plusSeconds(200))
+          version <- repository.version
+          // the change of version 1 is pruned: a copy at version 0 would miss `a`
+          pruned <- repository.pruneChanges(at.plusSeconds(50), 100)
+          fromZero <- repository.lists(Some(0), at)
+          fromOne <- repository.lists(Some(1), at)
+        yield assertTrue(
+          pruned == 1,
+          fromZero.full,
+          fromZero.entries.map(_.id).toSet == Set(a.id, b.id, c.id),
+          fromZero.removed.isEmpty,
+          !fromOne.full,
+          fromOne.version == version,
+          fromOne.entries.map(_.id).toSet == Set(b.id, c.id),
+        )
+      },
+      test("a change pruned from the middle is a gap too") {
+        for
+          _ <- repository.upsert(entry(value = "a"), "x", at)
+          _ <- repository.upsert(entry(value = "b"), "x", at.plusSeconds(1000))
+          _ <- repository.upsert(entry(value = "c"), "x", at.plusSeconds(1))
+          // 'b' kept (late), the other two are older: pruning at +500 removes versions 1 and 3
+          pruned <- repository.pruneChanges(at.plusSeconds(500), 100)
+          lists <- repository.lists(Some(0), at)
+          partial <- repository.lists(Some(1), at)
+        yield assertTrue(pruned == 2, lists.full, partial.full)
+      },
+      test("pruning the changes removes those older than the limit and nothing newer, in batches") {
+        for
+          _ <- ZIO.foreachDiscard(1 to 5)(i => repository.upsert(entry(value = s"v$i"), "x", at.plusSeconds(i * 10L)))
+          none <- repository.pruneChanges(at, 10)
+          exactly <- repository.pruneChanges(at.plusSeconds(10), 10)
+          some <- repository.pruneChanges(at.plusSeconds(45), 2)
+          rest <- repository.pruneChanges(at.plusSeconds(45), 2)
+          again <- repository.pruneChanges(at.plusSeconds(45), 2)
+          newest <- repository.lists(Some(4), at)
+          older <- repository.lists(Some(3), at)
+          oldest <- repository.lists(Some(0), at)
+        yield assertTrue(
+          none == 0,
+          exactly == 0,
+          some == 2,
+          rest == 2,
+          again == 0,
+          // version 5 (at +50 s) is left, and is the only delta that can be answered
+          !newest.full && newest.entries.size == 1,
+          older.full,
+          oldest.full,
+        )
+      },
+      test("a purge of expired entries writes no change: the version and the delta stay") {
+        for
+          e <- repository.upsert(entry(expiresAt = Some(at.plusSeconds(10))), "x", at)
+          version <- repository.version
+          purged <- repository.purgeExpired(at.plusSeconds(20), 10)
+          after <- repository.version
+          current <- repository.lists(Some(version), at.plusSeconds(20))
+          fromZero <- repository.lists(Some(0), at.plusSeconds(20))
+        yield assertTrue(
+          purged == 1,
+          after == version,
+          current == PolicyLists(version = version, full = false, entries = Nil, removed = Nil),
+          !fromZero.full,
+          fromZero.removed == List(e.id),
+        )
+      },
+      test("an upsert that changes nothing writes no change, so the delta does not name the entry") {
+        val e = entry(expiresAt = Some(at.plusSeconds(60)))
+        for
+          _ <- repository.upsert(e, "x", at)
+          since <- repository.version
+          _ <- repository.upsert(e.copy(id = UUID.randomUUID()), "x", at.plusSeconds(1))
+          lists <- repository.lists(Some(since), at)
+        yield assertTrue(lists == PolicyLists(version = since, full = false, entries = Nil, removed = Nil))
+      },
+      test("the version of the answer is the highest change it reflects, and the next delta continues from it") {
+        for
+          _ <- repository.upsert(entry(value = "a"), "x", at)
+          first <- repository.lists(Some(0), at)
+          b <- repository.upsert(entry(value = "b"), "x", at.plusSeconds(1))
+          second <- repository.lists(Some(first.version), at)
+          version <- repository.version
+        yield assertTrue(
+          first.version == 1,
+          !first.full,
+          second.version == version,
+          second.version == 2,
+          second.entries == List(b),
+        )
+      },
     )
 
 object AntifraudListRepositorySpec:

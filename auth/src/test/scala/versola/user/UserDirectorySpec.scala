@@ -20,6 +20,7 @@ object UserDirectorySpec extends ZIOSpecDefault:
 
   private def tokenService(client: Client): CentralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
+    override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
     override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
 
   /** A central that answers every claim with `answer`, and the body of the last claim it was sent. */
@@ -69,31 +70,44 @@ object UserDirectorySpec extends ZIOSpecDefault:
         claim <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).claim(Right(phone))
       yield assertTrue(claim.cell.map(identity[String]).contains("kz-2"))
     },
-    // versolauth/versola#1046
-    test("a lookup asks who holds the credential without naming a cell, and reads the holder's cell") {
+    // versolauth/versola#1052
+    test("the home of an address is asked by the address alone, for a phone and for an email, and the cell is read") {
       for
-        (client, seen) <- central(Response.json(UserDirectory.ClaimResponse(userId, Some("kz-2")).toJson))
-        found <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).lookup(Right(phone))
-        (request, body) <- sent(seen)
+        (client, seen) <- central(Response.json(UserDirectory.HomeResponse("kz-2").toJson))
+        directory = UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client))
+        byPhone <- directory.homeOfAddress(Right(phone))
+        (phoneRequest, phoneBody) <- sent(seen)
+        byEmail <- directory.homeOfAddress(Left(Email("user@example.com")))
+        (emailRequest, emailBody) <- sent(seen)
       yield assertTrue(
-        found.map(_.userId) == Some(userId),
-        found.flatMap(_.cell).map(identity[String]) == Some("kz-2"),
-        request.url.path.encode.contains("users/lookup"),
-        body.get("phone").contains(Json.Str(phone)),
-        body.get("cell").forall(_ == Json.Null),
+        byPhone.map(identity[String]) == Some("kz-2"),
+        byEmail.map(identity[String]) == Some("kz-2"),
+        phoneRequest.url.path.encode.contains("users/home"),
+        emailRequest.url.path.encode.contains("users/home"),
+        phoneBody.get("phone").contains(Json.Str(phone)),
+        phoneBody.get("email").forall(_ == Json.Null),
+        emailBody.get("email").contains(Json.Str("user@example.com")),
+        emailBody.get("phone").forall(_ == Json.Null),
+        phoneBody.get("login").forall(_ == Json.Null) && phoneBody.get("userId").forall(_ == Json.Null),
       )
     },
-    test("a lookup of a credential nobody holds is nobody, and any other refusal of central is a failure") {
+    test("an address central names no cell for is nobody's") {
       for
         (client, _) <- central(Response.status(Status.NotFound))
-        nobody <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).lookup(Right(phone))
+        nobody <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).homeOfAddress(Right(phone))
       yield assertTrue(nobody.isEmpty)
     },
-    test("a lookup central refuses is a failure, not nobody") {
+    test("an address central refuses is a failure, not nobody") {
       for
         (client, _) <- central(Response.status(Status.InternalServerError))
-        refused <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).lookup(Right(phone)).exit
+        refused <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).homeOfAddress(Right(phone)).exit
       yield assertTrue(refused.isFailure)
+    },
+    test("a cell id of central's answer this build cannot read is a failure, not nobody") {
+      for
+        (client, _) <- central(Response.json(UserDirectory.HomeResponse("not a cell").toJson))
+        unreadable <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).homeOfAddress(Right(phone)).exit
+      yield assertTrue(unreadable.isFailure)
     },
     test("fails when central rejects the claim, or names a cell that is not a cell id") {
       for

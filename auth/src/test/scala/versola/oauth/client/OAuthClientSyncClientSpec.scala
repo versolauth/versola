@@ -84,6 +84,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       )
     yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
+      override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
       override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
         client.request(request.addHeader(Header.Authorization.Bearer(token))),
   )

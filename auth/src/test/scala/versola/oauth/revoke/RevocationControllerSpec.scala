@@ -357,5 +357,61 @@ object RevocationControllerSpec extends UnitSpecBase:
         verifyService = revocationService =>
           ZIO.succeed(assertTrue(revocationService.revokeRefreshToken.calls.isEmpty)),
       ),
+      controllerTestCase(
+        description = "answers refresh token of a user who moved with 421 and exactly the cell, and counts nothing else",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> Base64.urlEncode(refreshToken1))),
+        ).addHeader(authHeader(clientId1, clientSecret1)),
+        expectedStatus = Status.MisdirectedRequest,
+        setup = svc => svc.revokeRefreshToken.failsWith(RevocationError.Moved("kz-2")),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body == """{"error":"moved","cell":"kz-2"}"""),
+      ),
+      controllerTestCase(
+        description = "answers refresh token of a leaving user with 503, Retry-After: 2 and temporarily_unavailable",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> Base64.urlEncode(refreshToken1))),
+        ).addHeader(authHeader(clientId1, clientSecret1)),
+        expectedStatus = Status.ServiceUnavailable,
+        setup = svc => svc.revokeRefreshToken.failsWith(RevocationError.Unavailable),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            response.header(Header.RetryAfter).exists(_.renderedValue == "2"),
+            body.contains(""""error":"temporarily_unavailable""""),
+            !body.contains("moved"),
+          ),
+      ),
+      controllerTestCase(
+        description = "answers access token of a user who moved with 421 and exactly the cell, and counts nothing else",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> createValidAccessToken())),
+        ).addHeader(authHeader(clientId1, clientSecret1)),
+        expectedStatus = Status.MisdirectedRequest,
+        setup = svc => svc.revokeAccessToken.failsWith(RevocationError.Moved("kz-2")),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body == """{"error":"moved","cell":"kz-2"}"""),
+      ),
+      controllerTestCase(
+        description = "answers access token of a leaving user with 503, Retry-After: 2 and temporarily_unavailable",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> createValidAccessToken())),
+        ).addHeader(authHeader(clientId1, clientSecret1)),
+        expectedStatus = Status.ServiceUnavailable,
+        setup = svc => svc.revokeAccessToken.failsWith(RevocationError.Unavailable),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            response.header(Header.RetryAfter).exists(_.renderedValue == "2"),
+            body.contains(""""error":"temporarily_unavailable""""),
+            !body.contains("moved"),
+          ),
+      ),
     ),
   )

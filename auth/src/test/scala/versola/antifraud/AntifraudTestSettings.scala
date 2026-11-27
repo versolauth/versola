@@ -57,8 +57,8 @@ object AntifraudTestSettings:
     Antifraud.Impl(decision, ruleSets, fixed(tuning))
 
   /** The velocity rules for the limits of `tuning`. */
-  def velocityRules(velocity: VelocityCounters.Settings, tuning: Tuning): Antifraud.RuleSet =
-    VelocityRules.ruleSet(velocity, fixed(tuning))
+  def velocityRules(velocity: VelocityCounters.Settings, tuning: Tuning, share: CellShare = CellShare.whole): Antifraud.RuleSet =
+    VelocityRules.ruleSet(velocity, fixed(tuning), share)
 
   /** Counters with the service's limits, for settings of the specs. */
   def counters(settings: VelocityCounters.Settings, limits: VelocityCounters.Limits = velocityLimits): VelocityCounters =

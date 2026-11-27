@@ -2,9 +2,10 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
-import type { Cell, CellState, Edge, Partition, Region } from '../types';
+import type { Cell, CellState, CellStatus, Edge, Partition, Region } from '../types';
 import { createCell, createPartition, createRegion, deleteCell, deleteRegion, fetchEdges, fetchTopology, setEdgeRegion, updateCell } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { formatDateTime, localZone } from '../utils/date-format';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
 import { confirmDiscardDraft } from '../utils/draft-guard';
@@ -20,10 +21,12 @@ import './loading-cards';
 import './record-card';
 import './record-header';
 import './side-panel';
-import { ID_RULE, addressError, certificatesOf, validId } from '../utils/topology-input';
+import { ID_RULE, PUBLIC_KEYS_HINT, addressError, certificatesOf, parsePublicKeys, publicKeysText, validId } from '../utils/topology-input';
+import type { ApiError } from '../utils/central-api';
+import './user-moves-list';
 
 type CellFilter = 'all' | CellState;
-type CellGroup = 'placement' | 'addresses';
+type CellGroup = 'placement' | 'addresses' | 'keys';
 
 /** What each state means for new users; a cell in any state still serves the users it holds. */
 const STATES: Array<{ id: CellState; label: string; text: string }> = [
@@ -33,6 +36,28 @@ const STATES: Array<{ id: CellState; label: string; text: string }> = [
 ];
 
 const NEW_PARTITION = '__new__';
+
+type DeleteRefusal = { kind: 'users' | 'move' | 'tokens' | 'other'; message: string; tokens: number | null };
+
+/** Which refusal of `DELETE /configuration/cells` this is, from the text central answers with (all of them are `409`). */
+function deleteRefusal(error: unknown): DeleteRefusal {
+  const text = (error as ApiError | undefined)?.bodyText ?? (error instanceof Error ? error.message : '');
+  const status = (error as ApiError | undefined)?.status;
+  const fallback = error instanceof Error ? error.message : 'Failed to delete the cell';
+  if (status !== 409) return { kind: 'other', message: fallback, tokens: null };
+  const held = /still holds (\d+) user/.exec(text);
+  if (held) {
+    return { kind: 'users', tokens: null, message: `The cell still holds ${held[1]} user(s) in the directory. Move them out first: open a user and choose Move to another cell, or set the cell to Draining. If the cell is gone for good, delete it as lost.` };
+  }
+  if (/move of a user that is not finished/.test(text)) {
+    return { kind: 'move', tokens: null, message: 'A move from or to this cell is not finished. Wait until it is done or has failed (see User moves below).' };
+  }
+  if (/force=true/.test(text)) {
+    const count = /answers for (\d+) refresh token/.exec(text);
+    return { kind: 'tokens', tokens: count ? Number(count[1]) : null, message: text };
+  }
+  return { kind: 'other', message: fallback, tokens: null };
+}
 
 /**
  * Cells and regions: the table of every cell and, for the one selected, the side panel with its placement (state and
@@ -45,7 +70,7 @@ export class VersolaCellsList extends LitElement {
   @property({ type: Boolean }) canManage = false;
   @property({ attribute: false }) route: RecordRoute = EMPTY_RECORD_ROUTE;
 
-  @state() private cells: Cell[] = [];
+  @state() private cells: CellStatus[] = [];
   @state() private regions: Region[] = [];
   @state() private partitions: Partition[] = [];
   @state() private edges: Edge[] = [];
@@ -64,10 +89,11 @@ export class VersolaCellsList extends LitElement {
   @state() private draftInternalUrl = '';
   @state() private draftMtlsUrl = '';
   @state() private draftCertificates = '';
+  @state() private draftPublicKeys = '';
   @state() private draftPartitionId = '';
   @state() private draftNewPartitionId = '';
   @state() private draftSites: string[] = [];
-  @query('versola-data-table') private table?: VersolaDataTable<Cell>;
+  @query('versola-data-table') private table?: VersolaDataTable<CellStatus>;
   private draftKey = '';
   private draftBaseline = '';
 
@@ -124,6 +150,10 @@ export class VersolaCellsList extends LitElement {
         display: flex;
         flex-wrap: wrap;
         gap: var(--spacing-sm);
+      }
+
+      .drain-warning {
+        margin-bottom: var(--spacing-md);
       }
 
       .check-list {
@@ -203,7 +233,7 @@ export class VersolaCellsList extends LitElement {
 
   // ── routing ──
 
-  private get openCell(): Cell | null {
+  private get openCell(): CellStatus | null {
     return this.route.id ? this.cells.find(cell => cell.id === this.route.id) ?? null : null;
   }
 
@@ -221,10 +251,10 @@ export class VersolaCellsList extends LitElement {
   }
 
   private get editGroup(): CellGroup | null {
-    return this.route.edit === 'placement' || this.route.edit === 'addresses' ? this.route.edit : null;
+    return this.route.edit === 'placement' || this.route.edit === 'addresses' || this.route.edit === 'keys' ? this.route.edit : null;
   }
 
-  private openView(cell: Cell) {
+  private openView(cell: CellStatus) {
     dispatchRecordRoute(this, { id: cell.id, edit: null, create: false });
   }
 
@@ -237,7 +267,7 @@ export class VersolaCellsList extends LitElement {
   private get draftSnapshot(): string {
     return JSON.stringify([
       this.draftId, this.draftRegionId, this.draftState, this.draftWeight, this.draftInternalUrl, this.draftMtlsUrl,
-      this.draftCertificates, this.draftPartitionId, this.draftNewPartitionId, [...this.draftSites].sort(),
+      this.draftCertificates, this.draftPublicKeys, this.draftPartitionId, this.draftNewPartitionId, [...this.draftSites].sort(),
     ]);
   }
 
@@ -260,6 +290,7 @@ export class VersolaCellsList extends LitElement {
     this.draftInternalUrl = cell?.internalUrl ?? '';
     this.draftMtlsUrl = cell?.mtlsUrl ?? '';
     this.draftCertificates = (cell?.trustedCertificates ?? []).join('\n');
+    this.draftPublicKeys = publicKeysText(cell?.publicKeys ?? []);
     this.draftPartitionId = this.partitions[0]?.id ?? NEW_PARTITION;
     this.draftNewPartitionId = '';
     this.draftSites = region ? this.edges.filter(edge => edge.regionId === region.id).map(edge => edge.id) : [];
@@ -301,6 +332,12 @@ export class VersolaCellsList extends LitElement {
     return new Set(certificates).size === certificates.length ? '' : 'The same certificate is pasted twice.';
   }
 
+  /** Empty until submitted (a new cell has none yet), then the first thing wrong with the pasted keys. */
+  private get publicKeysError(): string {
+    if (!this.draftPublicKeys.trim() && !this.submitted) return '';
+    return parsePublicKeys(this.draftPublicKeys).error;
+  }
+
   private get newPartitionError(): string {
     if (this.draftPartitionId !== NEW_PARTITION) return '';
     const id = this.draftNewPartitionId.trim();
@@ -322,12 +359,14 @@ export class VersolaCellsList extends LitElement {
     const existing = this.openCell;
     const placement = mode === 'create' || group === 'placement';
     const addresses = mode === 'create' || group === 'addresses';
+    const keys = mode === 'create' || group === 'keys';
     if (mode === 'create' && !this.draftRegionId) {
       this.formError = 'Choose a region.';
       return;
     }
     if (mode === 'create' && (this.idError || !this.draftId.trim())) return;
     if (placement && this.weightError) return;
+    if (keys && parsePublicKeys(this.draftPublicKeys).error) return;
     if (addresses && (this.internalUrlError || !this.draftInternalUrl.trim() || this.mtlsUrlError || this.certificatesError)) return;
 
     const next: Cell = {
@@ -338,6 +377,7 @@ export class VersolaCellsList extends LitElement {
       internalUrl: addresses ? this.draftInternalUrl.trim() : existing!.internalUrl,
       mtlsUrl: addresses ? this.draftMtlsUrl.trim() || null : existing!.mtlsUrl ?? null,
       trustedCertificates: addresses ? certificatesOf(this.draftCertificates) : existing!.trustedCertificates,
+      publicKeys: keys ? parsePublicKeys(this.draftPublicKeys).keys! : existing!.publicKeys,
     };
 
     this.isSaving = true;
@@ -345,11 +385,11 @@ export class VersolaCellsList extends LitElement {
     try {
       if (mode === 'create') {
         await createCell(next);
-        this.cells = [...this.cells, next].sort((a, b) => a.id.localeCompare(b.id));
+        this.cells = [...this.cells, { ...next, users: 0, moving: 0 }].sort((a, b) => a.id.localeCompare(b.id));
         dispatchRecordRoute(this, { id: next.id, edit: null, create: false });
       } else {
         await updateCell(next);
-        this.cells = this.cells.map(cell => cell.id === next.id ? next : cell);
+        this.cells = this.cells.map(cell => cell.id === next.id ? { ...cell, ...next } : cell);
         dispatchRecordRoute(this, { edit: null, create: false });
       }
     } catch (error) {
@@ -409,7 +449,7 @@ export class VersolaCellsList extends LitElement {
     }
   }
 
-  private async handleDeleteCell(cell: Cell) {
+  private async handleDeleteCell(cell: CellStatus) {
     const confirmed = await confirmDestructiveAction({
       title: 'Delete cell',
       messagePrefix: 'Delete cell ',
@@ -418,13 +458,44 @@ export class VersolaCellsList extends LitElement {
       confirmLabel: 'Delete',
     });
     if (!confirmed) return;
+    await this.deleteWith(cell, {});
+  }
+
+  /** The cell is gone for good with its users: central deletes it although the directory still places users in it. */
+  private async handleDeleteLostCell(cell: CellStatus) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Delete a lost cell',
+      messagePrefix: 'Delete cell ',
+      messageSubject: cell.id,
+      messageSuffix: ` as lost? Use this only when the cell is gone for good, with its database. The ${cell.users} user(s) the directory still places in it stay in the directory and cannot sign in until they are deleted. A working cell is retired by moving its users out instead.`,
+      confirmLabel: 'Delete as lost',
+    });
+    if (!confirmed) return;
+    await this.deleteWith(cell, { lost: true });
+  }
+
+  private async deleteWith(cell: CellStatus, options: { lost?: boolean; force?: boolean }) {
     this.actionError = '';
     try {
-      await deleteCell(cell.id);
+      await deleteCell(cell.id, options);
       this.cells = this.cells.filter(candidate => candidate.id !== cell.id);
       if (this.route.id === cell.id) dispatchRecordRoute(this, { id: null, edit: null, create: false, layout: null });
     } catch (error) {
-      this.actionError = error instanceof Error ? error.message : 'Failed to delete the cell';
+      const refusal = deleteRefusal(error);
+      if (refusal.kind === 'tokens' && !options.force) {
+        // The only refusal `force` lifts, so it is offered here and nowhere else, with what it costs.
+        const forced = await confirmDestructiveAction({
+          title: 'Delete the cell and invalidate refresh tokens?',
+          messagePrefix: 'Cell ',
+          messageSubject: cell.id,
+          messageSuffix: ` ${refusal.tokens === null ? 'did not say whether it still answers for refresh tokens of users moved out of it' : `still answers for ${refusal.tokens} refresh token(s) of users moved out of it`}. `
+            + 'The edge does not know a deleted cell, so deleting it now makes those refresh tokens invalid: the apps that hold them have to sign in again.',
+          confirmLabel: 'Delete and invalidate',
+        });
+        if (forced) await this.deleteWith(cell, { ...options, force: true });
+        return;
+      }
+      this.actionError = refusal.message;
     }
   }
 
@@ -453,16 +524,16 @@ export class VersolaCellsList extends LitElement {
     return this.edges.filter(edge => edge.groupKind !== 'partner');
   }
 
-  private get filteredCells(): Cell[] {
+  private get filteredCells(): CellStatus[] {
     const query = this.searchQuery.trim().toLowerCase();
     return this.cells.filter(cell => (this.filter === 'all' || cell.state === this.filter)
       && (!query || cell.id.toLowerCase().includes(query) || cell.regionId.toLowerCase().includes(query)));
   }
 
-  private stateChip(cell: Cell) {
+  private stateChip(cell: CellStatus) {
     switch (cell.state) {
       case 'open': return html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Open</span>`;
-      case 'draining': return html`<span class="chip warn">Draining</span>`;
+      case 'draining': return html`<span class="chip warn">Draining</span>${cell.drainBlocked ? html`<span class="chip warn">Blocked</span>` : ''}`;
       default: return html`<span class="chip">Closed</span>`;
     }
   }
@@ -486,7 +557,7 @@ export class VersolaCellsList extends LitElement {
   }
 
   private renderTable() {
-    const columns: DataTableColumn<Cell>[] = [
+    const columns: DataTableColumn<CellStatus>[] = [
       { id: 'cell', label: 'Cell', cell: cell => html`
         <button type="button" class="row-link" aria-label=${`Open cell ${cell.id}`}>
           <span class="row-title">${cell.id}</span>
@@ -494,9 +565,11 @@ export class VersolaCellsList extends LitElement {
       { id: 'region', label: 'Region', cell: cell => html`<div class="chips"><span class="chip">${cell.regionId}</span></div>` },
       { id: 'state', label: 'State', cell: cell => html`<div class="chips">${this.stateChip(cell)}</div>` },
       { id: 'weight', label: 'Weight', class: 'muted', cell: cell => String(cell.weight) },
+      { id: 'users', label: 'Users', class: 'muted', cell: cell => String(cell.users) },
+      { id: 'moving', label: 'Moving', class: 'muted', cell: cell => String(cell.moving) },
       { id: 'address', label: 'Address', cell: cell => html`<span class="mono">${cell.internalUrl}</span>` },
     ];
-    const menuItems = (cell: Cell): RowMenuItem[] => [
+    const menuItems = (cell: CellStatus): RowMenuItem[] => [
       { label: 'Open', onSelect: () => this.openView(cell) },
       { label: 'Copy cell ID', onSelect: () => void copyToClipboard(cell.id) },
       ...(this.canManage && cell.state === 'closed' ? [{ label: 'Delete cell', danger: true, ariaLabel: `Delete cell ${cell.id}`, onSelect: () => void this.handleDeleteCell(cell) }] : []),
@@ -505,11 +578,11 @@ export class VersolaCellsList extends LitElement {
       <versola-data-table selectable
         .columns=${columns}
         .rows=${this.filteredCells}
-        .rowKey=${(cell: Cell) => cell.id}
+        .rowKey=${(cell: CellStatus) => cell.id}
         .selectedKey=${this.editorMode === 'view' ? this.route.id : null}
         .menuItems=${menuItems}
-        .menuLabel=${(cell: Cell) => `Actions for ${cell.id}`}
-        @row-select=${(e: CustomEvent<{ row: Cell }>) => this.openView(e.detail.row)}
+        .menuLabel=${(cell: CellStatus) => `Actions for ${cell.id}`}
+        @row-select=${(e: CustomEvent<{ row: CellStatus }>) => this.openView(e.detail.row)}
       ></versola-data-table>
     `;
   }
@@ -551,13 +624,35 @@ export class VersolaCellsList extends LitElement {
     return html`<versola-record-row .label=${label} .fixed=${fixed} .value=${value}></versola-record-row>`;
   }
 
-  private renderGroups(cell: Cell) {
+  private tokensText(cell: CellStatus) {
+    // Absent is a cell that did not answer in time: not known, which is not the same as none.
+    if (cell.tokens === undefined) return html`<span class="muted">Unknown: the cell did not answer</span>`;
+    if (cell.tokens === 0) return html`0`;
+    return html`${cell.tokens}${cell.tokensUntil ? html`<span class="muted"> · the last expires ${formatDateTime(cell.tokensUntil, localZone())}</span>` : ''}`;
+  }
+
+  private renderUsersCard(cell: CellStatus) {
+    const draining = cell.state === 'draining';
+    return html`
+      <versola-record-card heading=${draining ? 'Drain progress' : 'Users and moves'}
+        subheading=${draining ? 'The users of this cell are being moved to the other cells of its partition.' : 'The users the directory places in this cell, and the moves that leave it.'} .body=${html`
+        ${draining && cell.drainBlocked ? html`<div class="banner warn drain-warning" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('alert')}The drain is waiting</div>
+          <div>No open cell of the partition with a weight above 0 can take these users. Nothing is moved until there is one: open a cell or give an open cell a weight.</div></div></div>` : ''}
+        ${this.row(draining ? 'Users left' : 'Users', html`${cell.users}`)}
+        ${this.row('Moves in progress', html`${cell.moving}`)}
+        ${this.row('Carried refresh tokens', html`${this.tokensText(cell)}<div class="hint">Refresh tokens of users moved out of this cell that it still answers for, so the app is sent on to the new cell. While there are any, deleting the cell needs force and makes them invalid.</div>`)}
+      `}></versola-record-card>`;
+  }
+
+  private renderGroups(cell: CellStatus) {
     const state = STATES.find(option => option.id === cell.state)!;
     return html`
       <versola-record-card heading="Placement" subheading="Whether new users are placed in this cell, and its share of them." ?editable=${this.canManage} .body=${html`
         ${this.row('State', html`<div class="chips">${this.stateChip(cell)}</div><div class="hint">${state.text}</div>`)}
         ${this.row('Weight', html`${cell.weight}<div class="hint">Its share of new users among the open cells of ${cell.regionId}.</div>`)}
       `} @edit=${() => dispatchRecordRoute(this, { edit: 'placement', create: false })}></versola-record-card>
+
+      ${this.renderUsersCard(cell)}
 
       <versola-record-card heading="Addresses" subheading="Where an edge reaches this cell's auth, and the certificates it is pinned by." ?editable=${this.canManage} .body=${html`
         ${this.row('Internal URL', html`<span class="mono">${cell.internalUrl}</span>`)}
@@ -566,6 +661,11 @@ export class VersolaCellsList extends LitElement {
           ? html`<div class="tag-list">${cell.trustedCertificates.map((_, index) => html`<span class="tag">Certificate ${index + 1}</span>`)}</div>`
           : html`<span class="muted">None: the endpoints are not pinned</span>`)}
       `} @edit=${() => dispatchRecordRoute(this, { edit: 'addresses', create: false })}></versola-record-card>
+
+      <versola-record-card heading="Public keys" subheading="The keys the cell's auth signs its calls to central with." ?editable=${this.canManage} .body=${html`
+        ${cell.publicKeys.length ? cell.publicKeys.map((key, index) => this.row(index === 0 ? 'Key 1 (encrypted to)' : `Key ${index + 1}`,
+          html`<span class="mono">${key.kid}</span><div class="hint">RSA</div>`)) : this.row('Keys', html`<span class="muted">None: this cell cannot call central</span>`)}
+      `} @edit=${() => dispatchRecordRoute(this, { edit: 'keys', create: false })}></versola-record-card>
 
       <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`
         ${this.row('Cell ID', html`<span class="mono">${cell.id}</span>`, 'Written in front of every value the cell issues')}
@@ -577,17 +677,22 @@ export class VersolaCellsList extends LitElement {
         <versola-danger-card heading="Delete cell" text="Removes the cell from the registry. This can't be undone."
           actionLabel="Delete cell" .actionAriaLabel=${`Delete cell ${cell.id}`}
           .disabledReason=${cell.state === 'closed' ? '' : 'Only a closed cell is deleted: close it first, once it holds no users.'}
-          @action=${() => this.handleDeleteCell(cell)}></versola-danger-card>` : ''}
+          @action=${() => this.handleDeleteCell(cell)}></versola-danger-card>
+        <versola-danger-card heading="The cell is lost" text="The cell is gone for good with its database. Deletes it although the directory still places users in it: they stay in the directory and cannot sign in until they are deleted. Not the way to retire a working cell."
+          actionLabel="Delete as lost" .actionAriaLabel=${`Delete cell ${cell.id} as lost`}
+          .disabledReason=${cell.state === 'closed' ? '' : 'Only a closed cell is deleted: close it first.'}
+          @action=${() => this.handleDeleteLostCell(cell)}></versola-danger-card>` : ''}
     `;
   }
 
-  private renderRecordPage(cell: Cell) {
+  private renderRecordPage(cell: CellStatus) {
     return html`
       <versola-record-header
         .crumbs=${[{ label: 'Cells', onSelect: () => this.closePanel() }, { label: cell.id }]}
         .heading=${cell.id} .recordId=${cell.id} idLabel="cell ID"
         .meta=${html`<span class="chip">Cell</span>${this.stateChip(cell)}`}
       ></versola-record-header>
+      ${this.actionError ? html`<div class="banner warn" role="alert"><div class="banner-text"><div class="banner-title">${statusIcon('alert')}${this.actionError}</div></div></div>` : ''}
       <div class="record-page">${this.renderGroups(cell)}</div>
     `;
   }
@@ -640,6 +745,20 @@ export class VersolaCellsList extends LitElement {
     `;
   }
 
+  private renderKeyFields() {
+    const error = this.publicKeysError;
+    return html`
+      <div class="form-group">
+        <label for="cell-public-keys">Public keys *</label>
+        <textarea id="cell-public-keys" class="compact-input ${error ? 'input-error' : ''}" spellcheck="false" .value=${this.draftPublicKeys}
+          aria-invalid=${error ? 'true' : nothing} aria-describedby=${error ? 'cell-public-keys-error' : 'cell-public-keys-hint'}
+          placeholder='{"kty":"RSA","kid":"kz-1","n":"...","e":"AQAB"}' @input=${(e: Event) => this.draftPublicKeys = (e.target as HTMLTextAreaElement).value}></textarea>
+        ${error ? html`<div class="error-message" id="cell-public-keys-error" role="alert">${error}</div>`
+          : html`<div class="hint" id="cell-public-keys-hint">${PUBLIC_KEYS_HINT}</div>`}
+      </div>
+    `;
+  }
+
   private renderCellEditor() {
     const mode = this.editorMode;
     return html`
@@ -664,6 +783,11 @@ export class VersolaCellsList extends LitElement {
             ${this.renderAddressFields()}
           </div>
           <div class="editor-box">
+            <h3>Public keys</h3>
+            <p class="editor-sub">Register the cell here before its auth is started: central takes a call to be the cell's only when it verifies with one of these keys.</p>
+            ${this.renderKeyFields()}
+          </div>
+          <div class="editor-box">
             <h3>Placement</h3>
             <p class="editor-sub">A new cell starts closed: open it when it is ready to take users.</p>
             ${this.renderPlacementFields()}
@@ -673,6 +797,12 @@ export class VersolaCellsList extends LitElement {
             <h3>Placement</h3>
             <p class="editor-sub">A cell in any state still serves the users it holds.</p>
             ${this.renderPlacementFields()}
+          </div>
+        ` : this.editGroup === 'keys' ? html`
+          <div class="editor-box">
+            <h3>Public keys</h3>
+            <p class="editor-sub">The whole set the cell has from now on, not an addition: replace a key by pasting both for a while, then only the new one.</p>
+            ${this.renderKeyFields()}
           </div>
         ` : html`
           <div class="editor-box">
@@ -736,14 +866,14 @@ export class VersolaCellsList extends LitElement {
     `;
   }
 
-  private renderPanel(cell: Cell | null) {
+  private renderPanel(cell: CellStatus | null) {
     const mode = this.editorMode;
     if (mode === 'view' && !cell) return '';
     const region = this.sitesRegion;
     const heading = mode === 'create' ? 'Register cell' : mode === 'region' ? 'Add region' : mode === 'sites' ? 'Edit edge sites'
-      : mode === 'edit' ? (this.editGroup === 'placement' ? 'Edit placement' : 'Edit addresses') : cell!.id;
+      : mode === 'edit' ? (this.editGroup === 'placement' ? 'Edit placement' : this.editGroup === 'keys' ? 'Edit public keys' : 'Edit addresses') : cell!.id;
     const submitLabel = mode === 'create' ? 'Register cell' : mode === 'region' ? 'Add region' : mode === 'sites' ? 'Save edge sites'
-      : this.editGroup === 'placement' ? 'Save placement' : 'Save addresses';
+      : this.editGroup === 'placement' ? 'Save placement' : this.editGroup === 'keys' ? 'Save public keys' : 'Save addresses';
     const parent = mode === 'edit' ? cell!.id : mode === 'sites' ? `Region ${region!.id}` : '';
     return html`
       <versola-side-panel open ?modal=${mode !== 'view'} .mode=${mode === 'view' ? 'view' : mode === 'create' || mode === 'region' ? 'create' : 'edit'}
@@ -799,6 +929,7 @@ export class VersolaCellsList extends LitElement {
           ${this.renderToolbar()}
           ${this.filteredCells.length === 0 ? html`<versola-empty-state heading="No cells match"></versola-empty-state>` : this.renderTable()}
         `}
+        ${this.cells.length > 0 ? html`<versola-user-moves .cells=${this.cells}></versola-user-moves>` : ''}
         ${this.renderRegions()}
       `}
       ${panel}

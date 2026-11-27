@@ -272,13 +272,50 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
             )
             _ <- services.parser.validate.succeedsWith(baseRequest)
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+            _ <- services.authService.authorizeHanded.succeedsWith(AuthorizeResponse.Initialize(authId))
           yield (),
         verify = resp =>
           ZIO.succeed(assertTrue(
             resp.header(Header.Location).exists(_.url.path.encode.contains("challenge")),
             resp.header(Header.SetCookie).isDefined,
           )),
+        // versolauth/versola#1052: it was sent here by a cell that has chosen, so the hinted address is not sent on by asking
+        // central again.
+        verifyServices = services =>
+          assertTrue(services.authService.authorizeHanded.calls == List(baseRequest), services.authService.authorize.calls.isEmpty),
+      ),
+      controllerTestCase(
+        description = "a handoff whose hinted address this cell is told to hand on is answered with the redirect it is given, and no cookie",
+        request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed")),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.handoff.open.succeedsWith(payload(submission = None, superseded = None))
+            _ <- services.parser.validate.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorizeHanded.succeedsWith(
+              AuthorizeResponse.HandedOff(URL.decode("/challenge/handoff?handoff=v1.kz-3.sealed").toOption.get),
+            )
+          yield (),
+        verify = resp =>
+          ZIO.succeed(
+            assertTrue(
+              resp.header(Header.Location).map(_.url.encode).contains("/challenge/handoff?handoff=v1.kz-3.sealed"),
+              resp.header(Header.SetCookie).isEmpty,
+            ),
+          ),
+      ),
+      controllerTestCase(
+        description = "a plain /authorize with a login hint does not take the handed path",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.parser.parse.succeedsWith(baseRequest.copy(loginHint = Some(Left(versola.util.Email("user@example.com")))))
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+          yield (),
+        verifyServices = services => assertTrue(services.authService.authorizeHanded.calls.isEmpty, services.authService.authorize.calls.size == 1),
       ),
       controllerTestCase(
         description = "a handoff that names the session the browser had in the first cell records it on the conversation it starts",
@@ -289,7 +326,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
             _ <- services.handoff.open.succeedsWith(payload(submission = None, superseded = Some(supersededSession)))
             _ <- services.parser.validate.succeedsWith(baseRequest)
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+            _ <- services.authService.authorizeHanded.succeedsWith(AuthorizeResponse.Initialize(authId))
             _ <- services.router.supersedes.succeedsWith(())
           yield (),
         verifyServices = services => assertTrue(services.router.supersedes.calls == List((authId, supersededSession))),
@@ -303,7 +340,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
             _ <- services.handoff.open.succeedsWith(payload(submission = None, superseded = None))
             _ <- services.parser.validate.succeedsWith(baseRequest)
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+            _ <- services.authService.authorizeHanded.succeedsWith(AuthorizeResponse.Initialize(authId))
           yield (),
         verifyServices = services => assertTrue(services.router.supersedes.calls.isEmpty),
       ),

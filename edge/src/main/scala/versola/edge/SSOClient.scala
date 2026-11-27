@@ -169,8 +169,9 @@ object SSOClient:
         "that address would not be authenticated. Set `versola-internal-trusted-certificates`",
     )
 
-  /** A cell answered `421 moved`: the user it was asked for now lives in `cell`. Replayed once at that cell, for the few
-    * calls whose body is a small form (`/token`, `/par`); a second answer is the caller's. */
+  /** A cell answered `421 moved`: the user it was asked for now lives in `cell`. Replayed once at that cell, for `/token`,
+    * `/par` and `/userinfo`, and for `/revoke` of a native client; a second answer is the caller's. A moved user's tokens are
+    * honoured and revoked at the new cell, so what was asked is asked there unchanged. */
   final case class CellMoved(cell: String) extends RuntimeException(s"the user moved to cell '$cell'")
 
   private case class MovedResponse(error: String, cell: Option[String]) derives JsonCodec
@@ -621,7 +622,18 @@ object SSOClient:
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
         named <- cellOf(accessToken)
-        cell <- pick(CellRouting.ByHeader(named)).catchSome { case _: CellRoutingError => ZIO.fail(SSOClient.UserInfoUnauthorized) }
+        initial <- pick(CellRouting.ByHeader(named)).catchSome { case _: CellRoutingError => ZIO.fail(SSOClient.UserInfoUnauthorized) }
+        result <- routed(initial)(userInfoAt(_, accessToken, binding))
+      yield result
+
+    /** One `/userinfo` call at `cell`: the same token, and the connection the token's binding obliges, built for that cell
+      * (its listener, its pins). A `421 moved` answer is raised as [[SSOClient.CellMoved]], which [[routed]] follows once. */
+    private def userInfoAt(
+        cell: Option[EdgeCell],
+        accessToken: AccessToken,
+        binding: SSOClient.TokenBinding,
+    ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
+      for
         // The edge's own certificate goes to the mutual-TLS listener of the cell the token names, or, with no cell, to the
         // configured one.
         listener = cell.fold(edgeRoute)(c => c.mtlsUrl.map(base => CertificateRoute(base, c.trust)))
@@ -654,6 +666,7 @@ object SSOClient:
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
 
         response <- ZIO.scoped(connection.fold(clientOf(cell))(httpClient.ssl).request(request))
+        _ <- refuseMoved(response)
 
         result <-
           if response.status.isSuccess then

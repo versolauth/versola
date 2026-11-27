@@ -32,30 +32,68 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
       timed()
       sql"SELECT version FROM af_list_version WHERE id = 1".query[Long].run().head
 
-  override def replaceAll(entries: List[PolicyListEntry], version: Long): Task[Boolean] =
+  override def copied: Task[AntifraudListRepository.Copy] =
+    xa.transactMeasured("antifraud-list-copy"):
+      timed()
+      sql"SELECT version, full_copied_at FROM af_list_version WHERE id = 1".query[CopyRow].run().head.toCopy
+
+  override def replaceAll(entries: List[PolicyListEntry], version: Long, at: Instant, notBefore: Instant): Task[Boolean] =
     xa.transactMeasured("replace-antifraud-list-entries"):
       timed()
       // The row of the version is the lock: of several instances that read the same change one writes it and the others
       // find the copy at that version.
-      val current = sql"SELECT version FROM af_list_version WHERE id = 1 FOR UPDATE".query[Long].run().head
-      if current == version then false
+      val current = lockedCopy()
+      if current.version == version && current.fullAt.exists(!_.isBefore(notBefore)) then false
       else
         val ids = entries.map(_.id).toArray
         sql"DELETE FROM af_list_entry WHERE NOT (id = ANY($ids))".update.run()
-        if entries.nonEmpty then
-          batchUpdate(entries): entry =>
-            // An entry that is there keeps its hit counters, which are this cell's. Central refreshes an entry under the id
-            // it has, so the id is the key; the value of a row that was written here by hand under another id gives way.
-            sql"""
-              INSERT INTO af_list_entry (id, type, value_type, value, tenant_id, expires_at, reason, source, shadow, created_by, created_at)
-              VALUES (${entry.id}, ${entry.listType}, ${entry.valueType}, ${entry.value}, ${entry.tenantId}, ${entry.expiresAt},
-                      ${entry.reason}, ${entry.source}, ${entry.shadow}, ${entry.createdBy}, ${entry.createdAt})
-              ON CONFLICT (id) DO UPDATE
-                SET type = EXCLUDED.type, value_type = EXCLUDED.value_type, value = EXCLUDED.value, tenant_id = EXCLUDED.tenant_id,
-                    expires_at = EXCLUDED.expires_at, reason = EXCLUDED.reason, source = EXCLUDED.source, shadow = EXCLUDED.shadow
-            """.update
-        sql"UPDATE af_list_version SET version = $version WHERE id = 1".update.run()
+        upsert(entries)
+        sql"UPDATE af_list_version SET version = $version, full_copied_at = $at WHERE id = 1".update.run()
         true
+
+  override def applyChanges(entries: List[PolicyListEntry], removed: List[UUID], from: Long, to: Long): Task[Boolean] =
+    xa.transactMeasured("apply-antifraud-list-changes"):
+      timed()
+      if lockedCopy().version != from then false
+      else
+        // Removed first: an entry removed and added again under a new id holds the value the unique index is on.
+        if removed.nonEmpty then
+          val ids = removed.toArray
+          sql"DELETE FROM af_list_entry WHERE id = ANY($ids)".update.run()
+        upsert(entries)
+        sql"UPDATE af_list_version SET version = $to WHERE id = 1".update.run()
+        true
+
+  override def removeExpired(before: Instant, limit: Int): Task[Int] =
+    xa.transactMeasured("remove-expired-antifraud-list-entries"):
+      timed()
+      sql"""
+        DELETE FROM af_list_entry
+        WHERE id IN (SELECT id FROM af_list_entry WHERE expires_at < $before LIMIT $limit)
+      """.update.run()
+
+  private def lockedCopy()(using DbCon): AntifraudListRepository.Copy =
+    sql"SELECT version, full_copied_at FROM af_list_version WHERE id = 1 FOR UPDATE".query[CopyRow].run().head.toCopy
+
+  /** An entry that is there keeps its hit counters, which are this cell's, and is written only when a copied field differs,
+    * so that a whole copy that changes nothing writes nothing. Central refreshes an entry under the id it has, so the id is
+    * the key; the value of a row that was written here by hand under another id gives way. */
+  private def upsert(entries: List[PolicyListEntry])(using DbCon): Unit =
+    if entries.nonEmpty then
+      batchUpdate(entries): entry =>
+        sql"""
+          INSERT INTO af_list_entry (id, type, value_type, value, tenant_id, expires_at, reason, source, shadow, created_by, created_at)
+          VALUES (${entry.id}, ${entry.listType}, ${entry.valueType}, ${entry.value}, ${entry.tenantId}, ${entry.expiresAt},
+                  ${entry.reason}, ${entry.source}, ${entry.shadow}, ${entry.createdBy}, ${entry.createdAt})
+          ON CONFLICT (id) DO UPDATE
+            SET type = EXCLUDED.type, value_type = EXCLUDED.value_type, value = EXCLUDED.value, tenant_id = EXCLUDED.tenant_id,
+                expires_at = EXCLUDED.expires_at, reason = EXCLUDED.reason, source = EXCLUDED.source, shadow = EXCLUDED.shadow
+            WHERE (af_list_entry.type, af_list_entry.value_type, af_list_entry.value, af_list_entry.tenant_id, af_list_entry.expires_at,
+                   af_list_entry.reason, af_list_entry.source, af_list_entry.shadow)
+              IS DISTINCT FROM
+                  (EXCLUDED.type, EXCLUDED.value_type, EXCLUDED.value, EXCLUDED.tenant_id, EXCLUDED.expires_at,
+                   EXCLUDED.reason, EXCLUDED.source, EXCLUDED.shadow)
+        """.update
 
   override def preview(valueType: AntifraudValueType, value: String, tenantId: Option[TenantId], since: Instant): Task[ListPreview] =
     xa.transactMeasured("preview-antifraud-list-entry"):
@@ -168,6 +206,9 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
       """.update.run()
 
   // Read with the instant codec in scope, so the rows are defined here and not in the companion.
+  private case class CopyRow(version: Long, fullCopiedAt: Option[Instant]) derives DbCodec:
+    def toCopy: AntifraudListRepository.Copy = AntifraudListRepository.Copy(version, fullCopiedAt)
+
   private case class Counts(matched: Long, total: Long) derives DbCodec
 
   private case class ListedRow(

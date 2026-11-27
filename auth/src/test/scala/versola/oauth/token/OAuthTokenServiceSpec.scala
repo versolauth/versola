@@ -45,6 +45,7 @@ import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, RecordingDepartures, UserDepartures}
 import versola.util.Base64
 import versola.util.audit.{AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.util.{
@@ -351,7 +352,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       ).either
     yield result
 
-  class Env(val audit: CapturingAuditEvents = CapturingAuditEvents.shared()):
+  class Env(val audit: CapturingAuditEvents = CapturingAuditEvents.shared(), val departures: UserDepartures = UserDepartures.none):
     val authCodeRepo = stub[AuthorizationCodeRepository]
     val clientService = stub[OAuthConfigurationService]
     clientService.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
@@ -364,6 +365,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val clientAuthentication =
       ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
     val tokenRepo = stub[SessionRepository]
+    // no retired token has an owner unless a case says so
+    tokenRepo.findRetiredTokenOwner.returnsWith(ZIO.none)
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
     val propertyGenerator = stub[AuthPropertyGenerator]
@@ -380,20 +383,23 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       schemaValidator,
       TestEnvConfig.coreConfig,
       audit,
+      departures,
     )
 
   /** Real MAC and real generator under `config`: what a routing key changes is which bytes a
     * token is keyed on, so a stubbed MAC would prove nothing about whether an old or a routed
     * token is found. The repository stays a stub and records the MAC it was asked for.
     */
-  class RoutedEnv(config: CoreConfig):
+  class RoutedEnv(config: CoreConfig, departures: UserDepartures = UserDepartures.none):
     val clientService = stub[OAuthConfigurationService]
     clientService.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
     clientService.find.returnsWith(ZIO.none)
     clientService.auditTokenRefresh.returnsWith(ZIO.succeed(false))
     val clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config, ClientAuthFailures.noop)
     val tokenRepo = stub[SessionRepository]
+    tokenRepo.findRetiredTokenOwner.returnsWith(ZIO.none)
     val userRepo = stub[UserRepository]
+    val accessTokenRevocation = stub[AccessTokenRevocationService]
 
     def build: UIO[(OAuthTokenService, SecurityService)] =
       SecureRandom.live.build.flatMap { env =>
@@ -405,13 +411,14 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             clientService,
             clientAuthentication,
             tokenRepo,
-            stub[AccessTokenRevocationService],
+            accessTokenRevocation,
             securityService,
             AuthPropertyGenerator.Impl(secureRandom, config),
             userRepo,
             schemaValidator,
             config,
             CapturingAuditEvents.shared(),
+            departures,
           )
           (service, securityService)
         }
@@ -457,7 +464,23 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield result
 
+    /** A refresh of a grant bound to the key `jkt`, with a proof of it. */
+    def refreshBound(service: OAuthTokenService, presented: String, jkt: String): IO[Throwable | TokenEndpointError, IssuedTokens] =
+      for
+        token <- ZIO.fromEither(RefreshToken.fromPresented(presented)).mapError(RuntimeException(_))
+        result <- service.refreshAccessToken(
+          RefreshTokenRequest(token, None, None, None),
+          ClientIdWithSecret(clientId1, Some(clientSecret1)),
+          Some(jkt),
+          None,
+          None,
+        )
+      yield result
+
   private val routedPrefix = s"v1.${TestEnvConfig.cellId}."
+
+  /** A cell that is not the one the spec's deployment is. */
+  private val otherCell = RoutingKey.CellId.parse("kz-2").toOption.get
 
   def spec = suite("OAuthTokenService")(
     // versolauth/versola#547 §6.2: a refresh token is keyed on the whole string the client
@@ -538,6 +561,319 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           lookedUp.sameElements(storedUnder),
           result.refreshToken.map(RefreshToken.present).exists(token => !token.startsWith("v1.") && token.length == 43),
         )
+      },
+    ),
+    // versolauth/versola#1051: a refresh token that arrived with its user from another cell is replaced once, at its first use here, by
+    // a token of this cell, whether or not it is bound; one of this cell is left as it is.
+    suite("a refresh token that came from another cell")(
+      test("a bound token is consumed as a rotation consumes one and replaced by a token of this cell that keeps its binding") {
+        val env = RoutedEnv(TestEnvConfig.cellCoreConfig)
+        val carried = RefreshToken.present(RefreshToken.issue(Some(otherCell), Array.fill(32)(9.toByte)))
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+          (service, securityService) <- env.build
+          result <- env.refreshBound(service, carried, jkt1)
+          presentedMac <- securityService.mac(Secret(carried.getBytes(StandardCharsets.UTF_8)), TestEnvConfig.coreConfig.security.refreshTokensSecret)
+          created = env.tokenRepo.createRefreshToken.calls.head
+        yield assertTrue(
+          result.refreshToken.map(RefreshToken.present).exists(token => token.startsWith(routedPrefix) && token != carried),
+          // nothing is renewed in place: the old record is retired by the rotation, the new one joins its family
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+          env.tokenRepo.createRefreshToken.calls.length == 1,
+          created._2.exists(_.sameElements(presentedMac)),
+          created._3.cnf.contains(Cnf.dpop(jkt1)),
+          result.cnf.flatMap(_.jkt).contains(jkt1),
+        )
+      },
+      test("a bound token that carries no routing key, in a cell, is replaced too") {
+        val env = RoutedEnv(TestEnvConfig.cellCoreConfig)
+        val bare = Base64.urlEncode(Array.fill(32)(9.toByte))
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+          (service, _) <- env.build
+          result <- env.refreshBound(service, bare, jkt1)
+        yield assertTrue(
+          result.refreshToken.map(RefreshToken.present).exists(_.startsWith(routedPrefix)),
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+          env.tokenRepo.createRefreshToken.calls.length == 1,
+        )
+      },
+      test("a bound token of this cell is not replaced: it is renewed in place, and the client keeps the string it holds") {
+        val env = RoutedEnv(TestEnvConfig.cellCoreConfig)
+        val own = RefreshToken.present(RefreshToken.issue(Some(TestEnvConfig.cellId), Array.fill(32)(9.toByte)))
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+          (service, _) <- env.build
+          result <- env.refreshBound(service, own, jkt1)
+        yield assertTrue(
+          result.refreshToken.map(RefreshToken.present).contains(own),
+          env.tokenRepo.createRefreshToken.calls.isEmpty,
+          env.tokenRepo.renewBoundToken.calls.length == 1,
+        )
+      },
+      test("a bound token is not replaced by a deployment that is no cell") {
+        val env = RoutedEnv(TestEnvConfig.coreConfig)
+        val carried = RefreshToken.present(RefreshToken.issue(Some(otherCell), Array.fill(32)(9.toByte)))
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+          (service, _) <- env.build
+          result <- env.refreshBound(service, carried, jkt1)
+        yield assertTrue(result.refreshToken.map(RefreshToken.present).contains(carried), env.tokenRepo.createRefreshToken.calls.isEmpty)
+      },
+      test("a bearer token that came from another cell is replaced, and the old string is then refused as a consumed token is") {
+        val env = RoutedEnv(TestEnvConfig.cellCoreConfig)
+        val carried = RefreshToken.present(RefreshToken.issue(Some(otherCell), Array.fill(32)(9.toByte)))
+        for
+          now <- Clock.instant
+          _ <- env.happyRefresh(now)
+          (service, securityService) <- env.build
+          first <- env.refresh(service, carried)
+          // the old record is retired: the second presentation finds none, and reads as a replay of a token rotated away
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId = userId1, familyId = familyId1)))
+          _ <- env.accessTokenRevocation.announceFamily.succeedsWith(())
+          second <- env.refresh(service, carried).either
+          presentedMac <- securityService.mac(Secret(carried.getBytes(StandardCharsets.UTF_8)), TestEnvConfig.coreConfig.security.refreshTokensSecret)
+        yield assertTrue(
+          first.refreshToken.map(RefreshToken.present).exists(_.startsWith(routedPrefix)),
+          second == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          env.tokenRepo.revokeFamily.calls.head._1.sameElements(presentedMac),
+        )
+      },
+      test("a retry of a replacement under its idempotency key continues from the tip, and replaces again") {
+        val env = RoutedEnv(TestEnvConfig.cellCoreConfig)
+        val carried = RefreshToken.present(RefreshToken.issue(Some(otherCell), Array.fill(32)(9.toByte)))
+        val tip = MAC(Array.fill(32)(21.toByte))
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          // the first answer was lost: the record of the carried token is retired, and a token of this cell is its tip
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(Some((tip, boundRecord(now, Some(Cnf.dpop(jkt1))))))
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+          (service, _) <- env.build
+          token <- ZIO.fromEither(RefreshToken.fromPresented(carried)).mapError(RuntimeException(_))
+          result <- service.refreshAccessToken(
+            RefreshTokenRequest(token, None, None, None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            Some(jkt1),
+            None,
+            Some("retry-key"),
+          )
+        yield assertTrue(
+          result.refreshToken.map(RefreshToken.present).exists(_.startsWith(routedPrefix)),
+          env.tokenRepo.createRefreshToken.calls.head._2.exists(_.sameElements(tip)),
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+          env.tokenRepo.revokeFamily.calls.isEmpty,
+        )
+      },
+    ),
+    // versolauth/versola#1051: a user who is leaving is not served, and the token of one who moved is told where they went.
+    suite("a user who is leaving or has moved")(
+      test("a refresh token of a leaving user is refused as unavailable, and nothing is rotated or renewed") {
+        for
+          departures <- RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None)
+          env = RoutedEnv(TestEnvConfig.cellCoreConfig, departures)
+          now <- Clock.instant
+          _ <- env.happyRefresh(now)
+          (service, _) <- env.build
+          result <- env.refresh(service, Base64.urlEncode(Array.fill(32)(9.toByte))).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.Leaving),
+          env.tokenRepo.createRefreshToken.calls.isEmpty,
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+        )
+      },
+      test("a bound refresh token of a leaving user is refused as unavailable too") {
+        for
+          departures <- RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None)
+          env = RoutedEnv(TestEnvConfig.cellCoreConfig, departures)
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
+          (service, _) <- env.build
+          result <- env.refreshBound(service, Base64.urlEncode(Array.fill(32)(9.toByte)), jkt1).either
+        yield assertTrue(result == Left(TokenEndpointError.Leaving), env.tokenRepo.renewBoundToken.calls.isEmpty)
+      },
+      test("a token this cell holds costs one read by user id and none by token; a user who is not leaving is served as before") {
+        for
+          departures <- RecordingDepartures.make(Map.empty, Some("kz-2"))
+          env = RoutedEnv(TestEnvConfig.cellCoreConfig, departures)
+          now <- Clock.instant
+          _ <- env.happyRefresh(now)
+          (service, _) <- env.build
+          result <- env.refresh(service, Base64.urlEncode(Array.fill(32)(9.toByte)))
+          asked <- departures.asked
+        yield assertTrue(result.refreshToken.isDefined, asked == List(s"user:$userId1"))
+      },
+      test("a token this cell holds no record of, presented for a user who moved, is answered moved and is not read as a replay") {
+        for
+          departures <- RecordingDepartures.make(Map.empty, Some("kz-2"))
+          env = RoutedEnv(TestEnvConfig.cellCoreConfig, departures)
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          (service, _) <- env.build
+          result <- env.refresh(service, Base64.urlEncode(Array.fill(32)(9.toByte))).either
+          asked <- departures.asked
+        yield assertTrue(
+          result == Left(TokenEndpointError.Moved("kz-2")),
+          asked == List("token"),
+          env.tokenRepo.findIdempotentRetry.calls.isEmpty,
+          env.tokenRepo.revokeFamily.calls.isEmpty,
+        )
+      },
+      test("the tombstones are asked for with the client that presents the token: another client's is a token that does not exist") {
+        for
+          departures <- RecordingDepartures.make(Map.empty, None)
+          env = RoutedEnv(TestEnvConfig.cellCoreConfig, departures)
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(None)
+          (service, _) <- env.build
+          result <- env.refresh(service, Base64.urlEncode(Array.fill(32)(9.toByte))).either
+          askedFor <- departures.askedFor
+        yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.RefreshTokenNotFound), askedFor == List(clientId1))
+      },
+      test("a replayed rotated-away token of a leaving user revokes nothing: the caller is told to retry") {
+        for
+          departures <- RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None)
+          env = RoutedEnv(TestEnvConfig.cellCoreConfig, departures)
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ = env.tokenRepo.findRetiredTokenOwner.returnsWith(ZIO.succeed(Some(userId1)))
+          (service, _) <- env.build
+          result <- env.refresh(service, Base64.urlEncode(Array.fill(32)(9.toByte))).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.Leaving),
+          env.tokenRepo.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocation.announceFamily.calls.isEmpty,
+        )
+      },
+      test("a token no one knows is invalid_grant as before, and costs the one read of the tombstones") {
+        for
+          departures <- RecordingDepartures.make(Map.empty, None)
+          env = RoutedEnv(TestEnvConfig.cellCoreConfig, departures)
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(None)
+          (service, _) <- env.build
+          result <- env.refresh(service, Base64.urlEncode(Array.fill(32)(9.toByte))).either
+          asked <- departures.asked
+        yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.RefreshTokenNotFound), asked == List("token"))
+      },
+      test("a retry through a retired token of a leaving user is refused as unavailable") {
+        for
+          departures <- RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None)
+          env = RoutedEnv(TestEnvConfig.cellCoreConfig, departures)
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(Some((MAC(Array.fill(32)(21.toByte)), env.liveToken(now))))
+          (service, _) <- env.build
+          token <- ZIO.fromEither(RefreshToken.fromPresented(Base64.urlEncode(Array.fill(32)(9.toByte)))).mapError(RuntimeException(_))
+          result <- service
+            .refreshAccessToken(
+              RefreshTokenRequest(token, None, None, None),
+              ClientIdWithSecret(clientId1, Some(clientSecret1)),
+              None,
+              None,
+              Some("k"),
+            )
+            .either
+        yield assertTrue(result == Left(TokenEndpointError.Leaving), env.tokenRepo.createRefreshToken.calls.isEmpty)
+      },
+      test("a code of a leaving user is refused as unavailable before it is used, so the client may retry it") {
+        for
+          departures <- RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None)
+          env = new Env(departures = departures)
+          codeRecord = AuthorizationCodeRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            clientId = clientId1,
+            userId = userId1,
+            redirectUri = redirectUri1,
+            scope = scope1,
+            codeChallenge = None,
+            codeChallengeMethod = None,
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+            accessToken = accessToken1,
+            familyId = familyId1,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            resources = Nil,
+            authorizationDetails = None,
+            dpopJkt = None,
+          )
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          result <- env.service.exchangeAuthorizationCode(
+            CodeExchangeRequest(authCode1, redirectUri1, None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
+            None,
+          ).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.Leaving),
+          env.authCodeRepo.markAsUsed.calls.isEmpty,
+          env.tokenRepo.createRefreshToken.calls.isEmpty,
+        )
+      },
+      test("a code of a user who moved is answered moved") {
+        for
+          departures <- RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Moved("kz-2")), None)
+          env = new Env(departures = departures)
+          codeRecord = AuthorizationCodeRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            clientId = clientId1,
+            userId = userId1,
+            redirectUri = redirectUri1,
+            scope = scope1,
+            codeChallenge = None,
+            codeChallengeMethod = None,
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+            accessToken = accessToken1,
+            familyId = familyId1,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            resources = Nil,
+            authorizationDetails = None,
+            dpopJkt = None,
+          )
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          result <- env.service.exchangeAuthorizationCode(
+            CodeExchangeRequest(authCode1, redirectUri1, None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
+            None,
+          ).either
+        yield assertTrue(result == Left(TokenEndpointError.Moved("kz-2")), env.authCodeRepo.markAsUsed.calls.isEmpty)
       },
     ),
     suite("exchangeAuthorizationCode")(

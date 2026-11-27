@@ -19,18 +19,27 @@ import java.util.concurrent.ConcurrentHashMap
   * goes to the cell that holds the user, which central's own directory says (versolauth/versola#1041), so no cell is
   * asked where the user is and none answers "elsewhere".
   *
-  *  - A user of no cell, a user whose cell is not registered (an `auth` may name itself a cell before its cell is
-  *    registered), and a user the directory does not have go to the `auth` central is configured with, as every call did.
+  *  - A user of no cell, a user of the cell the configured `auth` names itself (`auth.cell-id`) while that cell is not
+  *    registered, and a user the directory does not have go to the `auth` central is configured with, as every call did.
+  *  - A user of any other cell that is not registered (one removed as lost) is in no database central can reach: a call about
+  *    it fails with [[AuthClient.CellNotRegistered]] and is not sent to the configured `auth`, which never held the user. A
+  *    deletion has nothing left to delete there and succeeds, so the directory can let the user go.
   *  - The nudge to read the configuration again goes to every cell: each has its own caches.
   *  - The antifraud policy is central's own and no cell is written to. A check of an entry or of the settings is
   *    answered by the configured `auth`; what an entry matched, how often it fired and a reset of the counters are each
   *    cell's own and go to every cell. The rule names and the status are those of the configured `auth`.
   *
+  * @param configuredCell the cell id the configured `auth` has, if any
   * @param at the client of a cell at its internal address, which sends the cell, and the cell only, a token made for it
   *   (the cell's id is the audience, #1050); one is kept for each cell and address
   */
-final class CellAuthClient(configured: AuthClient, at: (URL, CellId) => AuthClient, users: UserRepository, topology: TopologyRepository)
-  extends AuthClient:
+final class CellAuthClient(
+    configured: AuthClient,
+    configuredCell: Option[CellId],
+    at: (URL, CellId) => AuthClient,
+    users: UserRepository,
+    topology: TopologyRepository,
+) extends AuthClient:
   private val clients = ConcurrentHashMap[(CellId, String), AuthClient]()
 
   private def clientOf(cell: CellRecord): Task[AuthClient] =
@@ -44,7 +53,18 @@ final class CellAuthClient(configured: AuthClient, at: (URL, CellId) => AuthClie
   private def of(id: UserId): Task[AuthClient] =
     users.find(id).map(_.flatMap(_.cellId)).flatMap:
       case None => ZIO.succeed(configured)
-      case Some(cell) => topology.getCells.map(_.find(_.id == cell)).flatMap(_.fold(ZIO.succeed(configured))(clientOf))
+      case Some(cell) => ofCell(cell)
+
+  /** The `auth` of a cell: its own client when it is registered, the configured `auth` when the cell is the one that `auth` is. */
+  private def ofCell(cell: CellId): Task[AuthClient] =
+    topology.getCells.map(_.find(_.id == cell)).flatMap:
+      case Some(registered) => clientOf(registered)
+      case None if configuredCell.contains(cell) => ZIO.succeed(configured)
+      case None => ZIO.fail(AuthClient.CellNotRegistered(cell))
+
+  /** A deletion in a cell that is gone has nothing to delete. */
+  private def goneIsDeleted(deletion: Task[Unit]): Task[Unit] =
+    deletion.catchSome { case _: AuthClient.CellNotRegistered => ZIO.unit }
 
   override def upsertUser(id: UserId, version: UUID, email: Option[Email], phone: Option[Phone], login: Option[Login]): Task[Unit] =
     of(id).flatMap(_.upsertUser(id, version, email, phone, login))
@@ -62,15 +82,43 @@ final class CellAuthClient(configured: AuthClient, at: (URL, CellId) => AuthClie
     of(userId).flatMap(_.updateUserRoles(userId, tenantId, add, remove))
 
   override def deleteUser(userId: UserId): Task[Unit] =
-    of(userId).flatMap(_.deleteUser(userId))
+    goneIsDeleted(of(userId).flatMap(_.deleteUser(userId)))
 
   override def deleteUserOf(cell: Option[CellId], userId: UserId): Task[Unit] =
     cell match
       case None => configured.deleteUser(userId)
-      case Some(id) =>
-        topology.getCells.map(_.find(_.id == id)).flatMap:
-          case None => configured.deleteUser(userId)
-          case Some(registered) => clientOf(registered).flatMap(_.deleteUser(userId))
+      case Some(id) => goneIsDeleted(ofCell(id).flatMap(_.deleteUser(userId)))
+
+  /** The client of a cell that is registered; a call of a move is not routed by the user and never falls back to the configured
+    * `auth`, which would be the wrong database. */
+  private def registered(cell: CellId): Task[AuthClient] =
+    topology.getCells.map(_.find(_.id == cell)).flatMap:
+      case None => ZIO.fail(AuthClient.CellNotRegistered(cell))
+      case Some(record) => clientOf(record).mapError(_ => AuthClient.CellNotRegistered(cell))
+
+  override def depart(cell: CellId, userId: UserId, to: CellId, moveId: UUID): Task[Unit] =
+    registered(cell).flatMap(_.depart(cell, userId, to, moveId))
+
+  override def exportDeparture(cell: CellId, userId: UserId): Task[AuthClient.DepartureExport] =
+    registered(cell).flatMap(_.exportDeparture(cell, userId))
+
+  override def arrive(cell: CellId, userId: UserId, from: CellId, moveId: UUID, envelope: String): Task[Unit] =
+    registered(cell).flatMap(_.arrive(cell, userId, from, moveId, envelope))
+
+  override def keepArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit] =
+    registered(cell).flatMap(_.keepArrival(cell, userId, moveId))
+
+  override def completeDeparture(cell: CellId, userId: UserId, moveId: UUID, digest: String): Task[Unit] =
+    registered(cell).flatMap(_.completeDeparture(cell, userId, moveId, digest))
+
+  override def cancelDeparture(cell: CellId, userId: UserId): Task[Unit] =
+    registered(cell).flatMap(_.cancelDeparture(cell, userId))
+
+  override def discardArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit] =
+    registered(cell).flatMap(_.discardArrival(cell, userId, moveId))
+
+  override def departuresSummary(cell: CellId): Task[AuthClient.DeparturesSummary] =
+    registered(cell).flatMap(_.departuresSummary(cell))
 
   override def getUser(id: UserId): Task[Option[AuthClient.UserDto]] =
     of(id).flatMap(_.getUser(id))

@@ -94,6 +94,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify: (Response, Stub[UserService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
       authorization: Task[Header] = ZIO.succeed(TestAdminAuth.basicAuthHeader),
       cells: List[CellRecord] = Nil,
+      edgeRegistered: Boolean = false,
   ) =
     test(description) {
       for
@@ -115,6 +116,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
+        _ <- ZIO.when(edgeRegistered)(edgeService.find.succeedsWith(Some(TestCentralConfig.edgeRecord)))
         _ <- setup(service)
         authorizationHeader <- authorization
         response <- client.batched(
@@ -276,6 +278,43 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.Unauthorized,
       verify = (_, service) => ZIO.succeed(assertTrue(service.lookup.calls.isEmpty)),
     ),
+    // an edge's token is genuine and registered, and these routes are an auth's: refused in the handler, whatever the group in front does
+    controllerTestCase(
+      description = "lookup is refused to a registered edge's token, and nothing is asked",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "lookup",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      authorization = TestCentralConfig.edgeToken.map(Header.Authorization.Bearer(_)),
+      edgeRegistered = true,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.lookup.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "home is refused to a registered edge's token, and nothing is asked",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString(s"""{"login":"alice"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      authorization = TestCentralConfig.edgeToken.map(Header.Authorization.Bearer(_)),
+      edgeRegistered = true,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "superseded session is refused to a registered edge's token, and no session is ended",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "sessions" / "superseded",
+        body = Body.fromString(s"""{"userId":"$userId","sessionId":"c2lk"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      authorization = TestCentralConfig.edgeToken.map(Header.Authorization.Bearer(_)),
+      edgeRegistered = true,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.supersedeSession.calls.isEmpty)),
+    ),
     // versolauth/versola#1048
     controllerTestCase(
       description = "home answers the cell of a login to auth's token",
@@ -290,7 +329,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (response, service) =>
         for body <- response.body.asJson[HomeCellResponse]
         yield assertTrue(
-          service.homeCell.calls == List(HomeCellRequest(login = Some(Login("jdoe")), userId = None)),
+          service.homeCell.calls == List(HomeCellRequest(login = Some(Login("jdoe")), userId = None, email = None, phone = None)),
           body == HomeCellResponse(CellId("kz-1")),
         ),
     ),
@@ -311,6 +350,82 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         method = Method.POST,
         url = URL.empty / "users" / "home",
         body = Body.fromString("""{"login":"jdoe"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "home answers the cell of an email to auth's token",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"email":"user@example.com"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.homeCell.succeedsWith(Some(CellId("kz-2"))),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[HomeCellResponse]
+        yield assertTrue(
+          service.homeCell.calls == List(HomeCellRequest(login = None, userId = None, email = Some(Email("user@example.com")), phone = None)),
+          body == HomeCellResponse(CellId("kz-2")),
+        ),
+    ),
+    controllerTestCase(
+      description = "home answers the cell of a phone to auth's token",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"phone":"+15551234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.homeCell.succeedsWith(Some(CellId("kz-3"))),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[HomeCellResponse]
+        yield assertTrue(
+          service.homeCell.calls == List(HomeCellRequest(login = None, userId = None, email = None, phone = Some(Phone("+15551234567")))),
+          body == HomeCellResponse(CellId("kz-3")),
+        ),
+    ),
+    controllerTestCase(
+      description = "home for an email with nowhere to send it is 404",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"email":"user@example.com"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.homeCell.succeedsWith(None),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "home for a phone with nowhere to send it is 404",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"phone":"+15551234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.homeCell.succeedsWith(None),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "home for an email is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"email":"user@example.com"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "home for a phone is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"phone":"+15551234567"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Unauthorized,
       verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
@@ -465,7 +580,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         url = (URL.empty / "users").addQueryParam("id", userId.toString),
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.findById.succeedsWith(Some(UserSearchRecord(userId, Some(email), None, None, Json.Obj()))),
+      setup = service =>
+        service.findById.succeedsWith(Some(UserSearchRecord(
+          id = userId,
+          email = Some(email),
+          phone = None,
+          login = None,
+          claims = Json.Obj(),
+          cell = None,
+          move = None,
+        ))),
       verify = (response, _) =>
         for body <- response.body.asJson[UserSearchResponse]
         yield assertTrue(body.users.head.id == userId),
@@ -477,7 +601,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         url = (URL.empty / "users").addQueryParam("email", email.toString),
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.findByEmail.succeedsWith(Some(UserSearchRecord(userId, Some(email), None, None, Json.Obj()))),
+      setup = service =>
+        service.findByEmail.succeedsWith(Some(UserSearchRecord(
+          id = userId,
+          email = Some(email),
+          phone = None,
+          login = None,
+          claims = Json.Obj(),
+          cell = None,
+          move = None,
+        ))),
       verify = (response, service) =>
         for body <- response.body.asJson[UserSearchResponse]
         yield assertTrue(service.findByEmail.calls == List(email), body.users.head.id == userId),
@@ -489,7 +622,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         url = URL.decode("/users?phone=%2B16502530000").toOption.get,
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.findByPhone.succeedsWith(Some(UserSearchRecord(userId, None, Some(Phone("+16502530000")), None, Json.Obj()))),
+      setup = service =>
+        service.findByPhone.succeedsWith(Some(UserSearchRecord(
+          id = userId,
+          email = None,
+          phone = Some(Phone("+16502530000")),
+          login = None,
+          claims = Json.Obj(),
+          cell = None,
+          move = None,
+        ))),
       verify = (response, service) =>
         for body <- response.body.asJson[UserSearchResponse]
         yield assertTrue(service.findByPhone.calls == List(Phone("+16502530000")), body.users.head.id == userId),
@@ -501,7 +643,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         url = (URL.empty / "users").addQueryParam("login", "jdoe"),
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.findByLogin.succeedsWith(Some(UserSearchRecord(userId, None, None, Some(Login("jdoe")), Json.Obj()))),
+      setup = service =>
+        service.findByLogin.succeedsWith(Some(UserSearchRecord(
+          id = userId,
+          email = None,
+          phone = None,
+          login = Some(Login("jdoe")),
+          claims = Json.Obj(),
+          cell = None,
+          move = None,
+        ))),
       verify = (response, service) =>
         for body <- response.body.asJson[UserSearchResponse]
         yield assertTrue(service.findByLogin.calls == List(Login("jdoe")), body.users.head.id == userId),

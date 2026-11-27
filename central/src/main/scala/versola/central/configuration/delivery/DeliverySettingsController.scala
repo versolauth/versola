@@ -4,7 +4,7 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.topology.CellRegistry
-import versola.central.{CentralConfig, SecretTransport, authorizeBasic, authorizeInternal}
+import versola.central.{CentralConfig, SecretTransport, authorizeAuth, authorizeBasic}
 import versola.util.SecurityService
 import versola.util.http.{BadRequest, Observability}
 import zio.ZIO
@@ -32,12 +32,13 @@ object DeliverySettingsController extends AuditedController:
 
   /** For auth. Separate from the admin surface because this is the one answer that carries the
     * passwords: encrypted to the key of the `auth` that asked and base64url encoded, the way client
-    * secrets travel on this channel ([[SecretTransport]]).
+    * secrets travel on this channel ([[SecretTransport]]). Only an `auth` asks: an edge's token is refused
+    * (`authorizeAuth`), as it has no use for the passwords.
     */
   val syncDeliverySettingsEndpoint =
     (Method.GET / "configuration" / "delivery-settings" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
-        caller <- authorizeInternal(request)
+        caller <- authorizeAuth(request)
         service <- ZIO.service[DeliverySettingsService]
         settings <- service.getSettings
         transportEncrypt <- SecretTransport.to(caller)

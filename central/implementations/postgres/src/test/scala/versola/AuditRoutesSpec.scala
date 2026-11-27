@@ -173,6 +173,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
         "resume",
         "approve",
         "reject",
+        "move",
       )
     if actions.contains(last) then s"action:$last"
     else

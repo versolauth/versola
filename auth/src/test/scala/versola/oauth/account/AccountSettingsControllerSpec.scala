@@ -9,14 +9,16 @@ import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.oauth.conversation.ConversationRenderService
+import versola.oauth.model.RefreshToken
 import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, UserDepartures}
 import versola.util.audit.{AuditDraft, AuditEvents}
 import versola.util.http.{NoopTracing, Observability}
-import versola.util.{Base64, Secret, UnitSpecBase}
+import versola.util.{Base64, MAC, Secret, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -147,6 +149,11 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       Stub[AccountSettingsService],
   )
 
+  private def refusing(refusal: DepartureRefusal): UserDepartures =
+    new UserDepartures:
+      override def refuse(userId: UserId) = ZIO.fail(refusal)
+      override def refuseToken(token: MAC.Of[RefreshToken], clientId: versola.oauth.client.model.ClientId) = ZIO.fail(refusal)
+
   private def controllerTestCase(
       description: String,
       request: Request,
@@ -154,6 +161,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       setup: Stubs => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stubs) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
       authenticate: Boolean = true,
+      departures: UserDepartures = UserDepartures.none,
       callerSessionId: PublicSessionId = ownSessionId,
       resourceSecrets: List[Secret] = List(accountResourceSecret),
       callerSecret: Secret = accountResourceSecret,
@@ -197,6 +205,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
                   ZEnvironment(accountSettingsService) ++
                   ZEnvironment(TestEnvConfig.coreConfig) ++
                   ZEnvironment[AuditEvents](auditEvents) ++
+                  ZEnvironment[UserDepartures](departures) ++
                   tracing,
               ),
           ),
@@ -263,6 +272,92 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         request = Request.get(URL.empty / "settings").addHeader(basic()),
         expectedStatus = Status.BadRequest,
         authenticate = false,
+      ),
+    ),
+    // versolauth/versola#1051: a user who is leaving is not served by any route, and nothing of theirs is read or changed.
+    suite("a user who is leaving or has moved")(
+      {
+        val routes: List[(String, Request, Stubs => Boolean)] = List(
+          ("GET /settings", Request.get(URL.empty / "settings"), stubs => stubs._2.listByUser.calls.isEmpty && stubs._3.listByUser.calls.isEmpty),
+          (
+            "DELETE /settings/sessions",
+            Request(
+              method = Method.DELETE,
+              url = URL.empty / "settings" / "sessions",
+              body = Body.fromString(s"""{"targetSessionId":"${otherDeviceSession.publicId}"}"""),
+            ).addHeader(Header.ContentType(MediaType.application.json)),
+            stubs => stubs._2.invalidateForUser.calls.isEmpty,
+          ),
+          ("PATCH /settings/password", changePassword, stubs => stubs._8.changePassword.calls.isEmpty),
+          (
+            "PATCH /settings/passkeys",
+            Request.patch(
+              URL.empty / "settings" / "passkeys",
+              Body.fromString(s"""{"credentialId":"${Base64.urlEncode(passkeyId)}","name":"Renamed"}"""),
+            ).addHeader(Header.ContentType(MediaType.application.json)),
+            stubs => stubs._3.rename.calls.isEmpty,
+          ),
+          (
+            "DELETE /settings/passkeys",
+            Request(
+              method = Method.DELETE,
+              url = URL.empty / "settings" / "passkeys",
+              body = Body.fromString(s"""{"credentialId":"${Base64.urlEncode(passkeyId)}"}"""),
+            ).addHeader(Header.ContentType(MediaType.application.json)),
+            stubs => stubs._3.deleteByUser.calls.isEmpty,
+          ),
+          (
+            "POST /settings/passkeys/register/start",
+            Request.post(URL.empty / "settings" / "passkeys" / "register" / "start", Body.fromString("{}"))
+              .addHeader(Header.ContentType(MediaType.application.json)),
+            stubs => stubs._4.startRegistration.calls.isEmpty && stubs._1.getPasskeySettings.calls.isEmpty,
+          ),
+          (
+            "POST /settings/passkeys/register/finish",
+            Request.post(
+              URL.empty / "settings" / "passkeys" / "register" / "finish",
+              Body.fromString(s"""{"ticket":"${ticketFor(userId)}","response":{},"name":"My device"}"""),
+            ).addHeader(Header.ContentType(MediaType.application.json)),
+            stubs => stubs._4.finishRegistration.calls.isEmpty,
+          ),
+        )
+        suite("every route")(
+          routes.flatMap((name, request, untouched) =>
+            List(
+              controllerTestCase(
+                description = s"$name answers a leaving user with 503, Retry-After: 2 and temporarily_unavailable, and touches nothing",
+                request = request,
+                expectedStatus = Status.ServiceUnavailable,
+                departures = refusing(DepartureRefusal.Leaving),
+                verify = (response, stubs) =>
+                  for body <- response.body.asString
+                  yield assertTrue(
+                    response.header(Header.RetryAfter).exists(_.renderedValue == "2"),
+                    body.contains(""""error":"temporarily_unavailable""""),
+                    untouched(stubs),
+                  ),
+                verifyAudit = drafts => assertTrue(drafts.isEmpty),
+              ),
+              controllerTestCase(
+                description = s"$name answers a user who moved with 421 and exactly the cell",
+                request = request,
+                expectedStatus = Status.MisdirectedRequest,
+                departures = refusing(DepartureRefusal.Moved("kz-2")),
+                verify = (response, stubs) =>
+                  for body <- response.body.asString
+                  yield assertTrue(body == """{"error":"moved","cell":"kz-2"}""", untouched(stubs)),
+                verifyAudit = drafts => assertTrue(drafts.isEmpty),
+              ),
+            ),
+          )*,
+        )
+      },
+      controllerTestCase(
+        description = "does not tell a caller without the resource credentials that a user is leaving",
+        request = Request.get(URL.empty / "settings"),
+        expectedStatus = Status.Unauthorized,
+        callerSecret = previousAccountResourceSecret,
+        departures = refusing(DepartureRefusal.Leaving),
       ),
     ),
     suite("GET /settings")(

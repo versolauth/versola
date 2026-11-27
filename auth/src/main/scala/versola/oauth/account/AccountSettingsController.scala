@@ -15,6 +15,7 @@ import versola.oauth.session.SessionService
 import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, DepartureResponses, UserDepartures}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{BadRequest, Controller, Observability, Unauthorized}
 import versola.util.{Base64, CoreConfig, Secret}
@@ -25,6 +26,7 @@ import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.security.MessageDigest
+import scala.util.control.NoStackTrace
 
 /** The self-service Security page and APIs, exposed only on auth's additional listener.
     * Edge authenticates and authorizes the caller, performs configured step-up checks, then
@@ -33,7 +35,7 @@ import java.security.MessageDigest
 object AccountSettingsController extends Controller:
   type Env = Tracing & CoreConfig & OAuthConfigurationService & SessionService &
     PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService &
-    PasswordService & AccountSettingsService & AuditEvents
+    PasswordService & AccountSettingsService & AuditEvents & UserDepartures
 
   /** How long an unfinished enrollment ceremony stays usable. */
   private val enrollmentTtl = 5.minutes
@@ -46,13 +48,29 @@ object AccountSettingsController extends Controller:
     changePasswordRoute,
     startPasskeyEnrollmentRoute,
     finishPasskeyEnrollmentRoute,
-  )
+  ).handleErrorZIO:
+    // A user who is leaving this cell is not served (versolauth/versola#1051): `503` with `Retry-After`, as any endpoint of auth says it.
+    case Away(refusal) =>
+      Observability.setError(refusal match
+        case DepartureRefusal.Leaving => "user_leaving"
+        case DepartureRefusal.Moved(_) => "moved").as(DepartureResponses.of(refusal))
+    case other => Observability.errorResponse(other)
+
+  /** A user who is leaving, or has left, is not served here; carried as far as [[routes]], which answers it. */
+  private final case class Away(refusal: DepartureRefusal) extends RuntimeException with NoStackTrace
+
+  /** One read by user id, before the user's rows are read or changed. */
+  private def present(userId: UserId): ZIO[UserDepartures, Throwable, Unit] =
+    ZIO.serviceWithZIO[UserDepartures](_.refuse(userId)).mapError:
+      case refusal: DepartureRefusal => Away(refusal)
+      case failure: Throwable => failure
 
   val pageRoute: Route[Env, Throwable] =
     Method.GET / "settings" -> handler { (request: Request) =>
       for
         _ <- authorizeResource(request)
         userId <- request.queryZIO[UserId]("userId")
+        _ <- present(userId)
         clientId <- request.queryZIO[ClientId]("clientId")
         sessionId <- request.queryZIO[PublicSessionId]("sessionId")
         view <- accountView(userId, sessionId)
@@ -72,6 +90,7 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[RevokeSessionRequest]
+        _ <- present(body.userId)
         response <- ZIO.serviceWithZIO[SessionService](_.invalidateForUser(body.targetSessionId, body.userId, RevocationCause.UserRevoked)).flatMap:
           case true =>
             // The session's own record is gone with it, so the number of relying parties is not known here: 0 says "not known".
@@ -99,6 +118,7 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[ChangePasswordRequest]
+        _ <- present(body.userId)
         result <- ZIO.serviceWithZIO[AccountSettingsService](
           _.changePassword(
             userId = body.userId,
@@ -122,6 +142,7 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[RenamePasskeyRequest]
+        _ <- present(body.userId)
         _ <- ZIO.serviceWithZIO[PasskeyRepository](_.rename(body.credentialId, body.userId, body.name))
       yield Response.status(Status.NoContent)
     }
@@ -131,6 +152,7 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[DeletePasskeyRequest]
+        _ <- present(body.userId)
         _ <- ZIO.serviceWithZIO[PasskeyRepository](_.deleteByUser(body.credentialId, body.userId))
         _ <- ZIO.serviceWithZIO[AuditEvents](
           _.log(
@@ -155,6 +177,7 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[StartEnrollmentRequest]
+        _ <- present(body.userId)
         config <- ZIO.service[CoreConfig]
         settings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(body.clientId))
           .someOrFail(BadRequest("passkeys are not enabled"))
@@ -175,6 +198,7 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[FinishEnrollmentRequest]
+        _ <- present(body.userId)
         ticket <- parseAndValidatePasskeyTicket(body)
         record <- ZIO.serviceWithZIO[WebAuthnService](
           _.finishRegistration(body.clientId, body.userId, ticket.request, body.response.toJson, Some(body.name)),

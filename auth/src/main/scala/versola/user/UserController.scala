@@ -19,6 +19,7 @@ import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord}
 import versola.role.model.RoleId
 import versola.user.model.*
+import versola.user.move.{DepartureRefusal, UserDepartures}
 import versola.util.CoreConfig
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
@@ -27,14 +28,16 @@ import zio.*
 import zio.http.{Header, Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.json.JsonCodec
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.time.Instant
+import scala.util.control.NoStackTrace
 
 object UserController extends Controller:
   type Env =
     Tracing & UserRepository & CoreConfig & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService &
-      AuditEvents & AuditReportService & OAuthConfigurationService & AccessTokenRevocationService
+      AuditEvents & AuditReportService & OAuthConfigurationService & AccessTokenRevocationService & UserDepartures
 
   /** What an administrator did to an account, as central told auth: the actor is the administrator the call names (`actorId`) or the
     * `central` service, as noted in the request's context, the subject the user. `actor` says it is the service whatever the call names:
@@ -83,7 +86,25 @@ object UserController extends Controller:
     setPasswordEndpoint,
     auditEventsEndpoint,
     auditSummaryEndpoint,
-  )
+  ).handleErrorZIO:
+    // A user who is leaving this cell, or has left it, is not served (versolauth/versola#1051): central is told which, and a move it
+    // drives is its own: `409` with the code, `user_leaving` for the first.
+    case UserAway(refusal) =>
+      val code = refusal match
+        case DepartureRefusal.Leaving => "user_leaving"
+        case DepartureRefusal.Moved(_) => "user_moved"
+      Observability.setError(code).as(Response.json(Json.Obj("error" -> Json.Str(code)).toJson).status(Status.Conflict))
+    case other => Observability.errorResponse(other)
+
+  /** A user who is leaving, or has left, is not served here; carried as far as [[routes]], which answers it. */
+  private final case class UserAway(refusal: DepartureRefusal) extends RuntimeException with NoStackTrace
+
+  /** One read by user id, before the user's rows are read or changed. The reports of the audit log do not ask: the log stays in the
+    * cell the user left, and is read from there. */
+  private def present(userId: UserId): ZIO[UserDepartures, Throwable, Unit] =
+    ZIO.serviceWithZIO[UserDepartures](_.refuse(userId)).mapError:
+      case refusal: DepartureRefusal => UserAway(refusal)
+      case failure: Throwable => failure
 
   val upsertUserEndpoint =
     Method.PUT / "users" -> handler { (request: Request) =>
@@ -91,6 +112,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[UpsertUserPayload]
+        _ <- present(body.id)
         // The identifiers are what takes an account over: what changed is what the account held before the write and holds after it,
         // which also covers a write that central's version ordering ignored. Names only, never the values.
         before <- repo.find(body.id)
@@ -114,6 +136,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[PatchUserPayload]
+        _ <- present(body.id)
         before <- repo.find(body.id)
         response <- before match
           case None => Observability.setError("user_not_found").as(Response.status(Status.NotFound))
@@ -142,6 +165,7 @@ object UserController extends Controller:
         repo <- ZIO.service[UserRepository]
         logoutService <- ZIO.service[LogoutService]
         id <- request.url.queryZIO[UserId]("id")
+        _ <- present(id)
         _ <- Observability.setUserId(id.toString)
         _ <- logoutService.invalidateAllSessions(id, RevocationCause.UserDeleted)
         _ <- repo.delete(id)
@@ -155,6 +179,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[PatchUserClaimsPayload]
+        _ <- present(body.id)
         _ <- actedBy(body.actorId)
         _ <- repo.patchClaims(body.id, body.claims)
         _ <- audited(AuthAuditKinds.AccountClaimsUpdated, body.id, AuthAuditDetails.ClaimsUpdated(body.claims.fields.map(_._1).toList.sorted))
@@ -167,6 +192,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[UpdateUserRolesPayload]
+        _ <- present(body.userId)
         // A role in a token is a right, not a hint: taking one away refuses the tokens that still carry it, in the
         // transaction that removes it. Adding one revokes nothing, and the refresh token is not touched either, which is
         // how the user gets a token with the roles they hold now.
@@ -191,6 +217,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         id <- request.url.queryZIO[UserId]("id")
+        _ <- present(id)
         user <- repo.find(id)
       yield user match
         case Some(record) =>
@@ -245,6 +272,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         id <- request.url.queryZIO[UserId]("id")
+        _ <- present(id)
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         roles <- repo.findRolesByUserAndTenant(id, tenantId)
       yield Response.json(UserRolesResponse(roles).toJson)
@@ -256,6 +284,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         sessionService <- ZIO.service[SessionService]
         userId <- request.url.queryZIO[UserId]("id")
+        _ <- present(userId)
         sessions <- sessionService.listByUser(userId)
         responses = sessions.map(sessionResponse)
       yield Response.json(SessionListResponse(responses).toJson)
@@ -295,6 +324,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         sessionService <- ZIO.service[SessionService]
         userId <- request.url.queryZIO[UserId]("id")
+        _ <- present(userId)
         devices <- sessionService.listDevicesByUser(userId)
         responses = devices.map: device =>
           DeviceResponse(
@@ -313,6 +343,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         logoutService <- ZIO.service[LogoutService]
         userId <- request.queryZIO[UserId]("userId")
+        _ <- present(userId)
         userAgentId <- request.queryZIO[UserAgentId]("userAgentId")
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
@@ -333,6 +364,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         logoutService <- ZIO.service[LogoutService]
         userId <- request.queryZIO[UserId]("userId")
+        _ <- present(userId)
         sessionId <- request.queryZIO[Option[PublicSessionId]]("sessionId")
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
@@ -360,6 +392,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         sessionService <- ZIO.service[SessionService]
         userId <- request.queryZIO[UserId]("userId")
+        _ <- present(userId)
         clientId <- request.queryZIO[ClientId]("clientId")
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
@@ -393,6 +426,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         sessionService <- ZIO.service[SessionService]
         userId <- request.url.queryZIO[UserId]("id")
+        _ <- present(userId)
         tokens <- sessionService.listRefreshTokensByUser(userId)
         responses = tokens.map { token =>
           RefreshTokenResponse(
@@ -413,6 +447,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         throttleRepo <- ZIO.service[ChallengeThrottleRepository]
         body <- request.body.asJsonFromCodec[ResetUserLimitsPayload]
+        _ <- present(body.userId)
         _ <- actedBy(body.actorId)
         tenantId = body.tenantId
         subjects = (List(body.userId.toString) ++ body.email.map(_.toString) ++ body.phone.map(_.toString)).distinct
@@ -427,6 +462,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[PasskeyRepository]
         userId <- request.url.queryZIO[UserId]("id")
+        _ <- present(userId)
         records <- repo.listByUser(userId)
         passkeys = records.map: r =>
           PasskeyInfoResponse(r.id, r.name, r.deviceType, r.transports, r.backedUp, r.backupEligible, r.lastUsedAt, r.createdAt)
@@ -439,6 +475,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[PasskeyRepository]
         body <- request.body.asJsonFromCodec[RenamePasskeyPayload]
+        _ <- present(body.userId)
         _ <- repo.rename(body.credentialId, body.userId, body.name)
       yield Response.status(Status.NoContent)
     }
@@ -449,6 +486,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[PasskeyRepository]
         userId <- request.queryZIO[UserId]("id")
+        _ <- present(userId)
         credentialId <- request.queryZIO[CredentialId]("credentialId")
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
@@ -466,6 +504,7 @@ object UserController extends Controller:
       for
         _ <- authorizeInternal(request)
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
+        _ <- present(body.userId)
         _ <- actedBy(body.actorId)
         passwordService <- ZIO.service[PasswordService]
         response <-
@@ -493,6 +532,7 @@ object UserController extends Controller:
       for
         _ <- authorizeInternal(request)
         body <- request.body.asJsonFromCodec[SetPasswordPayload]
+        _ <- present(body.userId)
         _ <- actedBy(body.actorId)
         passwordService <- ZIO.service[PasswordService]
         // The tokens issued before the change are refused, recorded with the password; sessions and refresh tokens stay.
