@@ -16,7 +16,11 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
   private def tokenService(client: Client): CentralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
     override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
-    override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
+    // As the real service answers a configuration sync: a status that is not a success is a failure, not a response.
+    override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
+      client.request(request).flatMap: response =>
+        if response.status.isSuccess then ZIO.succeed(response)
+        else ZIO.fail(CentralSyncTokenService.UnexpectedStatus(response.status, request.url.path.encode))
 
   /** What central sends: a password is encrypted to the key of the auth that asked, and encoded base64url. */
   private def transportEncrypted(plaintext: String, to: RsaKeyPair = TestEnvConfig.authKeyPair): ZIO[SecurityService, Throwable, String] =

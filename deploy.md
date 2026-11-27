@@ -513,6 +513,23 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
 
+#### Behaviour change: edge sends a resource its own view of the caller, not the forwarding fields the caller wrote
+
+On `/resources/*`, edge no longer passes these request fields to the resource: `Forwarded`, every `X-Forwarded-*`, `X-Real-IP`,
+`Proxy-Authorization`, and the connection-specific ones, which are `Connection` (and each field it names), `Proxy-Connection`,
+`Keep-Alive`, `TE`, `Transfer-Encoding` and `Upgrade` (RFC 9110 §7.6.1). Instead it sets `X-Forwarded-For` and `X-Real-IP` to one
+address, the one it uses for the address rate limit (`client-ip`, see [Rate limits](#rate-limits)): the peer of the connection by
+default, or the value of `client-ip-header` when `client-ip = "forwarded"`. The address is written as an address (an IPv6 one whole, an IPv4-mapped one as IPv4), not as the key of the address rate limit. When edge has no address it can vouch for, it sets neither: the peer of a connection that stands in for a missing or malformed `client-ip-header`, and the mutual-TLS listener, where the caller is a certificate. The same fields
+(and `Proxy-Authenticate`) are dropped from what the resource answers. `Forwarded` is never set (RFC 7239 §4: off by default).
+Before, all of them went through as the caller sent them, so a caller could choose the identity a resource read from them.
+
+- **Who can notice.** A resource that reads the client address from `X-Forwarded-For` / `X-Real-IP` set by a proxy in front of edge:
+  with the default `client-ip = "socket"` it now gets the address of that proxy. Set `client-ip = "forwarded"` (only when edge is reachable
+  *only* through that proxy, as already required for the address limit) and the resource gets the address the proxy set.
+  A resource that reads `X-Forwarded-Proto` or `X-Forwarded-Host` no longer gets them and has to be configured with its public origin.
+- **CEL.** `request.headers` still shows the fields as the caller sent them; a rule must not read an identity from them.
+- **No setting, no migration.**
+
 #### Behaviour change: a one-time code is good for 10 minutes after it was sent
 
 A code used to be accepted for as long as its sign-in lived (`authConversationTtlSeconds` of the tenant, 15 minutes by default, more where
@@ -1973,6 +1990,7 @@ Nothing changes while the database is up: a drain takes the time it takes.
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
+| `VERSOLA_TLS_CIPHER_POLICY` | `bcp195` | `bcp195` refuses the TLS 1.2 AES-CBC cipher suites on the mutual-TLS listeners and on every connection the process opens (RFC 9325 §4.2 recommends only AES-GCM suites; FAPI 2.0 requires BCP 195), and the service does not start when the JDK still offers one; gauge `tls_cbc_refused` is 1 then. `jdk` keeps the JDK's own list (gauge 0). The setting is process-wide: a peer that offers only CBC in TLS 1.2 fails the handshake (`handshake_failure`), whether it is a client of a listener or a server the process connects to. In a `versola`-generated compose file the value is read from the environment of the `versola` command that starts the containers (`export VERSOLA_TLS_CIPHER_POLICY=jdk`; set it in every shell that runs `versola up` or a rollout, or the next start returns to `bcp195`) and defaults to `bcp195`; the chart takes it through `extraEnv` |
 | `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
 

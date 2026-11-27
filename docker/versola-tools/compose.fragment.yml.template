@@ -209,6 +209,8 @@ services:
       # not later, on real traffic, at the first query against a table
       # that was never created.
       RUN_MIGRATIONS: "false"
+      # TLS 1.2 AES-CBC suites are refused (bcp195); export VERSOLA_TLS_CIPHER_POLICY=jdk before `versola up` to keep the JDK list.
+      VERSOLA_TLS_CIPHER_POLICY: ${VERSOLA_TLS_CIPHER_POLICY:-bcp195}
     # Resolved by versola-cli against OpenBao, not written by this image --
     # central.conf's secret fields are ${VAR} placeholders (see
     # gen-env.scala's secretField) that only resolve if the matching
@@ -278,6 +280,8 @@ services:
       CONFIG_PATH: /app/config/env.conf
       # See central's own RUN_MIGRATIONS comment above.
       RUN_MIGRATIONS: "false"
+      # TLS 1.2 AES-CBC suites are refused (bcp195); export VERSOLA_TLS_CIPHER_POLICY=jdk before `versola up` to keep the JDK list.
+      VERSOLA_TLS_CIPHER_POLICY: ${VERSOLA_TLS_CIPHER_POLICY:-bcp195}
     expose:
       - "8083"
     env_file:
@@ -319,6 +323,8 @@ services:
       CONFIG_PATH: /app/config/env.conf
       # See central's own RUN_MIGRATIONS comment above.
       RUN_MIGRATIONS: "false"
+      # TLS 1.2 AES-CBC suites are refused (bcp195); export VERSOLA_TLS_CIPHER_POLICY=jdk before `versola up` to keep the JDK list.
+      VERSOLA_TLS_CIPHER_POLICY: ${VERSOLA_TLS_CIPHER_POLICY:-bcp195}
     env_file:
       - ./edge.secrets.env
     volumes:

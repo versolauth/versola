@@ -1,0 +1,52 @@
+# Synthetic data for versola-tls.rules.yaml, run with `promtool test rules dashboards/alerts/tests/versola-tls.rules.test.yaml`.
+# In `prod` the edge exports 0 (the policy is off); in `stage` every service exports 1.
+rule_files:
+  - ../versola-tls.rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'tls_cbc_refused{namespace="prod", service="auth"}'
+        values: '1x30'
+      - series: 'tls_cbc_refused{namespace="prod", service="edge"}'
+        values: '0x30'
+      - series: 'tls_cbc_refused{namespace="stage", service="auth"}'
+        values: '1x30'
+      - series: 'tls_cbc_refused{namespace="stage", service="edge"}'
+        values: '1x30'
+    alert_rule_test:
+      # inside the `for` of the rule: pending, not firing
+      - eval_time: 5m
+        alertname: TlsCbcPolicyOff
+        exp_alerts: []
+      # past it: only the namespace with a 0, not the one where every service exports 1
+      - eval_time: 15m
+        alertname: TlsCbcPolicyOff
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: prod
+            exp_annotations:
+              summary: "A service runs without the TLS cipher policy in prod"
+              description: "A service exports tls_cbc_refused 0: VERSOLA_TLS_CIPHER_POLICY=jdk turned the policy off, so its mutual-TLS listeners agree to the TLS 1.2 AES-CBC cipher suites (TLS_ECDHE_RSA_WITH_AES_{128,256}_CBC_SHA) that RFC 9325 §4.2 does not recommend. On an installation that has to meet FAPI 2.0 that is a deviation; on one that does not, it is the opt-out working as set. Read the variable in the environment of the service that exports 0."
+
+  - interval: 1m
+    input_series:
+      # the policy comes back (the variable removed, the service restarted): the alert clears
+      - series: 'tls_cbc_refused{namespace="prod", service="edge"}'
+        values: '0x15 1x15'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: TlsCbcPolicyOff
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: prod
+            exp_annotations:
+              summary: "A service runs without the TLS cipher policy in prod"
+              description: "A service exports tls_cbc_refused 0: VERSOLA_TLS_CIPHER_POLICY=jdk turned the policy off, so its mutual-TLS listeners agree to the TLS 1.2 AES-CBC cipher suites (TLS_ECDHE_RSA_WITH_AES_{128,256}_CBC_SHA) that RFC 9325 §4.2 does not recommend. On an installation that has to meet FAPI 2.0 that is a deviation; on one that does not, it is the opt-out working as set. Read the variable in the environment of the service that exports 0."
+      - eval_time: 25m
+        alertname: TlsCbcPolicyOff
+        exp_alerts: []
