@@ -3,6 +3,7 @@ package versola.e2e.support
 import zio.*
 import zio.http.*
 import zio.http.Header.Authorization
+import zio.json.*
 import zio.json.ast.Json
 
 /** How a caller authenticates itself to the edge.
@@ -346,6 +347,14 @@ case class EdgeSession(cookie: String, response: Response):
   val presetId: String = cookie.takeWhile(_ != ':')
   val accessToken: String = cookie.dropWhile(_ != ':').drop(1)
   val auth: EdgeAuth = EdgeAuth.Session(cookie)
+
+  /** `x5t#S256` of the access token's `cnf`, or `None` for a token bound to no certificate. Reads the token as a JWT whose
+    * payload is base64url JSON, as the staged auth issues it. */
+  def certificateThumbprint: Task[Option[String]] =
+    for
+      payload <- ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(accessToken.split('.')(1)), "UTF-8"))
+      json <- ZIO.fromEither(payload.fromJson[Json.Obj]).mapError(RuntimeException(_))
+    yield json.get("cnf").flatMap(_.asObject).flatMap(_.get("x5t#S256")).flatMap(_.asString)
 
 object EdgeApi:
   val sessionCookieName = "EDGE_SESSION"

@@ -3,8 +3,6 @@ package versola.e2e.flows.edge
 import versola.e2e.support.*
 import zio.*
 import zio.http.{Client, Method, Status}
-import zio.json.*
-import zio.json.ast.Json
 import zio.test.*
 
 /** #567: an edge-fronted web client whose certificate central issued, on an edge whose `versola-internal-url` is plaintext.
@@ -23,8 +21,9 @@ import zio.test.*
   * is the one `EdgeIssuedCertificateSpec` uses, with pushed authorization requests required (a web client of this kind is
   * registered with them) and an [[EdgeApi]] that talks to the second edge.
   *
-  * A request that took the other route would be refused: auth's plain port knows nothing of a certificate that was not in a
-  * header, so a sign-in that completes is the listener's doing.
+  * A certificate is presented only over https (`SSOClient.mutualTlsConnection` fails with `CredentialNeedsTls` otherwise, before
+  * anything reaches auth), so a sign-in that completes is the listener's doing. What the spec cannot tell from outside is a
+  * regression that sent the certificate in a header to the plain port instead; that route is the unit tests' to cover.
   */
 object EdgePlaintextInternalUrlSpec
   extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub]:
@@ -36,8 +35,9 @@ object EdgePlaintextInternalUrlSpec
   private val EdgePorts = Map("PORT" -> "9141", "DPORT" -> "9142", "MPORT" -> "9143")
 
   /** What makes the edge one without the terminator. `edge-url` is what the login's redirect URI and a DPoP proof's `htu` are
-    * made from. The pin the staged edge holds for the terminator is dropped with the terminator; `native { }` stays as the
-    * staged edge has it, which is where the certificate goes. */
+    * made from. The pin the staged edge holds for the terminator is dropped with the terminator (for clarity: the route is
+    * the listener's because `internal-url` is not https, whatever is pinned); `native { }` stays as the staged edge has it,
+    * which is where the certificate goes. */
   private def withoutTerminator(authUrl: String): String =
     s"""versola-internal-url = "$authUrl"
        |versola-internal-trusted-certificates = []
@@ -48,6 +48,7 @@ object EdgePlaintextInternalUrlSpec
     resourceId = "e2e-edge-plaintext-internal-url",
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
     endpoints = List(
+      // Only what `awaitProxyReady` probes: it makes no call to auth, so it shows nothing of the route; `/profile` does.
       EdgeFixture.Endpoint(
         name = "items",
         method = "GET",
@@ -121,35 +122,14 @@ object EdgePlaintextInternalUrlSpec
       session <- edgeApi.browserLogin(authApi, f.presetId, f.login, f.password)
     yield session
 
-  /** `cnf` of the access token an `EDGE_SESSION` cookie carries. */
-  private def confirmation(cookie: String): Task[Json.Obj] =
-    for
-      token <- ZIO.succeed(cookie.dropWhile(_ != ':').drop(1))
-      payload <- ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(token.split('.')(1)), "UTF-8"))
-      json <- ZIO.fromEither(payload.fromJson[Json.Obj]).mapError(RuntimeException(_))
-    yield json.get("cnf").flatMap(_.asObject).getOrElse(Json.Obj())
-
   def spec = suite("a certificate client on an edge whose internal url is plaintext")(
+    // One sign-in for both checks: the token is bound to the certificate the listener issued it for, which the endpoint that
+    // needs userinfo below also shows, since auth answers it for such a token only over that certificate.
     test("signs in: the pushed request and the code exchange reach auth's mutual-TLS listener with the issued certificate") {
-      for session <- signIn
-      yield assertTrue(session.cookie.nonEmpty)
-    },
-    test("the session's token is bound to the certificate, which is what the listener issued it for") {
       for
         session <- signIn
-        cnf <- confirmation(session.cookie)
-      yield assertTrue(cnf.get("x5t#S256").flatMap(_.asString).exists(_.nonEmpty))
-    },
-    test("proxies a request made with that session") {
-      for
-        f <- fixture
-        stub <- upstream
-        _ <- stub.reset
-        edgeApi <- edge
-        session <- signIn
-        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", session.auth)
-        seen <- stub.requests.map(_.findLast(_.path == "/items"))
-      yield assertTrue(response.status == Status.Ok, seen.isDefined)
+        thumbprint <- session.certificateThumbprint
+      yield assertTrue(thumbprint.exists(_.nonEmpty))
     },
     test("reaches an endpoint whose authorization needs userinfo, which auth answers only over the certificate") {
       for
