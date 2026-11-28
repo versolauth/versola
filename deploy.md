@@ -585,6 +585,15 @@ origin of ours:
 
 A call with a bearer or DPoP token, and every read, is not checked. Nothing else changes: no setting, no migration.
 
+- **How to see it.** Every refusal is counted in `edge_cookie_origin_decisions_total{surface="resources",result}` (`refused_origin`,
+  `refused_fetch_site`), and a call with neither header, which goes on, as `result="no_headers"`; an origin is never a label. The log
+  has a `WARN` line for a refusal that names the origin and the preset (`cookie call on resources refused (refused_origin): POST
+  origin='https://app.example.com' preset=web`), at most once a minute for each origin and preset: that origin is what goes into the
+  preset's post-login redirect URI, if the app is yours. After an upgrade, a count above zero that you cannot explain from your own apps is
+  a page on another origin using someone's cookie.
+- **The partner console** (`/partner/api/*`, same cookie) is checked by the same rule, with `surface="partner"`: a state-changing request
+  with `Sec-Fetch-Site: same-site` or `cross-site` and no `Origin` is refused `403 origin_mismatch` as one with a foreign `Origin` was.
+
 - **Who can notice.** A browser app that calls `/resources/*` with the cookie from an origin that is not `edge-url` and not one of its
   preset's URIs, for example a single-page app on `app.example.com` whose preset sends the user back to `edge.example.com`. Put the app's
   origin in the preset (its post-login redirect URI) and the call goes on. A session whose preset was removed accepts only `edge-url`'s origin

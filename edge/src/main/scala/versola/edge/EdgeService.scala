@@ -846,12 +846,15 @@ object EdgeService:
     /** A call made with the session cookie, by a method that changes state, has to come from an origin that is ours when the browser says
       * where it comes from (see [[CsrfGuard]]). Before the token is read, so a call from elsewhere learns nothing about the session.
       */
+    private val csrfReport = CsrfReport("resources")
+
     private def checkCookieOrigin(request: Request, authSource: AuthSource): IO[Outcome, Unit] =
       authSource match
         case AuthSource.Cookie(presetId) if !CsrfGuard.isSafe(request.method) =>
           clientService.findPreset(presetId).flatMap: preset =>
-            ZIO.whenZIO(ZIO.succeed(CsrfGuard.refuses(request, CsrfGuard.allowedOrigins(config.edgeUrl, preset)))):
-              Observability.setError("cross_origin_rejected") *> ZIO.fail(Outcome.Forbidden)
+            val verdict = CsrfGuard.verdict(request, CsrfGuard.allowedOrigins(config.edgeUrl, preset))
+            csrfReport.record(verdict, request, presetId.toString) *>
+              ZIO.when(CsrfGuard.refused(verdict))(Observability.setError("cross_origin_rejected") *> ZIO.fail(Outcome.Forbidden))
           .unit
         case _ => ZIO.unit
 

@@ -35,14 +35,35 @@ object CsrfGuard:
 
   def isSafe(method: Method): Boolean = Safe.contains(method)
 
-  /** Whether the browser says this call comes from an origin that is not in `allowed`. */
-  def refuses(request: Request, allowed: List[URL]): Boolean =
-    if isSafe(request.method) then false
+  /** What the headers of a call say about where it comes from. */
+  enum Verdict:
+    /** A safe method, or an origin that is ours. */
+    case Allowed
+    /** Neither `Origin` nor `Sec-Fetch-Site`: not a browser's call, goes on, and is counted so that it can be seen how often it happens. */
+    case NoHeaders
+    /** `Origin` says it comes from somewhere that is not ours (`null` included). */
+    case RefusedOrigin
+    /** No `Origin`, and `Sec-Fetch-Site` says `same-site` or `cross-site`. */
+    case RefusedFetchSite
+
+  /** Where the browser says this call comes from, against the origins in `allowed`. */
+  def verdict(request: Request, allowed: List[URL]): Verdict =
+    if isSafe(request.method) then Verdict.Allowed
     else
       request.rawHeader("Origin") match
-        case Some(origin) => !URL.decode(origin.trim).toOption.exists(url => allowed.exists(sameOrigin(url, _)))
+        case Some(origin) =>
+          if URL.decode(origin.trim).toOption.exists(url => allowed.exists(sameOrigin(url, _))) then Verdict.Allowed
+          else Verdict.RefusedOrigin
         case None =>
-          request.rawHeader("Sec-Fetch-Site").exists(site => Set("same-site", "cross-site").contains(site.trim.toLowerCase))
+          request.rawHeader("Sec-Fetch-Site") match
+            case Some(site) if Set("same-site", "cross-site").contains(site.trim.toLowerCase) => Verdict.RefusedFetchSite
+            case Some(_) => Verdict.Allowed
+            case None => Verdict.NoHeaders
+
+  def refused(verdict: Verdict): Boolean = verdict == Verdict.RefusedOrigin || verdict == Verdict.RefusedFetchSite
+
+  /** Whether the browser says this call comes from an origin that is not in `allowed`. */
+  def refuses(request: Request, allowed: List[URL]): Boolean = refused(verdict(request, allowed))
 
   /** Scheme, host and port, with the default port made explicit. An `Origin` is only these three, so a path on either side is ignored. */
   private def sameOrigin(a: URL, b: URL): Boolean =

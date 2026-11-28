@@ -2,6 +2,7 @@ package versola.edge
 
 import versola.edge.model.{AuthorizationPreset, ClientId, PresetId}
 import versola.util.RedirectUri
+import versola.edge.CsrfGuard.Verdict
 import zio.http.{Body, Method, Request, URL}
 import zio.test.*
 
@@ -114,6 +115,21 @@ object CsrfGuardSpec extends ZIOSpecDefault:
         assertTrue(
           !CsrfGuard.refuses(call(Method.POST, "Origin" -> "https://edge.example.com"), onlyEdge),
           CsrfGuard.refuses(call(Method.POST, "Origin" -> "https://app.example.com"), onlyEdge),
+        )
+      },
+    ),
+    suite("the verdict")(
+      test("says which of the four it is: ours, no headers, refused by Origin, refused by Sec-Fetch-Site") {
+        def of(method: Method, headers: (String, String)*) = CsrfGuard.verdict(call(method, headers*), allowed)
+        assertTrue(
+          of(Method.POST, "Origin" -> "https://edge.example.com") == Verdict.Allowed,
+          of(Method.POST, "Sec-Fetch-Site" -> "same-origin") == Verdict.Allowed,
+          of(Method.POST) == Verdict.NoHeaders,
+          of(Method.POST, "Origin" -> "https://evil.example.com") == Verdict.RefusedOrigin,
+          of(Method.POST, "Origin" -> "null") == Verdict.RefusedOrigin,
+          of(Method.POST, "Sec-Fetch-Site" -> "same-site") == Verdict.RefusedFetchSite,
+          of(Method.GET) == Verdict.Allowed,
+          of(Method.GET, "Origin" -> "https://evil.example.com") == Verdict.Allowed,
         )
       },
     ),

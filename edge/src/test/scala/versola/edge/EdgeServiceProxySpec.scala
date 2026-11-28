@@ -2992,6 +2992,24 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     },
     // `SameSite=Strict` lets another subdomain of the same site through, so a cookie call that changes state also has to come from an origin of ours.
     suite("a state-changing call made with the session cookie")(
+      test("the origin that was refused is in the log, once, and the refusal is counted") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          service = env.buildService(client, security)
+          request = Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)).addHeader("Origin", "https://evil.app.example")
+          responses <- ZIO.foreach(1 to 3)(_ => service.proxy(ResourceId("users-api"), Path.decode("/users"), request))
+          out <- ZTestLogger.logOutput
+          warnings = out.filter(_.logLevel == LogLevel.Warning).map(_.message()).filter(_.contains("evil.app.example"))
+          upstream <- capture.get
+        yield assertTrue(responses.forall(_.status == Status.Forbidden), warnings.size == 1, warnings.head.contains("preset="), upstream.isEmpty)
+      },
       test("from an origin that is not ours is refused before anything is sent, even with the right cookie") {
         val env = new Env
         for
