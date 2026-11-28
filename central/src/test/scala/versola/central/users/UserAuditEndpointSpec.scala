@@ -5,6 +5,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.central.audit.{AuditCursor, AuditReportError, AuditReportService, ReportWindow, UserAuditReport}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.roles.RoleService
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.Base64Url
 import versola.util.http.Observability
@@ -49,7 +50,9 @@ object UserAuditEndpointSpec extends ZIOSpecDefault, ZIOStubs:
         Observability.handleErrors(
           UserController.routes.provideEnvironment(
             ZEnvironment[AuditReportService](service) ++ ZEnvironment[ResourceService](resources) ++ ZEnvironment[UserService](users) ++
-              ZEnvironment[EdgeService](edge) ++ ZEnvironment[CentralConfig](TestCentralConfig.config) ++ ZEnvironment[EnvName](
+              ZEnvironment[RoleService](stub[RoleService]) ++ ZEnvironment[EdgeService](edge) ++ ZEnvironment[CentralConfig](
+                TestCentralConfig.config,
+              ) ++ ZEnvironment[EnvName](
                 EnvName.Test("test"),
               ) ++
               tracing,

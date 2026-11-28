@@ -4,7 +4,10 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
-import versola.central.configuration.roles.{RoleId, RoleRecord, RoleRepository}
+import versola.central.audit.AuditHook
+import versola.central.configuration.permissions.Permission
+import versola.central.configuration.roles.{RoleId, RoleRecord, RoleRepository, RoleService}
+import versola.central.users.{UserId, UserService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
@@ -17,6 +20,7 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
+import java.util.UUID
 import javax.crypto.spec.SecretKeySpec
 
 object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
@@ -111,6 +115,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
         roleRepository = stub[RoleRepository]
+        roleServiceStub = stub[RoleService]
+        usersStub = stub[UserService]
         _ = roleRepository.findRole.returnsWith(ZIO.succeed(Some(userRole)))
         _ = challengeSettingsService.getSecurityProfile.returnsWith(ZIO.succeed(SecurityProfile.fapi2))
         tracing <- tracingLayer.build
@@ -120,7 +126,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[OtpChallengeService](service) ++
                 ZEnvironment[ChallengeSettingsService](challengeSettingsService) ++
                 tracing ++ ZEnvironment[CentralConfig](config) ++ ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[ResourceService](resourceService) ++ ZEnvironment[RoleRepository](roleRepository),
+                ZEnvironment[ResourceService](resourceService) ++ ZEnvironment[RoleRepository](roleRepository) ++
+                ZEnvironment[RoleService](roleServiceStub) ++ ZEnvironment[UserService](usersStub),
             ),
           ),
         )
@@ -128,6 +135,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- setup(service)
         _ <- settingsSetup(challengeSettingsService)
         _ <- roleSetup(roleRepository)
+        _ <- rolesOfTenant(usersStub, roleServiceStub)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
           case _ => request
@@ -186,7 +194,80 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       body = Body.fromString(body),
     ).addHeader(Header.ContentType(MediaType.application.json))
 
+  private val administrator = UserId(UUID.fromString("018f0f2a-1c7b-7000-8000-0000000000a1"))
+  private val actorTenant = TenantId("default")
+  private val adminRoleId = RoleId("oauth-admin")
+  private val supportRoleId = RoleId("support")
+  private val held = Set(Permission("users:read"), Permission("users:manage"))
+
+  /** The call as edge sends it for an administrator: who they are and the tenant of their token. */
+  private def asAdministrator(request: Request): Request =
+    request.updateURL(_.addQueryParams(List(AuditHook.ActorIdParam -> administrator.toString, AuditHook.ActorTenantParam -> actorTenant.toString)))
+
+  /** `support` holds what the administrator holds, `oauth-admin` more. */
+  private def rolesOfTenant(users: Stub[UserService], roleService: Stub[RoleService]): UIO[Unit] =
+    users.getRoles.succeedsWith(List(supportRoleId)) *>
+      roleService.getActivePermissionsForRoles.succeedsWith(held) *>
+      roleService.findRole.returnsZIO { (_, id) =>
+        ZIO.succeed(
+          Map(
+            supportRoleId -> RoleRecord(supportRoleId, tenantId, Map.empty, held, active = true),
+            adminRoleId -> RoleRecord(adminRoleId, tenantId, Map.empty, held + Permission("security:manage"), active = true),
+          ).get(id),
+        )
+      }
+
   def spec = suite("OtpChallengeController")(
+    controllerTestCase(
+      description = "PUT challenge-settings refuses a defaultRoles that adds a role holding more than the administrator does, and stores nothing",
+      request = asAdministrator(upsertWithProfile(None, defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId, adminRoleId))),
+      expectedStatus = Status.Forbidden,
+      settingsSetup = service => service.getSettings.succeedsWith(Some(settings())) *> service.upsertSettings.succeedsWith(()),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("oauth-admin"), body.contains("security:manage"))),
+      settingsVerify = (_, service) =>
+        val calls = service.upsertSettings.times
+        ZIO.succeed(assertTrue(calls == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings accepts a defaultRoles that adds only roles the administrator holds the permissions of",
+      request = asAdministrator(upsertWithProfile(None, defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId, supportRoleId))),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service => service.getSettings.succeedsWith(Some(settings())) *> service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        val calls = service.upsertSettings.times
+        ZIO.succeed(assertTrue(calls == 1)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings does not hold the administrator to the roles that were already in defaultRoles, only to what is added",
+      request = asAdministrator(upsertWithProfile(None, defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId, adminRoleId))),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings().copy(defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId, adminRoleId)))) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        val calls = service.upsertSettings.times
+        ZIO.succeed(assertTrue(calls == 1)),
+    ),
+    controllerTestCase(
+      description = "PATCH challenge-settings refuses a defaultRoles that adds a role holding more than the administrator does",
+      request = asAdministrator(patchRequest("""{"tenantId":"tenant-a","defaultRoles":["user","oauth-admin"]}""")),
+      expectedStatus = Status.Forbidden,
+      settingsSetup = service => service.getSettings.succeedsWith(Some(settings())) *> service.patchSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        val calls = service.patchSettings.times
+        ZIO.succeed(assertTrue(calls == 0)),
+    ),
+    controllerTestCase(
+      description = "PATCH challenge-settings that leaves defaultRoles alone is not held to the roles in it",
+      request = asAdministrator(patchRequest("""{"tenantId":"tenant-a","otpLength":8}""")),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings().copy(defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId, adminRoleId)))) *>
+          service.patchSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        val calls = service.patchSettings.times
+        ZIO.succeed(assertTrue(calls == 1)),
+    ),
     controllerTestCase(
       description = "PUT challenge-settings refuses a phone region whose regex does not compile",
       request = upsertWithProfile(None, List(PhoneRegion("KZ", "+7", 10, "[7", true))),
