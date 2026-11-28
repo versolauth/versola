@@ -1,0 +1,107 @@
+# Unit tests of the four network rules of versola-antifraud.rules.yaml (the ASN and country databases), on Prometheus'
+# own evaluation: a first failed refresh, a repeated one, a stale database, a pod without the database, a signal that
+# is switched off, and addresses that are in no range.
+#
+#     promtool test rules dashboards/alerts/versola-antifraud.network.test.yaml
+#
+rule_files: [versola-antifraud.rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: the first failed refresh on a pod alerts, and the alert clears six hours later
+    interval: 1m
+    input_series:
+      - series: 'antifraud_asn_database_refresh_failed_total{namespace="prod", pod="a"}'
+        values: '_x60 1x600'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AntifraudNetworkDatabaseRefreshFailed
+        exp_alerts: []
+      - eval_time: 62m
+        alertname: AntifraudNetworkDatabaseRefreshFailed
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: prod, signal: asn }
+            exp_annotations:
+              summary: "A refresh of the antifraud asn database failed in prod"
+              description: "A download or a read of a fresher database did not produce one; the database in use stays. One failure is a mirror that was down for a try. If it repeats, the url is wrong, auth cannot write next to the file, or the file is not a database: the auth log names the host and the reason."
+      - eval_time: 8h
+        alertname: AntifraudNetworkDatabaseRefreshFailed
+        exp_alerts: []
+  - name: a second failure, a day after the first, alerts again (the country database, to check the label)
+    interval: 10m
+    input_series:
+      - series: 'antifraud_geo_database_refresh_failed_total{namespace="prod", pod="a"}'
+        values: '1x144 2x60'
+    alert_rule_test:
+      - eval_time: 23h
+        alertname: AntifraudNetworkDatabaseRefreshFailed
+        exp_alerts: []
+      - eval_time: 25h
+        alertname: AntifraudNetworkDatabaseRefreshFailed
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: prod, signal: country }
+            exp_annotations:
+              summary: "A refresh of the antifraud country database failed in prod"
+              description: "A download or a read of a fresher database did not produce one; the database in use stays. One failure is a mirror that was down for a try. If it repeats, the url is wrong, auth cannot write next to the file, or the file is not a database: the auth log names the host and the reason."
+  - name: an ASN database older than three days is stale, a country one of the same age is not
+    interval: 1m
+    input_series:
+      - series: 'antifraud_asn_database_loaded_timestamp_seconds{namespace="prod", pod="a"}'
+        values: '0x5800'
+      - series: 'antifraud_geo_database_loaded_timestamp_seconds{namespace="prod", pod="a"}'
+        values: '0x5800'
+    alert_rule_test:
+      - eval_time: 2d
+        alertname: AntifraudNetworkDatabaseStale
+        exp_alerts: []
+      - eval_time: 4d
+        alertname: AntifraudNetworkDatabaseStale
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: prod, signal: asn }
+            exp_annotations:
+              summary: "The antifraud asn database is not being refreshed in prod"
+              description: "The file in use was written 4d 0h 0m 0s ago, more than three default refresh intervals (3 days for asn, 21 for country; a deployment with a longer refresh-interval raises the threshold). The previous database stays in use, so nothing breaks, but the signal drifts. Check AntifraudNetworkDatabaseRefreshFailed and the auth log: 'could not download the ... database from <host>'."
+  - name: one pod holds the database while lookups on another find none
+    interval: 1m
+    input_series:
+      - series: 'antifraud_geo_database_ranges{namespace="prod", pod="a"}'
+        values: '620000x60'
+      - series: 'antifraud_geo_lookups_total{namespace="prod", pod="b", result="unavailable"}'
+        values: '0+30x60'
+      - series: 'antifraud_asn_lookups_total{namespace="prod", pod="a", result="unavailable"}'
+        values: '0+30x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AntifraudNetworkDatabaseMissingOnSomePods
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: prod, signal: country }
+            exp_annotations:
+              summary: "Some auth pods have no antifraud country database in prod"
+              description: "At least one pod holds the database while lookups on another find none, so the same request is judged with the signal on one pod and without it on another. The log of the pod without it says why (the file is not on its volume, or 'could not read the ... file'); fix it and restart that pod."
+  - name: a signal that is switched off everywhere is not a pod that lacks the database
+    interval: 1m
+    input_series:
+      - series: 'antifraud_asn_lookups_total{namespace="prod", pod="a", result="unavailable"}'
+        values: '0+30x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AntifraudNetworkDatabaseMissingOnSomePods
+        exp_alerts: []
+  - name: most addresses in no range means auth does not see the client, a few do not
+    interval: 1m
+    input_series:
+      - series: 'antifraud_asn_lookups_total{namespace="prod", pod="a", result="miss"}'
+        values: '0+60x90'
+      - series: 'antifraud_asn_lookups_total{namespace="prod", pod="a", result="hit"}'
+        values: '0+30x90'
+      - series: 'antifraud_asn_lookups_total{namespace="stage", pod="a", result="miss"}'
+        values: '0+1x90'
+      - series: 'antifraud_asn_lookups_total{namespace="stage", pod="a", result="hit"}'
+        values: '0+90x90'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AntifraudClientAddressNotRecognised
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: prod }
+            exp_annotations:
+              summary: "auth does not see client addresses in prod"
+              description: "More than half of the addresses looked up are in no range of the database (66.67%). Public addresses are nearly all placed, so auth is being given something else: the proxy does not set the header the tenant's ipHeader names, or it carries an internal hop. Every rule that reads the network, the per-address velocity limits included, is judging the proxy until this is fixed."

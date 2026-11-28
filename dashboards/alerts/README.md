@@ -49,8 +49,15 @@ The rules select by metric name and sum by `namespace`; they do not assume a `jo
 | `AntifraudVelocityFailed` | the velocity counters failed to flush, load or prune | 10m | warning |
 | `AntifraudEvaluationFailed` | evaluations gave no decision (by reason) | 5m | warning |
 | `AntifraudCountersResetFailed` | a counter reset did not complete | 5m | warning |
+| `AntifraudNetworkDatabaseStale` | the ASN database in use is older than 3 days, or the country one than 21 (by `signal`) | 1h | warning |
+| `AntifraudNetworkDatabaseRefreshFailed` | a download or read of a fresher ASN or country database failed in the last 6 hours (by `signal`) | none | warning |
+| `AntifraudNetworkDatabaseMissingOnSomePods` | one pod holds the database while lookups on another find none (by `signal`) | 15m | warning |
+| `AntifraudClientAddressNotRecognised` | more than half of the looked-up addresses are in no range: the proxy does not pass client addresses | 30m | warning |
 
-The file passes `promtool check rules` (15 rules, run by the reviewer of the PR that added it).
+The file passes `promtool check rules` (21 rules), and the four network rules have unit tests in
+[`versola-antifraud.network.test.yaml`](versola-antifraud.network.test.yaml) (`promtool test rules`, six cases). The two staleness thresholds are three default `refresh-interval`s (24 hours for
+`antifraud.asn`, 7 days for `antifraud.geo`); a deployment that refreshes less often, or that sets no `url` and replaces the file by
+hand, raises them.
 
 ## `versola-audit.rules.yaml`
 
