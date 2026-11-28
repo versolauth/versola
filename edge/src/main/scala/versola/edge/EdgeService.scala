@@ -777,6 +777,7 @@ object EdgeService:
       for
         started <- Clock.nanoTime
         (accessToken, authSource) <- extractAccessToken(request)
+        _ <- checkCookieOrigin(request, authSource)
         publicKeys <- jwksService.getPublicKeys
         now <- Clock.instant
         session <- JWT.deserialize[Json.Obj](accessToken, publicKeys, JWT.Type.AccessToken)
@@ -841,6 +842,21 @@ object EdgeService:
         response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
       // The session's own cookie, when this request rotated it, is added to whatever `proxy` answers with.
       yield response.updateHeaders(ProxyHeaders.toCaller).removeHeader(Header.SetCookie)
+
+    private val csrfReport = CsrfReport("resources")
+
+    /** A call made with the session cookie, by a method that changes state, has to come from an origin that is ours when the browser says
+      * where it comes from (see [[CsrfGuard]]). Before the token is read, so a call from elsewhere learns nothing about the session.
+      */
+    private def checkCookieOrigin(request: Request, authSource: AuthSource): IO[Outcome, Unit] =
+      authSource match
+        case AuthSource.Cookie(presetId) if !CsrfGuard.isSafe(request.method) =>
+          clientService.findPreset(presetId).flatMap: preset =>
+            val verdict = CsrfGuard.verdict(request, CsrfGuard.allowedOrigins(config.edgeUrl, preset))
+            csrfReport.record(verdict, request, presetId.toString) *>
+              ZIO.when(CsrfGuard.refused(verdict))(Observability.setError("cross_origin_rejected") *> ZIO.fail(Outcome.Forbidden))
+          .unit
+        case _ => ZIO.unit
 
     /** Rate limit checkpoints R2 and R3. A policy in `enforce` refuses the call here with `429` and `Retry-After`; one in
       * `shadow` only counts `would_limit` and the request goes on unchanged. With no policy at the checkpoint this is one

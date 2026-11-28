@@ -41,9 +41,10 @@ info:
 
     Before an operation runs, the edge checks, in this order, and refuses at the first that fails:
 
-    1. **Origin.** A state-changing request (any method but `GET` and `HEAD`) that carries an
-       `Origin` header other than the edge's own origin is refused `403 origin_mismatch`. A request
-       with no `Origin` is not a browser's and is let through to the next check.
+    1. **Origin.** A state-changing request (any method but `GET`, `HEAD`, `OPTIONS` and `TRACE`) that
+       carries an `Origin` header other than the edge's own origin (`null` included) is refused
+       `403 origin_mismatch`. With no `Origin`, `Sec-Fetch-Site: same-site` or `cross-site` is refused
+       the same way. A request that says neither is not a browser's and is let through to the next check.
     2. **Session.** No cookie, or a token that is not valid, expired beyond refresh or revoked:
        `401 unauthenticated`. A valid session of the partner's *own applications* (an end user of
        one of its clients, which shares the cookie name) is not a staff session and is `401` too:
