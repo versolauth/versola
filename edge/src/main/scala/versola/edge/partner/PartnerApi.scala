@@ -580,7 +580,8 @@ final class PartnerApi(
 
   // ── rate limits ──────────────────────────────────────────────────────────────────────────────
 
-  /** `{rateLimits: <policies> | null, revision}`: what every edge of the group applies, and the revision a save names. */
+  /** `{rateLimits: <policies> | null, revision, waiting}`: what every edge of the group applies, the revision a save names, and the limit
+    * on `/native/start` that waits for the operator, if one does. */
   private def getRateLimits(session: Session, request: Request): IO[Fail | Throwable, Response] =
     forward(session, Method.GET, List("rate-limits")).map(answer => ok(rateLimitsDto(answer.obj.getOrElse(Json.Obj()))))
 
@@ -607,7 +608,8 @@ final class PartnerApi(
           ZIO.fail(Fail(Status.BadRequest, "invalid_request", fields = List("expectedRevision"), message = Some("expectedRevision is a number: the revision that was read")))
       payload = Json.Obj((List("rateLimits" -> limits) ++ revision.map(number => "expectedRevision" -> (number: Json)))*)
       answer <- forward(session, Method.PUT, List("rate-limits"), body = Some(payload))
-    yield ok(rateLimitsDto(answer.obj.getOrElse(Json.Obj())))
+    // central's `202`: a looser limit on /native/start waits for the operator, and the body says which
+    yield json(if answer.status == Status.Accepted then Status.Accepted else Status.Ok, rateLimitsDto(answer.obj.getOrElse(Json.Obj())))
 
   /** What waits for the operator is not kept by central's contract for the partner to read back (the answer of the change itself is
     * the only place it is told): `null`, until central serves it. */
@@ -885,7 +887,14 @@ object PartnerApi:
   private[partner] def resourceDto(resource: Json.Obj): Json.Obj = without(resource, "internal", "partnerId", "audienceRateLimits")
 
   private[partner] def rateLimitsDto(answer: Json.Obj): Json.Obj =
-    Json.Obj("rateLimits" -> field(answer, "rateLimits").getOrElse(Json.Null), "revision" -> field(answer, "revision").getOrElse(Json.Num(0)))
+    Json.Obj(
+      "rateLimits" -> field(answer, "rateLimits").getOrElse(Json.Null),
+      "revision" -> field(answer, "revision").getOrElse(Json.Num(0)),
+      // the limit on /native/start that waits for the operator, if one does: what was asked and when, not the request's id
+      "waiting" -> field(answer, "waiting").collect { case waiting: Json.Obj =>
+        Json.Obj("nativeStart" -> field(waiting, "nativeStart").getOrElse(Json.Null), "requestedAt" -> field(waiting, "requestedAt").getOrElse(Json.Null))
+      }.getOrElse(Json.Null),
+    )
 
   private val EndpointFields = List("id", "path", "method", "fetchUserInfo", "allow", "inject", "stepUpCondition", "stepUpAcr", "maxAge", "rateLimit")
 

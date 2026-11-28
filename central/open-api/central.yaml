@@ -47,7 +47,11 @@ info:
       (that validation does not depend on the edge, so it is done once), and is audited with the staff member as the actor. They are stored
       once, on the partner, with a revision of their own: the comparison and the write are one transaction under the partner's lock, so two
       writes at one revision give one winner and one `409`; `GET /edge/partner/sync/rate-limits` serves that value to every edge of the group
-      (an edge that joins later too, with nothing copied to it), and a partner with no edge can set them. The operator's
+      (an edge that joins later too, with nothing copied to it), and a partner with no edge can set them. A `rateLimits.nativeStart` that
+      lets through more than the default (a mode other than `enforce`, more than 60 calls per 60 seconds, a burst above 20) and is not the
+      one already stored is not applied by the `PUT`: the rest of the set is stored with the stored `nativeStart` kept, the new one becomes a
+      `rate_limits_change` approval request for the operator, and the answer is `202` with `waiting: {id, nativeStart, requestedAt}` (which
+      `GET` also carries while the request waits); `409` while such a request is already waiting. The operator's
       `PATCH /configuration/edges/policies` refuses `rateLimits` for an edge of a partner's group (`422`). It touches `rateLimits` only: `overload` and `access-log` stay the operator's, set per edge
       with `PATCH /configuration/edges/policies`. A management
       call carries the staff member's access token in `Versola-Principal` besides the edge's bearer token; it is
@@ -2739,7 +2743,11 @@ paths:
         as `applied` when overrides were given, and `requested` is never rewritten. A `client_create` sets the client
         `approved` and gives it its preset (`id` = client id, the client's first redirect URI, its scope), so the
         partner's "Sign in with" button is `https://<edge>/login/<client id>`. A `client_change` applies the change. A
-        `profile_change` renames the partner. The administrator's `sub` is recorded as `decidedBy`.
+        `profile_change` renames the partner. A `rate_limits_change` (`requested` and `current` are
+        `{nativeStart: <limit> | null}`: a limit on `/native/start` of the partner's edges that lets through more than the
+        default, see `NativeStartRateLimit`) sets the requested limit over the partner's rate limits as they are at the
+        approval, so policies the partner changed since are kept; it takes no `overrides` (`400`). The administrator's
+        `sub` is recorded as `decidedBy`.
       operationId: approvePartnerRequest
       requestBody:
         required: true
@@ -2767,7 +2775,7 @@ paths:
     post:
       tags: [Partners]
       summary: Reject a partner's request
-      description: A `client_create` rejected sets the client `rejected`; a `client_change` or `profile_change` rejected changes nothing.
+      description: A `client_create` rejected sets the client `rejected`; a `client_change`, `profile_change` or `rate_limits_change` rejected changes nothing.
       operationId: rejectPartnerRequest
       requestBody:
         required: true
@@ -7450,10 +7458,10 @@ components:
           $ref: '#/components/schemas/PartnerId'
         kind:
           type: string
-          enum: [client_create, client_change, profile_change]
+          enum: [client_create, client_change, profile_change, rate_limits_change]
         targetId:
           type: string
-          description: The client id, or the partner id for a `profile_change`.
+          description: The client id, or the partner id for a `profile_change` or a `rate_limits_change`.
         requested:
           type: object
           description: The fields as the partner sent them; never rewritten.

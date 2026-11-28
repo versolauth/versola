@@ -956,6 +956,49 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
       ),
       testCase(
+        description = "PUT with a limit on /native/start that waits for the operator answers 202 with what waits, by the staff member who asked",
+        request = Request.put(
+          partnerPath("rate-limits"),
+          jsonBody("""{"rateLimits":{"policies":[],"replicas":1,"nativeStart":{"limit":60,"windowSeconds":60,"burst":20,"mode":"off"}}}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Accepted,
+        setup = services =>
+          services.partners.setRateLimits.succeedsWith(
+            PartnerService.GroupRateLimits(
+              None,
+              5,
+              Some(
+                PartnerApprovalRecord(
+                  id = ApprovalId("rl-1"),
+                  partnerId = acme.id,
+                  kind = ApprovalKind.RateLimitsChange,
+                  targetId = acme.id,
+                  requested = Json.Obj("nativeStart" -> Json.Obj("mode" -> Json.Str("off"))),
+                  current = Some(Json.Obj("nativeStart" -> Json.Null)),
+                  applied = None,
+                  outsideLimits = List("nativeStart"),
+                  requestedBy = "staff-1",
+                  requestedAt = java.time.Instant.parse("2026-11-28T10:00:00Z"),
+                  status = ApprovalStatus.Waiting,
+                  decidedBy = None,
+                  decidedAt = None,
+                  note = None,
+                ),
+              ),
+            ),
+          ),
+        verify = (response, services) =>
+          for body <- decodeBody[GroupRateLimitsResponse](response)
+          yield assertTrue(
+            body.rateLimits.isEmpty,
+            body.revision == 5,
+            body.waiting.map(_.id) == Some(ApprovalId("rl-1")),
+            body.waiting.map(_.nativeStart) == Some(Json.Obj("mode" -> Json.Str("off"))),
+            services.partners.setRateLimits.calls.map(_._4) == List("staff-1"),
+          ),
+      ),
+      testCase(
         description = "PUT null removes them",
         request = Request.put(partnerPath("rate-limits"), jsonBody("""{"rateLimits":null}"""))
           .addHeader(Header.ContentType(MediaType.application.json)),

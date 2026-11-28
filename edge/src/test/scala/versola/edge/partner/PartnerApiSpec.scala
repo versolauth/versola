@@ -341,6 +341,8 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
       ) {
         val stored =
           """{"rateLimits":{"policies":[],"replicas":1,"nativeStart":{"limit":120,"windowSeconds":60,"burst":30,"mode":"enforce"}},"revision":3}"""
+        // what the console is answered: nothing of the partner's waits for the operator
+        val storedDto = stored.dropRight(1) + ""","waiting":null}"""
         for
           viewer <- harness(Some(StaffLevel.viewer), answer = (_, _) => reply(Status.Ok, stored))
           read <- send(viewer, get("/rate-limits"))
@@ -369,14 +371,14 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           sent = calls.filter(_._1 == Method.PUT)
         yield assertTrue(
           read.status == Status.Ok,
-          readBody.fromJson[Json] == stored.fromJson[Json],
+          readBody.fromJson[Json] == storedDto.fromJson[Json],
           recommended.status == Status.Ok,
           viewerCalls.map(_._2) == List(List("rate-limits"), List("rate-limits", "recommended")),
           refused.status == Status.Forbidden,
           developerRefused.status == Status.Forbidden,
           developerCalls.forall(_._1 == Method.GET),
           saved.status == Status.Ok,
-          savedBody.fromJson[Json] == stored.fromJson[Json],
+          savedBody.fromJson[Json] == storedDto.fromJson[Json],
           sent.map(_._2) == List(List("rate-limits"), List("rate-limits")),
           sent.head._4.exists(body =>
             body.toJson.contains("\"nativeStart\"") && body.toJson.contains("\"expectedRevision\":2") && !body.toJson.contains("groupId"),
@@ -389,6 +391,27 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           // a body without the limits is refused here: it is not read as a removal
           missing.status == Status.BadRequest,
           wrongShape.status == Status.BadRequest,
+        )
+      },
+      test("a limit on /native/start that waits for the operator is answered 202 with what waits, without the request's id") {
+        val accepted =
+          """{"rateLimits":null,"revision":1,"waiting":{"id":"rl-1","nativeStart":{"limit":60,"windowSeconds":60,"burst":20,"mode":"off"},"requestedAt":"2026-11-28T10:00:00Z"}}"""
+        val expected =
+          """{"rateLimits":null,"revision":1,"waiting":{"nativeStart":{"limit":60,"windowSeconds":60,"burst":20,"mode":"off"},"requestedAt":"2026-11-28T10:00:00Z"}}"""
+        for
+          h <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Accepted, accepted))
+          saved <- send(
+            h,
+            write(Method.PUT, "/rate-limits", """{"rateLimits":{"policies":[],"replicas":1,"nativeStart":{"limit":60,"windowSeconds":60,"burst":20,"mode":"off"}}}"""),
+          )
+          body <- saved.body.asString
+          read <- send(h, get("/rate-limits"))
+          readBody <- read.body.asString
+        yield assertTrue(
+          saved.status == Status.Accepted,
+          body.fromJson[Json] == expected.fromJson[Json],
+          read.status == Status.Ok,
+          readBody.fromJson[Json] == expected.fromJson[Json],
         )
       },
       test("central's refusal of the rate limits reaches the console: a 400 with the rule, a 409 when they changed since they were read") {

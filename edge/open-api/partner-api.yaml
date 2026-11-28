@@ -1496,7 +1496,8 @@ paths:
         that was read. The edges apply the new limits on their next configuration sync.
 
         `rateLimits.nativeStart` is the limit on `/native/start` per source address; set, it replaces the
-        default as written, and `mode: off` turns the limit off.
+        default. One that is no looser than the default applies at once. A looser one (`off` and `shadow`
+        included) is the operator's to approve: `202`, and `409 conflict` while one is already waiting.
 
         **Minimum level:** admin. **Served by:** central (`PUT /edge/partner/rate-limits`).
       tags: [Organisation]
@@ -1518,6 +1519,21 @@ paths:
                   minimum: 0
                   description: The `revision` of the last read. Left out, the save is not conditional.
       responses:
+        '202':
+          description: |
+            The limit on `/native/start` that was sent lets through more than the default (a mode other than
+            `enforce`, more than 60 calls per 60 seconds, or a burst above 20), so it waits for the operator's
+            approval: `waiting` says what was asked. Everything else in the body was stored, with the limit
+            that was in force kept.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupRateLimits'
         '200':
           description: The rate limits as stored and their new revision.
           headers:
@@ -2507,7 +2523,7 @@ components:
 
     GroupRateLimits:
       type: object
-      required: [rateLimits, revision]
+      required: [rateLimits, revision, waiting]
       properties:
         rateLimits:
           nullable: true
@@ -2516,6 +2532,18 @@ components:
           type: integer
           minimum: 0
           description: Moves with every change; send it back as `expectedRevision`.
+        waiting:
+          type: object
+          nullable: true
+          description: The limit on `/native/start` that waits for the operator's approval; `null` when none does. The edges apply `rateLimits` meanwhile.
+          required: [nativeStart, requestedAt]
+          properties:
+            nativeStart:
+              type: object
+              additionalProperties: true
+            requestedAt:
+              type: string
+              format: date-time
 
     RateLimits:
       type: object
