@@ -3,7 +3,8 @@ package versola.central.configuration.challenges
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
-import versola.central.configuration.roles.RoleRepository
+import versola.central.configuration.roles.{RoleGrantGuard, RoleId, RoleRepository, RoleService}
+import versola.central.users.UserService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Patch.applyTo
@@ -13,7 +14,7 @@ import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 object OtpChallengeController extends AuditedController:
-  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService & RoleRepository
+  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService & RoleRepository & RoleService & UserService
 
   def endpoints = List(
     getTemplatesEndpoint,
@@ -99,7 +100,7 @@ object OtpChallengeController extends AuditedController:
       Audit.update,
       Some("tenant"),
     )) -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ChallengeSettingsService]
         body <- request.bodyAs[UpsertChallengeSettingsRequest]
@@ -107,6 +108,8 @@ object OtpChallengeController extends AuditedController:
         _ <- Audit.changed(body, "tenantId")
         _ <- Audit.tenant(body.tenantId)
         existing <- service.getSettings(body.tenantId)
+        // the roles every new registration is given are held to the ceiling of whoever adds them, as a user's roles are
+        _ <- RoleGrantGuard.checkDefaultRoles(request, body.tenantId, body.defaultRoles -- existing.fold(Set.empty[RoleId])(_.defaultRoles))
         mtlsCertificateHeader = body.mtlsCertificateHeader.applyTo(existing.flatMap(_.mtlsCertificateHeader))
         mtlsCertificateEncoding = body.mtlsCertificateEncoding.applyTo(existing.flatMap(_.mtlsCertificateEncoding))
         clientAssertionMaxLifetimeSeconds = body.clientAssertionMaxLifetimeSeconds
@@ -169,7 +172,8 @@ object OtpChallengeController extends AuditedController:
             case error: ChallengeSettingsService.ValidationError => BadRequest(error.message)
             case other => other
           }
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent))
+        .catchSome(RoleGrantGuard.refused)
     }
 
   /** The merge patch of the record, see [[PatchChallengeSettingsRequest]]: the members named are replaced, the others
@@ -187,8 +191,13 @@ object OtpChallengeController extends AuditedController:
         _ <- Audit.target(body.tenantId)
         _ <- Audit.changed(body, "tenantId")
         _ <- Audit.tenant(body.tenantId)
+        // the roles this patch adds to `defaultRoles`, if it names them and applies at all (what does not apply is the service's to refuse)
+        added <- body.defaultRoles.fold(ZIO.succeed(Option.empty[Set[RoleId]])): _ =>
+          service.getSettings(body.tenantId).map(_.flatMap(record => body.applyTo(record).toOption.map(_.defaultRoles -- record.defaultRoles)))
+        _ <- ZIO.foreachDiscard(added)(RoleGrantGuard.checkDefaultRoles(request, body.tenantId, _))
         _ <- service.patchSettings(body)
       yield Response.status(Status.NoContent))
+        .catchSome(RoleGrantGuard.refused)
         .catchAll:
           case ChallengeSettingsService.SettingsNotFound(_) => ZIO.succeed(Response.status(Status.NotFound))
           case error: ChallengeSettingsService.ValidationError => ZIO.fail(BadRequest(error.message))

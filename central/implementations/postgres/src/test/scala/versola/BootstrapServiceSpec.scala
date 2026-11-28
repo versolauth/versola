@@ -502,6 +502,15 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         BootstrapService.centralInjects("POST", "/users/password/reset") == BootstrapService.actorInjects,
         BootstrapService.centralInjects("DELETE", "/configuration/clients") == BootstrapService.actorInjects,
         prod.contains("GET" -> "/users/audit"),
+        // the routes the role-grant guard trusts the actor parameters on are served, and so told who the caller is (`PATCH` of the challenge
+        // settings is not registered, so no administrator reaches it through edge; a direct caller is a service's and is not checked)
+        List(
+          "PATCH" -> "/users/roles",
+          "POST" -> "/configuration/roles",
+          "PUT" -> "/configuration/roles",
+          "DELETE" -> "/configuration/roles",
+          "PUT" -> "/configuration/challenges/challenge-settings",
+        ).forall(route => prod.contains(route) && injected(route._1, route._2) == params),
       )
     },
     test(

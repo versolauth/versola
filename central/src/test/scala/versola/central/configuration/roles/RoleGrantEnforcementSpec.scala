@@ -15,6 +15,7 @@ import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.metrics.{Metric, MetricLabel}
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
@@ -194,6 +195,37 @@ object RoleGrantEnforcementSpec extends ZIOSpecDefault, ZIOStubs:
       test("a call that names no administrator is not checked, as every direct caller of central has always been") {
         for r <- run(patchRoles(actorId, add = Set(admin), url = URL.empty / "users" / "roles"))
         yield assertTrue(r.response.status == Status.Accepted, r.users.getRoles.calls.isEmpty)
+      },
+      test("a subject that is neither a client nor a user id is refused, not read as a service's call") {
+        for
+          r <- run(
+            Request(
+              method = Method.PATCH,
+              url = (URL.empty / "users" / "roles").addQueryParams(
+                List(AuditHook.ActorIdParam -> "not-a-user-id", AuditHook.ActorTenantParam -> actorTenant.toString),
+              ),
+              body = Body.fromString(UpdateUserRolesRequest(otherUser, tenant, Set(admin), Set.empty).toJson),
+            ).addHeader(Header.ContentType(MediaType.application.json)),
+          )
+        yield assertTrue(r.response.status == Status.Forbidden, r.users.updateRoles.calls.isEmpty)
+      },
+      test("a call that is not checked is counted by route and reason, so that an administrator's call without the parameters can be seen") {
+        def count(route: String, reason: String) =
+          Metric.counter("central_role_change_unchecked_total").tagged(Set(MetricLabel("route", route), MetricLabel("reason", reason))).value.map(_.count)
+        for
+          before <- count("users_roles", "no_actor")
+          _ <- run(patchRoles(actorId, add = Set(admin), url = URL.empty / "users" / "roles"))
+          afterNoActor <- count("users_roles", "no_actor")
+          clientBefore <- count("users_roles", "client")
+          _ <- run(
+            Request(
+              method = Method.PATCH,
+              url = (URL.empty / "users" / "roles").addQueryParams(List(AuditHook.ActorIdParam -> "svc", AuditHook.ActorClientParam -> "svc")),
+              body = Body.fromString(UpdateUserRolesRequest(otherUser, tenant, Set(admin), Set.empty).toJson),
+            ).addHeader(Header.ContentType(MediaType.application.json)),
+          )
+          clientAfter <- count("users_roles", "client")
+        yield assertTrue(afterNoActor == before + 1, clientAfter == clientBefore + 1)
       },
       test("a client credentials token, whose subject is the client, is not checked") {
         val client = "loadgen-client"
