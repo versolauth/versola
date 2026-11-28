@@ -144,3 +144,26 @@ promtool test rules dashboards/alerts/tests/versola-tls.rules.test.yaml
 (a namespace where one service exports 0 fires after the `for`, one where every service exports 1 does not, and the alert clears when the policy comes back).
 On an installation that does not have to meet FAPI 2.0 an opt-out is a choice, not a fault: leave this rule out of the rules that page.
 A service that exports nothing (it is down, or runs an image from before the policy) is not seen by this rule; the rules for what is down are elsewhere.
+
+## The limit on `/native/start` of `edge`
+
+`versola-edge-rate-limits.rules.yaml`: the limit per source address on `/native/start` (`rateLimits.nativeStart` of an edge, or the default while it
+is not set) is counted in a limiter of its own, `edge_native_start_rate_limit_*`, with `policy` `native-start` for a limit that was set and
+`native-start-default` for the default. The rules group by namespace. The board [`versola`](../grafana/versola.json) draws the same series in
+"edge — Rate limits".
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `NativeStartLimitOverflow` | `edge_native_start_rate_limit_overflow_hits_total` grew: a pod holds 100,000 addresses and new ones share one bucket | none | warning |
+| `NativeStartRefusedByDefault` | the default, where it is enforced, refuses more than 1% of the starts it counts | 15m | warning |
+
+The first is a caller that changes its address per call: block the prefix in front of the edge, do not raise the limit. The second is a flood or
+real users behind one address (a carrier's shared address, or an edge that reads its proxy's address): the access log of the edge says which.
+A limit that somebody set (`native-start`) refusing is that limit working, and no rule fires on it.
+
+The file passes `promtool check rules` (2 rules), and its test runs against synthetic series (5% refused in one namespace and 0.1% in another;
+the cap passed from minute 20):
+
+```bash
+promtool test rules dashboards/alerts/tests/versola-edge-rate-limits.rules.test.yaml
+```

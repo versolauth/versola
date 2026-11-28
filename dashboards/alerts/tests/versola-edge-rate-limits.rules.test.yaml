@@ -1,0 +1,56 @@
+# Synthetic data for versola-edge-rate-limits.rules.yaml, run with
+# `promtool test rules dashboards/alerts/tests/versola-edge-rate-limits.rules.test.yaml`.
+# `prod`: the default limit refuses 5 of every 100 starts, and from minute 20 the address cap is passed. `stage`: one refusal in 1000, no overflow.
+rule_files:
+  - ../versola-edge-rate-limits.rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'edge_native_start_rate_limit_decisions_total{namespace="prod", policy="native-start-default", result="allowed"}'
+        values: '0+95x60'
+      - series: 'edge_native_start_rate_limit_decisions_total{namespace="prod", policy="native-start-default", result="limited"}'
+        values: '0+5x60'
+      - series: 'edge_native_start_rate_limit_overflow_hits_total{namespace="prod", policy="native-start-default"}'
+        values: '0x20 0+3x40'
+      - series: 'edge_native_start_rate_limit_decisions_total{namespace="stage", policy="native-start-default", result="allowed"}'
+        values: '0+999x60'
+      - series: 'edge_native_start_rate_limit_decisions_total{namespace="stage", policy="native-start-default", result="limited"}'
+        values: '0+1x60'
+      - series: 'edge_native_start_rate_limit_overflow_hits_total{namespace="stage", policy="native-start-default"}'
+        values: '0x60'
+      # a limit somebody set: its refusals are that limit working, not the default
+      - series: 'edge_native_start_rate_limit_decisions_total{namespace="stage", policy="native-start", result="limited"}'
+        values: '0+50x60'
+    alert_rule_test:
+      # inside the `for`: pending, not firing
+      - eval_time: 10m
+        alertname: NativeStartRefusedByDefault
+        exp_alerts: []
+      # past it: the namespace that refuses 5%, not the one at 0.1%, and not for the limit that was set
+      - eval_time: 30m
+        alertname: NativeStartRefusedByDefault
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: prod
+            exp_annotations:
+              summary: "The default /native/start limit refuses more than 1% of starts in prod"
+              description: "An edge that enforces the default limit on /native/start (a partner's edge with client-ip = forwarded: 60 calls a minute per address, bursts of 20) has refused more than 1% of the starts it counted for 15 minutes. Either a flood, or real users behind one address (a carrier's shared IPv4 address, or an edge that reads the proxy's address). Look at the caller addresses in the edge's access log: for real users the partner sets a higher rateLimits.nativeStart (the operator approves it), for a flood nothing is to be changed."
+      # before the cap is passed: nothing
+      - eval_time: 15m
+        alertname: NativeStartLimitOverflow
+        exp_alerts: []
+      # the first hit fires at once, in the namespace it happened in
+      - eval_time: 25m
+        alertname: NativeStartLimitOverflow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: prod
+              policy: native-start-default
+            exp_annotations:
+              summary: "The /native/start limit of edge is past its address cap in prod"
+              description: "edge_native_start_rate_limit_overflow_hits_total grew for native-start-default: a pod already holds 100,000 addresses for the limit on /native/start, so the callers past the cap share one bucket of the limit and real sign-ins among them are refused with the flood. That many addresses is a caller that changes its address per call (an IPv6 /48 has 65,536 /64s), not users. Find the source prefix in the edge's access log and block it in front of the edge; do not raise the limit."
