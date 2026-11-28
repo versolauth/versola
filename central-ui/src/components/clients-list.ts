@@ -38,6 +38,7 @@ import {
   profilePosture,
 } from '../utils/client-presets';
 import type { ClientEditSection } from './client-form';
+import './client-attestation';
 import { pickConsentScenario } from '../utils/consent-preview';
 import { copyToClipboard, formatDuration, getLocalizedDescription, isPartnerClient } from '../utils/helpers';
 import './client-form';
@@ -895,6 +896,12 @@ export class VersolaClientsList extends LitElement {
     this.copyFeedback = copied ? 'Secret copied to clipboard.' : 'Could not copy secret.';
   }
 
+  /** The policy was saved or removed on a client's page: what the list shows follows, without a reload. */
+  private updateClientAttestationMode(clientId: string, mode: 'report' | 'enforce' | null) {
+    this.clients = this.clients.map(client => client.id === clientId ? { ...client, attestationMode: mode } : client);
+    if (this.editingClient?.id === clientId) this.editingClient = { ...this.editingClient, attestationMode: mode };
+  }
+
   private updateClientSecretState(clientId: string, hasPreviousSecret: boolean) {
     this.clients = this.clients.map(client =>
       client.id === clientId ? { ...client, hasPreviousSecret } : client,
@@ -911,6 +918,8 @@ export class VersolaClientsList extends LitElement {
       ...existingClient,
       ...client,
       hasPreviousSecret: existingClient?.hasPreviousSecret ?? this.editingClient?.hasPreviousSecret ?? false,
+      // The policy is the attestation card's, not the form's: an edit of the client keeps what the list shows of it.
+      attestationMode: existingClient?.attestationMode ?? client.attestationMode ?? null,
       tenantId: existingClient?.tenantId ?? this.tenantId ?? undefined,
     };
 
@@ -1242,6 +1251,15 @@ export class VersolaClientsList extends LitElement {
       : html`<span class="chip">Standard</span>`;
   }
 
+  /** The mode of the app attestation policy (#423), for a client that has one on: Enforce is the one that turns apps away. */
+  private attestationChip(client: OAuthClient) {
+    const mode = client.attestationMode;
+    if (!mode) return '';
+    return html`<span class="chip ${mode === 'enforce' ? 'warn' : ''}" title=${mode === 'enforce'
+      ? 'Edge turns away sign-ins that carry no verifiable app attestation'
+      : 'Edge verifies app attestation and counts the outcome, and refuses nothing'}>Attestation: ${mode}</span>`;
+  }
+
   private icon(name: 'shield' | 'lock' | 'check' | 'x' | 'dots' | 'copy', className = '') {
     const paths: Record<string, string> = {
       shield: 'M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6zM8.5 12l2.5 2.5L15.5 10',
@@ -1284,7 +1302,7 @@ export class VersolaClientsList extends LitElement {
       { id: 'type', label: 'Type', cell: client => html`<span class="type-label">${this.kindIcon(clientKindOf(client))}${this.kindName(client)}</span>` },
       { id: 'credential', label: 'Authenticates with', class: 'muted', cell: client => credentialLabel(client) },
       { id: 'security', label: 'Security', cell: client => html`
-        <div class="chips">${this.ownerChip(client)}${this.partnerChip(client)}${this.securityChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div>` },
+        <div class="chips">${this.ownerChip(client)}${this.partnerChip(client)}${this.securityChip(client)}${this.attestationChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div>` },
     ];
     const menuItems = (client: OAuthClient): RowMenuItem[] => [
       { label: 'Open', onSelect: () => void this.openView(client) },
@@ -1381,6 +1399,7 @@ export class VersolaClientsList extends LitElement {
           ${this.ownerChip(client)}
           ${this.partnerChip(client)}
           ${this.securityChip(client)}
+          ${this.attestationChip(client)}
           ${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}
           ${client.createdAt ? html`<span class="muted created">${this.createdAgo(client.createdAt)}</span>` : ''}
         `}
@@ -1444,6 +1463,10 @@ export class VersolaClientsList extends LitElement {
         ${keys.length === 0 ? this.viewRow('Key set', '—') : keys.map(key => this.viewRow(
           key.kind, html`<span class="mono">${key.kid ? `kid ${key.kid}` : 'no kid'}${key.alg ? ` · ${key.alg}` : ''}</span>`))}
       `) : ''}
+
+      ${client.clientType === 'native' && client.authMethod === 'tls_client_auth'
+        ? html`<versola-client-attestation .clientId=${client.id} ?canManage=${this.canManage}
+          @attestation-mode=${(e: CustomEvent<{ mode: 'report' | 'enforce' | null }>) => this.updateClientAttestationMode(client.id, e.detail.mode)}></versola-client-attestation>` : ''}
 
       ${client.authMethod === 'client_secret' && this.canManageSecrets ? this.viewSection('Client secret', '', null, client, html`
         ${this.viewRow('Secret', 'Set. It is shown once, when it is created or rotated.')}

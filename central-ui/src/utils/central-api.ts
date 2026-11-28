@@ -1,6 +1,7 @@
 import { clientKindOf, type ClientKind } from './client-presets';
 import type { ThemeVariableCatalog } from './theme-variables';
 import type { AudienceRateLimit, DeclaredRateLimit } from './declared-rate-limit';
+import type { ClientAttestationPolicy } from './client-attestation';
 import type {
   AuthFlow,
   AuthMethod,
@@ -159,6 +160,7 @@ type ClientsResponse = {
     authMethod?: AuthMethod;
     applicationType?: 'web' | 'native';
     kind?: 'web' | 'device' | 'service';
+    attestationMode?: 'report' | 'enforce' | null;
     accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
@@ -781,6 +783,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         kind: client.kind,
         authMethod: client.authMethod ?? 'client_secret',
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
+        attestationMode: client.attestationMode ?? null,
         // The backend now returns the real value directly (previously it didn't, and this
         // fell back to a page-memory-only cache that was empty — and silently wrong — after
         // every reload; see clientSupplementStore below).
@@ -1371,6 +1374,21 @@ export async function deleteClient(tenantId: string, clientId: string): Promise<
   });
 
   clientSupplementStore.delete(entityKey(tenantId, clientId));
+}
+
+/** The app attestation policy of a native client edge fronts (#423); `off` over no builds while it has none. */
+export async function fetchClientAttestation(clientId: string): Promise<ClientAttestationPolicy> {
+  return request<ClientAttestationPolicy>('/configuration/clients/attestation', { query: { clientId }, fresh: true });
+}
+
+/** Replaces the policy; answers with it as central stored it (digests in one form). Edge picks it up with its next client sync. */
+export async function saveClientAttestation(clientId: string, policy: ClientAttestationPolicy): Promise<ClientAttestationPolicy> {
+  return request<ClientAttestationPolicy>('/configuration/clients/attestation', { method: 'PUT', query: { clientId }, body: policy });
+}
+
+/** Back to no policy at all, which is `off`. */
+export async function deleteClientAttestation(clientId: string): Promise<void> {
+  await requestVoid('/configuration/clients/attestation', { method: 'DELETE', query: { clientId } });
 }
 
 export async function fetchJwks(): Promise<{ keys: Record<string, unknown>[] }> {

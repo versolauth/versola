@@ -483,6 +483,13 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### New: the `attested_keys` entry of the `cleanup` block (migration `V2011` for `edge`)
+
+App attestation (#423) keeps one row per iOS install and client in `attested_keys` and forgets it a year after it was last used. A
+deployment configured before this release has a `cleanup` block without that entry: add it (`table-name = "attested_keys"`,
+`batch-size = 1000`, `interval = "1 hour"`, `key-column = "ctid"`) or run `versola configure` again, or the table grows. A new
+configuration has it. Nothing else changes until a policy is set per client. How to roll one out (`report`, then `enforce` only once every `edge` replica runs this version), the trust roots, Google's revocation list and Play Integrity are in the operator documentation (website: Edge → Native apps, and Edge → Configuration, `native.attestation`).
+
 #### Behaviour change: edge refuses a resource path whose segments a resource could read differently
 
 A call to `/resources/{resourceId}/{path}` whose path has a segment that is a separator once decoded (`%2F`, `%5C`, a raw `\`), a
