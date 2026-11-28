@@ -40,6 +40,9 @@ trait AuthorizationDetailTypeService:
       event: SyncEvent.AuthorizationDetailTypesUpdated,
   ): Task[Unit]
 
+  /** Reads the whole cache again from the database, for when notifications may have been missed. */
+  def reload: Task[Unit]
+
 object AuthorizationDetailTypeService:
   def live: ZLayer[
     AuthorizationDetailTypeRepository & JsonSchemaValidator & ServerMetadataService & Scope & CentralConfig,
@@ -96,6 +99,9 @@ object AuthorizationDetailTypeService:
         _ <- repository.deleteType(tenantId, `type`)
         _ <- updateMetadata(`type`, SyncEvent.Op.DELETE)
       yield ()
+
+    override def reload: Task[Unit] =
+      repository.getAll.flatMap(cache.set(_))
 
     override def sync(
         event: SyncEvent.AuthorizationDetailTypesUpdated,

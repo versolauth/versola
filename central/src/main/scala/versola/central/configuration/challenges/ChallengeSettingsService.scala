@@ -46,9 +46,10 @@ trait ChallengeSettingsService:
   def patchSettings(patch: PatchChallengeSettingsRequest): Task[Unit]
   def sync(event: SyncEvent.ChallengeSettingsUpdated): Task[Unit]
 
-  /** Reloads the whole cache from the repository now -- for bootstrap, which writes the
+  /** Reloads the whole cache from the repository now. Used by bootstrap, which writes the
     * default tenant's settings after this cache has loaded and before central listens for
-    * the change notifications (see `OAuthClientService.refreshNow`). */
+    * the change notifications (see `OAuthClientService.refreshNow`), and by `CacheSyncService`
+    * when the notification feed resubscribes (`SyncEvent.Reload`). */
   def refreshNow: Task[Unit]
 
 object ChallengeSettingsService:

@@ -72,6 +72,15 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.getSyncForms
       yield assertTrue(result.head.localizations == Map("en" -> Map("title" -> "Hello")))
     },
+    test("reload replaces the cache with what the repository holds") {
+      val env = new Env(Vector(FormRecord(FormId("old"), 1, false, "style", None, None, Map.empty, Vector.empty)))
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(FormRecord(FormId("new"), 1, true, "style", None, None, Map.empty, Vector.empty)))
+        _ <- env.service.reload
+        cached <- env.cache.get
+      yield assertTrue(cached == Vector(FormRecord(FormId("new"), 1, true, "style", None, None, Map.empty, Vector.empty)))
+    },
     test("getAllForms returns all forms sorted by id") {
       val formB = FormRecord(FormId("b"), 1, true, "style", None, None, Map.empty, Vector.empty)
       val formA = FormRecord(FormId("a"), 1, true, "style", None, None, Map.empty, Vector.empty)

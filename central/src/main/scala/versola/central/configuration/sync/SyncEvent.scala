@@ -25,6 +25,11 @@ object SyncEvent:
     def sort(records: Vector[Record]): Vector[Record]
 
   case object Unknown extends SyncEvent
+
+  /** The notification feed reconnected, so changes may have been missed while it was down: every
+    * cache is read again from the database.
+    */
+  case object Reload extends SyncEvent
   case object TenantsUpdated extends SyncEvent
   case object EdgesUpdated extends SyncEvent
   case object JwksUpdated extends SyncEvent

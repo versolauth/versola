@@ -17,12 +17,15 @@ import versola.central.configuration.system.SystemSettingsService
 import versola.central.configuration.tenants.TenantService
 import versola.central.configuration.themes.ThemeService
 import zio.stream.ZSink
-import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer, durationInt}
+import zio.{Duration, Schedule, Scope, Task, UIO, ZIO, ZLayer, durationInt}
 
 trait CacheSyncService:
   def sync(): Task[Unit]
 
 object CacheSyncService:
+  /** Upper bound for reloading one cache after the notification feed resubscribed. */
+  val ReloadTimeout: Duration = 30.seconds
+
   def live: ZLayer[
     CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & AuthorizationDetailTypeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & DeliverySettingsService & JwksService & ThemeService & ServerMetadataService & PartnerRegistry & Scope,
     Nothing,
@@ -52,6 +55,27 @@ object CacheSyncService:
       serverMetadataService: ServerMetadataService,
       partnerRegistry: PartnerRegistry,
   ) extends CacheSyncService:
+
+    // Named so a failed reload can be told apart in the log.
+    private def reloads: List[(String, Task[Unit])] = List(
+      "tenants" -> tenantService.sync(),
+      "edges" -> edgeService.sync(),
+      "jwks" -> jwksService.sync(),
+      "roles" -> roleService.reload,
+      "clients" -> clientService.refreshNow,
+      "scopes" -> scopeService.reload,
+      "authorization detail types" -> authorizationDetailTypeService.reload,
+      "permissions" -> permissionService.reload,
+      "resources" -> resourceService.reload,
+      "presets" -> presetService.reload,
+      "forms" -> formService.reload,
+      "otp templates" -> otpChallengeService.reload,
+      "challenge settings" -> challengeSettingsService.refreshNow,
+      "themes" -> themeService.sync(),
+      "system settings" -> systemSettingsService.sync(),
+      "delivery settings" -> deliverySettingsService.sync(),
+      "server metadata" -> serverMetadataService.sync(),
+    )
 
     override def sync(): Task[Unit] =
       repository.getNotifications
@@ -109,6 +133,24 @@ object CacheSyncService:
 
           case SyncEvent.ServerMetadataUpdated =>
             serverMetadataService.sync().either
+
+          case SyncEvent.Reload =>
+            // The caches are independent, so they reload in parallel, each bounded by `ReloadTimeout`:
+            // a stuck read (dead pooled connection, database still coming up) must not hold up the
+            // per-record events queued behind this one. One failing or timed-out cache must not keep
+            // the others stale, nor stop the stream; it keeps its previous value until its own timer reload.
+            ZIO.foreachParDiscard(reloads): (name, reload) =>
+              reload
+                .timeout(ReloadTimeout)
+                .flatMap:
+                  case Some(_) => ZIO.unit
+                  case None =>
+                    ZIO.logWarning(
+                      s"Reloading the $name cache after the feed resubscribed timed out after $ReloadTimeout; keeping the previous value",
+                    )
+                .catchAllCause(cause =>
+                  ZIO.logWarningCause(s"Reloading the $name cache after the feed resubscribed failed; keeping the previous value", cause),
+                )
 
           case SyncEvent.Unknown =>
             ZIO.unit

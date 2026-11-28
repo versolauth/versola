@@ -34,6 +34,9 @@ trait OAuthScopeService:
       event: SyncEvent.ScopesUpdated,
   ): Task[Unit]
 
+  /** Reads the whole cache again from the database, for when notifications may have been missed. */
+  def reload: Task[Unit]
+
 object OAuthScopeService:
   def live: ZLayer[OAuthScopeRepository & Scope & CentralConfig, Throwable, OAuthScopeService] =
     (ZLayer.fromZIO:
@@ -76,6 +79,9 @@ object OAuthScopeService:
         scopeId: ScopeToken,
     ): Task[Unit] =
       scopeRepository.deleteScope(tenantId, scopeId)
+
+    override def reload: Task[Unit] =
+      scopeRepository.getAll.flatMap(cache.set(_))
 
     override def sync(
         event: SyncEvent.ScopesUpdated,
