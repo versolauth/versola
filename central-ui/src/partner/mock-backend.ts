@@ -11,7 +11,7 @@ import type { MockPage, MockRequest } from '../demo/mock-backend';
 import type { PartnerLimits } from '../types';
 import { CONSENT_SCREEN_FIELDS, partnerLimitViolations } from '../utils/partners';
 import { validateAccessTokenTtl } from '../utils/validators';
-import type { RateLimitPolicies } from '../utils/rate-limit-policies';
+import { nativeStartWeakerThanDefault, type RateLimitPolicies } from '../utils/rate-limit-policies';
 import type {
   AuditEventRecord, CreatedEdge, EnrollmentToken, GroupRateLimits, PartnerClient, PartnerClientWrite, PartnerEdge, PartnerMe, PartnerResource, PartnerResourceWrite, PartnerSettings,
   ProfileApproval, ProfileChange, Revocation, RevocationRequest, StaffInvite, StaffLevel, StaffMember,
@@ -482,7 +482,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       return;
     }
     if (pathname === '/rate-limits') {
-      const current = state.rateLimits ?? { rateLimits: null, revision: 0 };
+      const current = state.rateLimits ?? { rateLimits: null, revision: 0, waiting: null };
       if (method === 'GET') {
         await route.fulfill(json(current));
         return;
@@ -497,11 +497,25 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
           await route.fulfill(json({ error: 'conflict', message: 'the rate limits changed since they were read; read them again' }, 409));
           return;
         }
-        const empty = sent.rateLimits === null || (sent.rateLimits.policies.length === 0 && !sent.rateLimits.nativeStart);
-        state.rateLimits = { rateLimits: empty ? null : clone(sent.rateLimits), revision: current.revision + 1 };
+        // Like central: a limit on /native/start looser than the default, and not the one stored, waits for the operator; the rest is stored.
+        const stored = current.rateLimits?.nativeStart;
+        const asked = sent.rateLimits?.nativeStart;
+        const forOperator = asked && nativeStartWeakerThanDefault(asked) && JSON.stringify(asked) !== JSON.stringify(stored) ? asked : null;
+        if (forOperator && current.waiting) {
+          await route.fulfill(json({ error: 'conflict', message: "partner 'pilot-pay' already has a limit on /native/start waiting for the operator" }, 409));
+          return;
+        }
+        const next: RateLimitPolicies | null = sent.rateLimits === null ? null : forOperator ? { ...clone(sent.rateLimits), nativeStart: stored } : clone(sent.rateLimits);
+        if (next && !next.nativeStart) delete next.nativeStart;
+        const empty = next === null || (next.policies.length === 0 && !next.nativeStart);
+        state.rateLimits = {
+          rateLimits: empty ? null : next,
+          revision: current.revision + 1,
+          waiting: forOperator ? { nativeStart: forOperator, requestedAt: state.now ?? new Date().toISOString() } : current.waiting ?? null,
+        };
         // every edge of the group is served the same limits
         state.edges = state.edges.map(edge => ({ ...edge, policies: { ...edge.policies, rateLimits: (state.rateLimits!.rateLimits ?? {}) as Record<string, unknown> } }));
-        await route.fulfill(json(state.rateLimits));
+        await route.fulfill(json(state.rateLimits, forOperator ? 202 : 200));
         return;
       }
     }

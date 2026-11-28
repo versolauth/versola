@@ -104,7 +104,7 @@ export type PartnerDto = {
   reviewAt?: string | null; createdAt: string;
 };
 export type PartnerApprovalDto = {
-  id: string; partnerId: string; kind: 'client_create' | 'client_change' | 'profile_change';
+  id: string; partnerId: string; kind: 'client_create' | 'client_change' | 'profile_change' | 'rate_limits_change';
   targetId: string;
   requested: Record<string, unknown>;
   current?: Record<string, unknown>;
@@ -1791,6 +1791,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         if (approval.kind === 'profile_change' && partner) {
           if (typeof applied.displayName === 'string') partner.displayName = applied.displayName;
           if ('logoUri' in applied) partner.logoUri = (applied.logoUri as string | null) ?? null;
+        } else if (approval.kind === 'rate_limits_change' && partner) {
+          // The limit is laid over the rate limits of the group: every edge of the partner is served it.
+          for (const edge of state.edges.filter(candidate => candidate.partnerId === partner.id)) {
+            edge.rateLimitPolicies = { ...(edge.rateLimitPolicies ?? { policies: [], replicas: 1 }), nativeStart: applied.nativeStart } as typeof edge.rateLimitPolicies;
+          }
         } else if (partner) {
           const client = (state.clients[partner.tenantId] ?? []).find(candidate => candidate.id === approval.targetId);
           if (client) {

@@ -496,7 +496,7 @@ export interface Partner {
   createdAt: string;
 }
 
-export type PartnerApprovalKind = 'client_create' | 'client_change' | 'profile_change';
+export type PartnerApprovalKind = 'client_create' | 'client_change' | 'profile_change' | 'rate_limits_change';
 export type PartnerApprovalStatus = 'waiting' | 'approved' | 'rejected' | 'withdrawn';
 
 export interface PartnerApproval {

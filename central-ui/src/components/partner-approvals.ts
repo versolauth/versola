@@ -154,11 +154,12 @@ export class VersolaPartnerApprovals extends LitElement {
   }
 
   private clientOf(approval: PartnerApproval): OAuthClient | undefined {
-    return approval.kind === 'profile_change' ? undefined : this.clients.find(client => client.id === approval.targetId);
+    return approval.kind === 'profile_change' || approval.kind === 'rate_limits_change' ? undefined : this.clients.find(client => client.id === approval.targetId);
   }
 
   private requestTitle(approval: PartnerApproval): string {
     if (approval.kind === 'profile_change') return `Name or logo of ${this.partnerOf(approval)?.displayName ?? approval.partnerId}`;
+    if (approval.kind === 'rate_limits_change') return `Limit on /native/start of ${this.partnerOf(approval)?.displayName ?? approval.partnerId}`;
     const name = typeof approval.requested.clientName === 'string' ? approval.requested.clientName : this.clientOf(approval) ? getLocalizedDescription(this.clientOf(approval)!.clientName) : approval.targetId;
     return approval.kind === 'client_create' ? `New client “${name}”` : `Change to ${name}`;
   }
@@ -377,6 +378,13 @@ export class VersolaPartnerApprovals extends LitElement {
             <div>${outside.length ? 'Everything else is inside the partner\'s limits and would apply at once.' : 'Approve to register it; a new client always waits for the operator.'}</div>
           </div>
         </div>` : ''}
+      ${approval.kind === 'rate_limits_change' ? html`
+        <div class="banner warn" role="note">
+          <div class="banner-text">
+            <div class="banner-title">${statusIcon('alert')}This limit protects your auth</div>
+            <div>Every <code>/native/start</code> call that passes the partner’s edges makes auth store a request. The partner asks for a limit that lets through more than the default (60 calls per 60 seconds per address, bursts of 20, refusing). Until you decide, its edges keep the registered limit. It is approved or rejected as asked.</div>
+          </div>
+        </div>` : ''}
       <versola-record-card heading="What the partner asked for" subheading="Requested against what is registered. Rows outside the limits are marked." .body=${html`
         <div class="record-list">${this.renderDiff(approval)}</div>
         <versola-record-row .label=${'Requested by'} .value=${html`<span class="mono">${approval.requestedBy}</span> <span class="muted small">(staff of ${partner?.displayName ?? approval.partnerId}, from the forwarded token)</span>`}></versola-record-row>
@@ -404,7 +412,7 @@ export class VersolaPartnerApprovals extends LitElement {
         ${waiting ? html`
           <div slot="footer">
             <button type="button" class="btn btn-danger-secondary footer-reject" ?disabled=${this.isDeciding} @click=${() => this.decide(approval, 'reject')}>Reject</button>
-            ${approval.outsideLimits.length ? (this.overriding
+            ${approval.outsideLimits.length && approval.kind !== 'rate_limits_change' ? (this.overriding
               ? html`<button type="button" class="btn btn-primary" ?disabled=${this.isDeciding} @click=${() => this.decide(approval, 'override')}>Approve with overrides</button>`
               : html`<button type="button" class="btn btn-secondary" ?disabled=${this.isDeciding} @click=${() => { this.overriding = true; }}>Approve with overrides…</button>`) : ''}
             ${this.overriding ? html`<button type="button" class="btn btn-secondary" ?disabled=${this.isDeciding} @click=${() => { this.overriding = false; this.overrides = {}; }}>Cancel overrides</button>`

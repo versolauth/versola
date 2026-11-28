@@ -9,7 +9,7 @@ import { partnerAccessTtlError, ttlCapsLabel, ttlLabel } from '../../utils/partn
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { recallProfileApproval, rememberProfileApproval } from '../pending-profile';
 import {
-  countText as rateLimitCountText, draftFromPolicies as rateLimitDraftFromPolicies, emptyDraft as emptyRateLimitDraft, isEmptyPolicies as isEmptyRateLimits, nativeStartText,
+  countText as rateLimitCountText, draftFromPolicies as rateLimitDraftFromPolicies, emptyDraft as emptyRateLimitDraft, isEmptyPolicies as isEmptyRateLimits, nativeStartLimitText, nativeStartText,
   podsText as rateLimitPodsText, policiesFromDraft as rateLimitsFromDraft, summary as rateLimitSummary, validateDraft as validateRateLimitDraft, type RateLimitDraft,
 } from '../../utils/rate-limit-policies';
 import type { VersolaRateLimitPoliciesEditor } from '../../components/rate-limit-policies-editor';
@@ -41,6 +41,8 @@ export class VersolaPartnerSettings extends LitElement {
   @state() private settings: PartnerSettings | null = null;
   @state() private approval: ProfileApproval | null = null;
   @state() private rateLimits: GroupRateLimits | null = null;
+  /** Why the rate limits could not be read, when the rest of the page could. */
+  @state() private rateLimitsError = '';
   @state() private draftRateLimit: RateLimitDraft = emptyRateLimitDraft();
   @query('versola-rate-limit-policies-editor') private rateLimitEditor?: VersolaRateLimitPoliciesEditor;
   @state() private isLoading = false;
@@ -92,14 +94,24 @@ export class VersolaPartnerSettings extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [settings, approval, rateLimits] = await Promise.all([fetchSettings(), fetchProfileApproval().catch(() => null), fetchRateLimits()]);
+      // The rate limits are a card of their own: a read of them that fails must not take the profile, the contacts and the defaults with it.
+      const [settings, approval] = await Promise.all([fetchSettings(), fetchProfileApproval().catch(() => null), this.loadRateLimits()]);
       this.settings = settings;
-      this.rateLimits = rateLimits;
       this.approval = approval ?? recallProfileApproval(this.me.partner);
     } catch (error) {
       this.errorMessage = readErrorMessage(error, 'Failed to load the settings');
     } finally {
       this.isLoading = false;
+    }
+  }
+
+  private async loadRateLimits() {
+    this.rateLimitsError = '';
+    try {
+      this.rateLimits = await fetchRateLimits();
+    } catch (error) {
+      this.rateLimits = null;
+      this.rateLimitsError = readErrorMessage(error, 'Failed to load the rate limits');
     }
   }
 
@@ -173,8 +185,14 @@ export class VersolaPartnerSettings extends LitElement {
       } else if (this.editTarget === 'rate-limits') {
         const limits = rateLimitsFromDraft(this.draftRateLimit);
         // The answer carries the new revision: the next save names it.
+        const asked = limits.nativeStart;
+        const before = this.rateLimits?.waiting ?? null;
         this.rateLimits = await updateRateLimits(isEmptyRateLimits(limits) ? null : limits, this.rateLimits?.revision ?? 0);
-        this.notice = 'Rate limits saved. Your edges apply them on their next configuration sync.';
+        const waiting = this.rateLimits.waiting;
+        // The limit that was asked for is the one that waits: it was not applied, the rest was.
+        this.notice = waiting && asked && JSON.stringify(waiting.nativeStart) === JSON.stringify(asked) && JSON.stringify(waiting) !== JSON.stringify(before)
+          ? `The limit on /native/start is looser than the default, so it was sent to ${this.me.partner.operator.name} for approval. Your edges keep the current limit until it is approved; everything else is saved.`
+          : 'Rate limits saved. Your edges apply them on their next configuration sync.';
       } else {
         const settings: PartnerSettings = {
           version: this.settings!.version,
@@ -233,6 +251,8 @@ export class VersolaPartnerSettings extends LitElement {
             ${this.field('email', 'Security contact *', 'Who the operator reaches about incidents and the review date.', { type: 'email' })}
             ${this.field('phone', 'Phone', 'Optional.', { placeholder: '+7 …' })}
           ` : target === 'rate-limits' ? html`
+            ${this.rateLimits?.waiting ? html`
+              <div class="banner warn" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('alert')}A limit on /native/start is waiting for ${me.partner.operator.name}</div><div>You asked for ${nativeStartLimitText(this.rateLimits.waiting.nativeStart)}. Your edges keep the limit below until the operator decides, and another looser limit cannot be sent meanwhile.</div></div></div>` : ''}
             <versola-rate-limit-policies-editor partner .draft=${this.draftRateLimit} .loadRecommended=${fetchRecommendedRateLimits} ?disabled=${this.isSaving} ?submitted=${this.submitted}
               @draft-change=${(e: CustomEvent<{ draft: RateLimitDraft }>) => { this.draftRateLimit = e.detail.draft; }}></versola-rate-limit-policies-editor>
           ` : html`
@@ -282,10 +302,13 @@ export class VersolaPartnerSettings extends LitElement {
                   ${this.row('Back-channel logout URI', settings?.defaults.backChannelLogoutUri ? html`<span class="mono">${settings.defaults.backChannelLogoutUri}</span>` : html`<span class="muted">None</span>`)}
                   ${this.row('Token lifetimes', settings ? `access ${settings.defaults.accessTokenTtl ? ttlLabel(settings.defaults.accessTokenTtl) : 'not set'} · refresh ${settings.defaults.refreshTokenTtl ? ttlLabel(settings.defaults.refreshTokenTtl) : 'not set'}` : '—')}
                 `} @edit=${() => dispatchRecordRoute(this, { edit: 'defaults', create: false })}></versola-record-card>
-                <versola-record-card heading="Rate limits" subheading="Who may send how much through your edges: one setting for all of them. Reaches each edge on its next configuration sync." ?editable=${edit} .body=${html`
+                <versola-record-card heading="Rate limits" subheading="Who may send how much through your edges: one setting for all of them. Reaches each edge on its next configuration sync." ?editable=${edit && !this.rateLimitsError} .body=${this.rateLimitsError ? html`
+                  <versola-record-row .value=${html`<div role="alert">Could not load the rate limits: ${this.rateLimitsError}</div><div class="key-actions"><button type="button" class="btn btn-secondary btn-sm" @click=${() => this.loadRateLimits()}>Retry</button></div>`}></versola-record-row>
+                ` : html`
                   ${this.row('Policies', rateLimitCountText(this.rateLimits?.rateLimits).replace('this edge applies', 'your edges apply'))}
                   ${this.row('Edge pods', rateLimitPodsText(this.rateLimits?.rateLimits))}
-                  ${this.row('Native start', nativeStartText(this.rateLimits?.rateLimits, true))}
+                  ${this.row('Native start', html`${nativeStartText(this.rateLimits?.rateLimits, true)}${this.rateLimits?.waiting ? html` → ${nativeStartLimitText(this.rateLimits.waiting.nativeStart)} ${waitingChip}` : ''}`)}
+                  ${this.rateLimits?.waiting ? this.row('Requested', `${formatDate(this.rateLimits.waiting.requestedAt)}; your edges keep the current limit until the operator decides`) : ''}
                   ${(this.rateLimits?.rateLimits?.policies ?? []).slice(0, 5).map(policy => this.row(policy.name, rateLimitSummary(policy)))}
                   ${(this.rateLimits?.rateLimits?.policies.length ?? 0) > 5 ? this.row('', `and ${this.rateLimits!.rateLimits!.policies.length - 5} more`) : ''}
                 `} @edit=${() => dispatchRecordRoute(this, { edit: 'rate-limits', create: false })}></versola-record-card>

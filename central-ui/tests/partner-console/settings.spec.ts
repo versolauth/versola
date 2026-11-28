@@ -134,17 +134,19 @@ test('the rate limits of the edges: the card shows the default on /native/start,
   expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(0);
   expect(await scan(page)).toEqual([]);
 
-  await page.getByLabel('Native start: calls').fill('600');
-  await page.getByLabel('Native start: burst').fill('100');
+  // Stricter than the default, so it is the partner's to set alone.
+  await page.getByLabel('Native start: calls').fill('30');
+  await page.getByLabel('Native start: burst').fill('10');
+  await expect(page.getByText('This limit needs the operator’s approval')).toHaveCount(0);
   await page.getByRole('button', { name: 'Add recommended policies' }).click();
   await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveCount(2);
   await page.getByRole('button', { name: 'Save rate limits' }).click();
   const saved = await findRequest(api.requests, 'PUT', '/rate-limits');
-  expect(saved.body).toMatchObject({ expectedRevision: 0, rateLimits: { replicas: 1, nativeStart: { limit: 600, windowSeconds: 60, burst: 100, mode: 'enforce' } } });
+  expect(saved.body).toMatchObject({ expectedRevision: 0, rateLimits: { replicas: 1, nativeStart: { limit: 30, windowSeconds: 60, burst: 10, mode: 'enforce' } } });
   expect((saved.body as { rateLimits: { policies: Array<{ name: string }> } }).rateLimits.policies.map(policy => policy.name)).toEqual(['per-client', 'per-user']);
   await expect(page.getByRole('status').filter({ hasText: 'Rate limits saved' })).toBeVisible();
   await expect(card).toContainText('2 policies');
-  await expect(card).toContainText('Enforce · 600 / 60 s per address · burst 100');
+  await expect(card).toContainText('Enforce · 30 / 60 s per address · burst 10');
 
   // The next save names the revision the first one answered with; with nothing left it removes the limits.
   await card.getByRole('button', { name: /Edit/ }).click();
@@ -153,6 +155,72 @@ test('the rate limits of the edges: the card shows the default on /native/start,
   await page.getByRole('button', { name: 'Save rate limits' }).click();
   await expect(card).toContainText('Default: enforce');
   expect(api.requests.filter(request => request.method === 'PUT' && request.pathname === '/rate-limits').at(-1)?.body).toEqual({ rateLimits: null, expectedRevision: 1 });
+});
+
+test('a limit on /native/start looser than the default goes to the operator: the rest is saved, the card and the editor say it waits, a second one is refused', async ({ page }) => {
+  const api = await loadPartnerApp(page, { path: `${settingsPath}&edit=rate-limits` });
+  await page.getByRole('button', { name: 'Set a limit' }).click();
+  await expect(page.getByText('This limit needs the operator’s approval')).toHaveCount(0);
+  await page.getByLabel('Native start: calls').fill('600');
+  await page.getByLabel('Native start: burst').fill('100');
+  await expect(page.getByText('This limit needs the operator’s approval')).toBeVisible();
+  await expect(page.getByText('Check how your edges read the caller’s address before enforcing')).toBeVisible();
+  await page.getByRole('button', { name: 'Add recommended policies' }).click();
+  await page.getByRole('button', { name: 'Save rate limits' }).click();
+
+  await expect(page.getByRole('status').filter({ hasText: 'sent to Acme Retail for approval' })).toBeVisible();
+  const card = page.getByRole('region', { name: 'Rate limits' });
+  // The policies were saved; the limit in force is still the default, and the one asked for waits.
+  await expect(card).toContainText('2 policies');
+  await expect(card).toContainText('Default: enforce · 60 / 60 s per address · burst 20');
+  await expect(card).toContainText('Enforce · 600 / 60 s per address · burst 100');
+  await expect(card.getByText('waiting for the operator')).toBeVisible();
+  expect(api.state.rateLimits?.rateLimits?.nativeStart).toBeUndefined();
+
+  await card.getByRole('button', { name: /Edit/ }).click();
+  await expect(page.getByText('A limit on /native/start is waiting for Acme Retail')).toBeVisible();
+  await page.getByRole('button', { name: 'Set a limit' }).click();
+  await page.getByRole('group', { name: 'Mode' }).first().getByRole('button', { name: 'Off' }).click();
+  await page.getByRole('button', { name: 'Save rate limits' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'already has a limit on /native/start waiting' })).toBeVisible();
+  expect(await scan(page)).toEqual([]);
+});
+
+test('shadow is offered to a partner with where its counts are, and no metric name the partner cannot read', async ({ page }) => {
+  await loadPartnerApp(page, { path: `${settingsPath}&edit=rate-limits` });
+  await page.getByRole('button', { name: 'Set a limit' }).click();
+  await page.getByRole('group', { name: 'Mode' }).first().getByRole('button', { name: 'Shadow' }).click();
+  await expect(page.getByText('The counts are in the operator’s metrics: ask the operator for them.')).toBeVisible();
+  await expect(page.locator('versola-rate-limit-policies-editor')).not.toContainText('edge_native_start_rate_limit_decisions_total');
+  await expect(page.locator('versola-rate-limit-policies-editor')).not.toContainText('edge_rate_limit_decisions_total');
+  await expect(page.locator('versola-rate-limit-policies-editor')).toContainText('Your edges apply no rate limit policy');
+});
+
+test('rate limits that cannot be read leave the rest of the page: the card says so and Retry reads them', async ({ page }) => {
+  let failing = true;
+  await loadPartnerApp(page, { path: '/partner.html?view=overview' });
+  await page.route('**/partner/api/rate-limits', async route => {
+    if (failing) await route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'central_answered_500' }) });
+    else await route.fallback();
+  });
+  await page.goto(settingsPath);
+  await expect(page.getByRole('region', { name: 'Contacts' })).toContainText('security@pilotpay.example');
+  const card = page.getByRole('region', { name: 'Rate limits' });
+  await expect(card.getByRole('alert')).toContainText('Could not load the rate limits');
+  await expect(card.getByRole('button', { name: /Edit/ })).toHaveCount(0);
+  failing = false;
+  await card.getByRole('button', { name: 'Retry' }).click();
+  await expect(card).toContainText('Default: enforce · 60 / 60 s per address · burst 20');
+});
+
+test('at 390 px the three numbers of the limit on /native/start stay readable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await loadPartnerApp(page, { path: `${settingsPath}&edit=rate-limits` });
+  await page.getByRole('button', { name: 'Set a limit' }).click();
+  for (const label of ['Native start: calls', 'Native start: seconds', 'Native start: burst']) {
+    expect((await page.getByLabel(label).boundingBox())!.width).toBeGreaterThan(60);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
 });
 
 test('rate limits somebody else changed since they were read are not overwritten: the save says so', async ({ page }) => {

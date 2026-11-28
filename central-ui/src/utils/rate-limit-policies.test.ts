@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  draftFromPolicies, emptyDraft, isEmptyPolicies, nativeStartText, newNativeStartDraft, newPolicyDraft, podsText, policiesFromDraft, summary, validateDraft, type PolicyDraft, type RateLimitPolicies,
+  countText, draftFromPolicies, emptyDraft, isEmptyPolicies, nativeStartLimitText, nativeStartText, nativeStartWeakerThanDefault, newNativeStartDraft, newPolicyDraft, podsText, policiesFromDraft, summary, validateDraft, type PolicyDraft, type RateLimitPolicies,
 } from './rate-limit-policies';
 
 const valid = (patch: Partial<PolicyDraft> = {}): PolicyDraft => ({
@@ -118,5 +118,25 @@ describe('rate limit policies', () => {
     expect(nativeStartText({ policies: [] }, true)).toContain('Default: enforce');
     expect(nativeStartText({ policies: [], nativeStart: { limit: 120, windowSeconds: 60, burst: 30, mode: 'enforce' } })).toBe('Enforce · 120 / 60 s per address · burst 30');
     expect(nativeStartText({ policies: [], nativeStart: { limit: 120, windowSeconds: 60, burst: 30, mode: 'off' } })).toBe('Off: no limit');
+  });
+
+  it('native start: weaker than the default when it does not refuse, or its rate or burst is above the default, as central decides it', () => {
+    const limit = (calls: number, seconds: number, burst: number, mode: 'off' | 'shadow' | 'enforce' = 'enforce') => ({ limit: calls, windowSeconds: seconds, burst, mode });
+    expect(nativeStartWeakerThanDefault(limit(60, 60, 20))).toBe(false);
+    expect(nativeStartWeakerThanDefault(limit(30, 60, 10))).toBe(false);
+    expect(nativeStartWeakerThanDefault(limit(120, 120, 20))).toBe(false);
+    expect(nativeStartWeakerThanDefault(limit(60, 60, 20, 'shadow'))).toBe(true);
+    expect(nativeStartWeakerThanDefault(limit(60, 60, 20, 'off'))).toBe(true);
+    expect(nativeStartWeakerThanDefault(limit(61, 60, 20))).toBe(true);
+    expect(nativeStartWeakerThanDefault(limit(60, 59, 20))).toBe(true);
+    expect(nativeStartWeakerThanDefault(limit(60, 60, 21))).toBe(true);
+  });
+
+  it('native start: one limit as text, and a set with only it does not read as "applies no rate limit"', () => {
+    const start = { limit: 600, windowSeconds: 60, burst: 100, mode: 'enforce' as const };
+    expect(nativeStartLimitText(start)).toBe('Enforce · 600 / 60 s per address · burst 100');
+    expect(nativeStartLimitText({ ...start, mode: 'off' })).toBe('Off: no limit');
+    expect(countText({ policies: [], nativeStart: start })).toBe('None: only the limit on /native/start applies');
+    expect(countText({ policies: [] })).toContain('Nothing: this edge applies no rate limit');
   });
 });

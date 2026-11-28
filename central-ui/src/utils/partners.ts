@@ -1,5 +1,6 @@
 import type { Edge, Partner, PartnerApproval, PartnerApprovalKind, PartnerLimits, PartnerStatus } from '../types';
 import type { ClientKind, PlanLine } from './client-presets';
+import { nativeStartLimitText, nativeStartText, type NativeStartRateLimit } from './rate-limit-policies';
 import { MIN_DPOP_BOUND_ACCESS_TOKEN_TTL_SECONDS, validateAccessTokenTtl } from './validators';
 
 /**
@@ -117,6 +118,7 @@ export const APPROVAL_KIND_LABELS: Record<PartnerApprovalKind, string> = {
   client_create: 'New client',
   client_change: 'Client change',
   profile_change: 'Name or logo',
+  rate_limits_change: 'Rate limit',
 };
 
 export const APPROVAL_STATUS_LABELS: Record<PartnerApproval['status'], string> = {
@@ -141,6 +143,7 @@ export const APPROVAL_FIELD_LABELS: Record<string, string> = {
   displayName: 'Display name',
   consent: 'Consent',
   authMethod: 'Client authentication',
+  nativeStart: 'Limit on /native/start',
 };
 
 export function approvalFieldLabel(name: string): string {
@@ -149,6 +152,8 @@ export function approvalFieldLabel(name: string): string {
 
 /** A requested value as text, one line per list item; the TTL fields as durations. */
 export function approvalValueLines(name: string, value: unknown): string[] {
+  // No limit of the partner's own is the default of a partner's edge, not "nothing".
+  if (name === 'nativeStart') return [value && typeof value === 'object' ? nativeStartLimitText(value as NativeStartRateLimit) : nativeStartText(null, true)];
   if (value === undefined || value === null || value === '') return [];
   if (Array.isArray(value)) return value.map(item => String(item));
   if ((name === 'accessTokenTtl' || name === 'refreshTokenTtl') && typeof value === 'number') return [ttlLabel(value)];
@@ -186,11 +191,12 @@ export function partnerActivity(partner: Pick<Partner, 'id' | 'createdAt'>, appr
   const events: PartnerActivityEvent[] = [];
   for (const approval of approvals.filter(candidate => candidate.partnerId === partner.id)) {
     const what = approval.kind === 'profile_change' ? 'asked to change the name or logo'
+      : approval.kind === 'rate_limits_change' ? 'asked for a looser limit on /native/start'
       : approval.kind === 'client_create' ? `submitted client ${approval.targetId} for approval`
         : `asked to change client ${approval.targetId}`;
     events.push({ at: approval.requestedAt, actor: approval.requestedBy, text: what });
     if (approval.decidedAt && approval.decidedBy) {
-      events.push({ at: approval.decidedAt, actor: approval.decidedBy, byOperator: true, text: `${approval.status === 'approved' ? 'approved' : 'rejected'} ${approval.kind === 'profile_change' ? 'the name or logo change' : `the request for ${approval.targetId}`}` });
+      events.push({ at: approval.decidedAt, actor: approval.decidedBy, byOperator: true, text: `${approval.status === 'approved' ? 'approved' : 'rejected'} ${approval.kind === 'profile_change' ? 'the name or logo change' : approval.kind === 'rate_limits_change' ? 'the limit on /native/start' : `the request for ${approval.targetId}`}` });
     }
   }
   for (const edge of edges.filter(candidate => candidate.partnerId === partner.id)) {

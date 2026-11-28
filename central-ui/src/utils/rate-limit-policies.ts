@@ -289,6 +289,18 @@ export function podsText(set: RateLimitPolicies | undefined | null): string {
   return pods === 1 ? 'One (the full limit applies to each pod)' : `${pods} (each pod enforces 1/${pods} of a limit)`;
 }
 
+/** Lets through more than the default in enforce does (`NativeStartRateLimit.weakerThanDefault`): a partner's request for it waits for the operator. */
+export function nativeStartWeakerThanDefault(limit: NativeStartRateLimit): boolean {
+  const d = NATIVE_START_DEFAULT;
+  return limit.mode !== 'enforce' || limit.burst > d.burst || limit.limit * d.windowSeconds > d.limit * limit.windowSeconds;
+}
+
+/** One limit on `/native/start` as text: `Enforce · 120 / 60 s per address · burst 30`. */
+export function nativeStartLimitText(start: NativeStartRateLimit): string {
+  if (start.mode === 'off') return 'Off: no limit';
+  return `${modeText(start.mode)} · ${start.limit} / ${start.windowSeconds} s per address · burst ${start.burst}`;
+}
+
 /** The record card's row for `/native/start`: what is set, or the default this kind of edge applies while nothing is. */
 export function nativeStartText(set: RateLimitPolicies | undefined | null, partnerEdge = false): string {
   const start = set?.nativeStart;
@@ -296,11 +308,11 @@ export function nativeStartText(set: RateLimitPolicies | undefined | null, partn
     const d = NATIVE_START_DEFAULT;
     return `Default: ${partnerEdge ? 'enforce' : 'shadow'} · ${d.limit} / ${d.windowSeconds} s per address · burst ${d.burst} (only with client-ip = forwarded)`;
   }
-  if (start.mode === 'off') return 'Off: no limit';
-  return `${modeText(start.mode)} · ${start.limit} / ${start.windowSeconds} s per address · burst ${start.burst}`;
+  return nativeStartLimitText(start);
 }
 
 export function countText(set: RateLimitPolicies | undefined | null): string {
   const n = set?.policies.length ?? 0;
+  if (n === 0 && set?.nativeStart) return 'None: only the limit on /native/start applies';
   return n === 0 ? 'Nothing: this edge applies no rate limit. Edit to add the recommended policies' : n === 1 ? '1 policy' : `${n} policies`;
 }

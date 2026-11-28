@@ -142,6 +142,34 @@ test('a change request shows registered against requested, and a decided one sho
   expect(await scan(page)).toEqual([]);
 });
 
+test('a looser limit on /native/start shows the default against what is asked, is approved as asked with no overrides', async ({ page }) => {
+  const request = {
+    id: 'apr-2001', partnerId: 'pilot-pay', kind: 'rate_limits_change' as const, targetId: 'pilot-pay',
+    requested: { nativeStart: { limit: 600, windowSeconds: 60, burst: 100, mode: 'enforce' } },
+    current: { nativeStart: null },
+    outsideLimits: ['nativeStart'],
+    requestedBy: 'u_7f3a9c2e', requestedAt: '2026-11-06T09:00:00.000Z', status: 'waiting' as const,
+  };
+  const api = await loadAdminApp(page, { path: `${approvalsPath}&id=apr-2001`, state: { ...partnerState, partnerApprovals: [...partnerState.partnerApprovals, request] } });
+  const panel = sidePanel(page, 'Limit on /native/start of Pilot Pay');
+  await expect(panel.getByText('This limit protects your auth')).toBeVisible();
+  const diff = panel.getByRole('group', { name: 'Requested against registered' });
+  await expect(diff).toContainText('Limit on /native/start');
+  await expect(diff.locator('.current')).toContainText('Default: enforce · 60 / 60 s per address · burst 20');
+  await expect(diff.locator('.requested')).toContainText('Enforce · 600 / 60 s per address · burst 100');
+  // Not a change to the consent screen, and nothing of it is the operator's to rewrite.
+  await expect(panel.getByRole('region', { name: 'How users will see it' })).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Approve with overrides…' })).toHaveCount(0);
+  expect(await scan(page)).toEqual([]);
+
+  await panel.getByRole('button', { name: 'Approve as requested' }).click();
+  const sent = await findRequest(api.requests, 'POST', '/configuration/partners/approvals/approve');
+  expect(sent.body).toMatchObject({ id: 'apr-2001' });
+  expect((sent.body as { overrides?: unknown }).overrides ?? {}).toEqual({});
+  await expect(panel.getByRole('region', { name: 'Decision' })).toContainText('Approved');
+  await expect(panel.getByRole('button', { name: 'Approve as requested' })).toHaveCount(0);
+});
+
 test('approves as requested, and the client becomes approved on the partner record', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${approvalsPath}&id=apr-1001`, state: partnerState });
   const panel = sidePanel(page, 'New client “Pilot Pay Checkout”');
