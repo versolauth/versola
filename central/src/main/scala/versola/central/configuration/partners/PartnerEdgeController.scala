@@ -768,7 +768,7 @@ case class RotatedSecretResponse(secret: String) derives JsonCodec
 
 /** The rate limits of the partner's edges (`null`: none set) and their `revision`, which a change names to say what it read. */
 case class GroupRateLimitsResponse(rateLimits: Option[RateLimitPolicies], revision: Int, waiting: Option[WaitingNativeStartResponse] = None)
-    derives JsonCodec
+  derives JsonCodec
 
 /** The limit on `/native/start` the partner asked for that waits for the operator: the edges keep applying what `rateLimits` says. */
 case class WaitingNativeStartResponse(id: ApprovalId, nativeStart: Json, requestedAt: java.time.Instant) derives JsonCodec
@@ -778,7 +778,9 @@ object GroupRateLimitsResponse:
     GroupRateLimitsResponse(
       limits.policies,
       limits.revision,
-      limits.waiting.map(approval => WaitingNativeStartResponse(approval.id, approval.requested.get("nativeStart").getOrElse(Json.Null), approval.requestedAt)),
+      limits.waiting.map(approval =>
+        WaitingNativeStartResponse(approval.id, approval.requested.get("nativeStart").getOrElse(Json.Null), approval.requestedAt),
+      ),
     )
 
 case class PartnerEdgesResponse(edges: Vector[EdgeResponse]) derives Schema, JsonCodec

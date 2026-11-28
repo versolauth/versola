@@ -206,7 +206,9 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           (code, _) <- errorOf(foreign)
         yield assertTrue(foreign.status == Status.Forbidden, code == "origin_mismatch", own.status == Status.BadRequest)
       },
-      test("a state-changing request that says only Sec-Fetch-Site same-site or cross-site is refused as one from another origin, and one that says nothing is not") {
+      test(
+        "a state-changing request that says only Sec-Fetch-Site same-site or cross-site is refused as one from another origin, and one that says nothing is not",
+      ) {
         for
           h <- harness(Some(StaffLevel.developer))
           sibling <- send(h, write(Method.POST, "/clients", "{}").addHeader(Header.Custom("Sec-Fetch-Site", "same-site")))
@@ -222,7 +224,9 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           silent.status == Status.BadRequest,
         )
       },
-      test("`Origin: null` is refused, a safe method is never refused whatever it says, and the edge's own origin is matched by scheme, host and port, not by spelling") {
+      test(
+        "`Origin: null` is refused, a safe method is never refused whatever it says, and the edge's own origin is matched by scheme, host and port, not by spelling",
+      ) {
         for
           h <- harness(Some(StaffLevel.developer))
           nullOrigin <- send(h, write(Method.POST, "/clients", "{}", origin = Some("null")))
@@ -402,7 +406,11 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           h <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Accepted, accepted))
           saved <- send(
             h,
-            write(Method.PUT, "/rate-limits", """{"rateLimits":{"policies":[],"replicas":1,"nativeStart":{"limit":60,"windowSeconds":60,"burst":20,"mode":"off"}}}"""),
+            write(
+              Method.PUT,
+              "/rate-limits",
+              """{"rateLimits":{"policies":[],"replicas":1,"nativeStart":{"limit":60,"windowSeconds":60,"burst":20,"mode":"off"}}}""",
+            ),
           )
           body <- saved.body.asString
           read <- send(h, get("/rate-limits"))

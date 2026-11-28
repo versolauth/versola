@@ -605,7 +605,12 @@ final class PartnerApi(
         case None => ZIO.none
         case Some(number: Json.Num) => ZIO.some(number)
         case Some(_) =>
-          ZIO.fail(Fail(Status.BadRequest, "invalid_request", fields = List("expectedRevision"), message = Some("expectedRevision is a number: the revision that was read")))
+          ZIO.fail(Fail(
+            Status.BadRequest,
+            "invalid_request",
+            fields = List("expectedRevision"),
+            message = Some("expectedRevision is a number: the revision that was read"),
+          ))
       payload = Json.Obj((List("rateLimits" -> limits) ++ revision.map(number => "expectedRevision" -> (number: Json)))*)
       answer <- forward(session, Method.PUT, List("rate-limits"), body = Some(payload))
     // central's `202`: a looser limit on /native/start waits for the operator, and the body says which
@@ -892,7 +897,10 @@ object PartnerApi:
       "revision" -> field(answer, "revision").getOrElse(Json.Num(0)),
       // the limit on /native/start that waits for the operator, if one does: what was asked and when, not the request's id
       "waiting" -> field(answer, "waiting").collect { case waiting: Json.Obj =>
-        Json.Obj("nativeStart" -> field(waiting, "nativeStart").getOrElse(Json.Null), "requestedAt" -> field(waiting, "requestedAt").getOrElse(Json.Null))
+        Json.Obj(
+          "nativeStart" -> field(waiting, "nativeStart").getOrElse(Json.Null),
+          "requestedAt" -> field(waiting, "requestedAt").getOrElse(Json.Null),
+        )
       }.getOrElse(Json.Null),
     )
 

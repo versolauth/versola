@@ -751,7 +751,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.registry.refreshNow.succeedsWith(())
           // the policies change, the approved limit is sent back as it is
           kept <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended.copy(nativeStart = Some(approved))), None, "staff-1")
-          default <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Enforce)))), None, "staff-1")
+          default <-
+            env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Enforce)))), None, "staff-1")
           _ <- fresh.registry.findFresh.succeedsWith(Some(acme))
           _ <- fresh.approvals.waitingFor.succeedsWith(Vector.empty)
           _ <- fresh.partners.setRateLimits.succeedsWith(Some(acme))
@@ -772,7 +773,12 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.approvals.waitingFor.succeedsWith(Vector(rateLimitsRequest(NativeStartRateLimit.default(GuardMode.Off))))
-          refused <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Shadow)))), None, "staff-1").flip
+          refused <- env.service.setRateLimits(
+            acme,
+            Some(RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Shadow)))),
+            None,
+            "staff-1",
+          ).flip
         yield assertTrue(
           refused.isInstanceOf[PartnerError.Conflict],
           env.partners.setRateLimits.calls.isEmpty,
@@ -786,7 +792,10 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(rateLimitsRevision = 2)))
           _ <- env.approvals.waitingFor.succeedsWith(Vector(waiting))
           read <- env.service.rateLimits(acme)
-        yield assertTrue(read == PartnerService.GroupRateLimits(None, 2, Some(waiting)), env.approvals.waitingFor.calls == List((acme.id, ApprovalKind.aboutRateLimits, acme.id)))
+        yield assertTrue(
+          read == PartnerService.GroupRateLimits(None, 2, Some(waiting)),
+          env.approvals.waitingFor.calls == List((acme.id, ApprovalKind.aboutRateLimits, acme.id)),
+        )
       },
       test("approving lays the requested limit over the limits as they are now; overrides are refused; rejecting changes nothing") {
         val asked = NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)

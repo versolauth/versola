@@ -286,7 +286,9 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         denied._1 == Status.Unauthorized,
       )
     },
-    test("a console session belongs to the edge it was signed in on: the second edge of the group sends the first's cookie to sign in, the same person signs in there, and the first edge still serves its own") {
+    test(
+      "a console session belongs to the edge it was signed in on: the second edge of the group sends the first's cookie to sign in, the same person signs in there, and the first edge still serves its own",
+    ) {
       def cnf(cookie: String): Task[Option[String]] =
         ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(cookie.dropWhile(_ != ':').drop(1).split('.')(1)), "UTF-8")).flatMap(payload =>
           ZIO.fromEither(payload.fromJson[Json.Obj]).mapError(RuntimeException(_)),
@@ -316,7 +318,14 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
             clearing = rawRefused.headers.getAll(Header.SetCookie).map(_.value).find(_.name == EdgeApi.sessionCookieName)
             // the same person signs in on the second edge, and is served there
             own <- ZIO.serviceWithZIO[OAuthClient](auth =>
-              api.browserLogin(auth, f.consoleClientId, f.admin.login, f.admin.password, consent = Some(Set("openid", "phone", "email")), emailOtp = true),
+              api.browserLogin(
+                auth,
+                f.consoleClientId,
+                f.admin.login,
+                f.admin.password,
+                consent = Some(Set("openid", "phone", "email")),
+                emailOtp = true,
+              ),
             )
             onSecond <- call(other, Some(own), Method.GET, "/partner/api/me")
             firstBound <- cnf(session.cookie)
@@ -382,7 +391,9 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         versionOf(reread) == versionOf(after),
       )
     },
-    test("the rate limits of the group through the partner edge: read, written with the revision read, refused to a viewer; a limit on /native/start reaches the edge and refuses there, and a looser one waits for the operator") {
+    test(
+      "the rate limits of the group through the partner edge: read, written with the revision read, refused to a viewer; a limit on /native/start reaches the edge and refuses there, and a looser one waits for the operator",
+    ) {
       def revisionOf(result: (Status, Json.Obj)): Option[Int] =
         result._2.fields.collectFirst { case ("revision", Json.Num(number)) => number.intValue }
       def limits(nativeStart: Json, revision: Option[Int]) =
@@ -410,7 +421,13 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         stale <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(limits(nativeStart(3, 3, "enforce"), revisionOf(before))))
         missing <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(Json.Obj("expectedRevision" -> Json.Num(1))))
         viewer <- PartnerEdgeFixture.person(auth, 7)
-        _ <- call(f, Some(admin), Method.POST, "/partner/api/staff", Some(Json.Obj("identifier" -> Json.Str(viewer.phone), "level" -> Json.Str("viewer"))))
+        _ <- call(
+          f,
+          Some(admin),
+          Method.POST,
+          "/partner/api/staff",
+          Some(Json.Obj("identifier" -> Json.Str(viewer.phone), "level" -> Json.Str("viewer"))),
+        )
         viewerSession <- signIn(f, viewer)
         viewerRead <- call(f, Some(viewerSession), Method.GET, "/partner/api/rate-limits")
         viewerWrite <- call(f, Some(viewerSession), Method.PUT, "/partner/api/rate-limits", Some(Json.Obj("rateLimits" -> Json.Null)))
@@ -424,7 +441,10 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         waiting <- waitingApprovals(central, f)
         request = waiting.find(_.str("kind").contains("rate_limits_change"))
         overridden <- ZIO.foreach(request.flatMap(_.str("id")))(id =>
-          central.post("/configuration/partners/approvals/approve", Json.Obj("id" -> Json.Str(id), "overrides" -> Json.Obj("nativeStart" -> Json.Null))),
+          central.post(
+            "/configuration/partners/approvals/approve",
+            Json.Obj("id" -> Json.Str(id), "overrides" -> Json.Obj("nativeStart" -> Json.Null)),
+          ),
         )
         approved <- ZIO.foreach(request.flatMap(_.str("id")))(id =>
           central.post("/configuration/partners/approvals/approve", Json.Obj("id" -> Json.Str(id), "note" -> Json.Str("e2e"))),
