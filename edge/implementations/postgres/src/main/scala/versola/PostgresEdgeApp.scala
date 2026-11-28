@@ -21,6 +21,7 @@ import versola.edge.{
   EdgeIdentity,
   EdgeMode,
   EdgeRateLimiter,
+  EdgeReplicas,
   EdgeService,
   InternalSurface,
   JwksService,
@@ -192,6 +193,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       RateLimitPolicyService.live >++>
       DeclaredRateLimitService.live >++>
       RateLimitPolicySource.fromCentral >++>
+      EdgeReplicas.live >++>
       EdgeRateLimiter.live >++>
       PermissionService.live >++>
       JwksService.live >++>

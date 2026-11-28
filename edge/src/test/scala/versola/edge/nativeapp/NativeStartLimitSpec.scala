@@ -52,7 +52,7 @@ object NativeStartLimitSpec extends ZIOSpecDefault:
   private def refusedWith(effect: IO[NativeError, Unit]): UIO[Option[Int]] =
     effect.fold(
       {
-        case NativeError.RateLimited(seconds) => Some(seconds)
+        case NativeError.RateLimited(seconds, _) => Some(seconds)
         case _ => None
       },
       _ => None,
@@ -103,12 +103,31 @@ object NativeStartLimitSpec extends ZIOSpecDefault:
           refused <- refusedWith(start.enforce(request))
         yield assertTrue(refused.isDefined)
       },
-      test("never counts a call whose forwarded header is missing or not an address") {
+      test("a header that is missing or not an address does not take a call out of the limit: it is counted under its peer") {
         for
           start <- limit(forwarded, ZIO.succeed(enforced))
-          missing <- allPass(start, call(None))
-          garbage <- allPass(start, call(Some("not-an-address")))
-        yield assertTrue(missing, garbage)
+          _ <- ZIO.foreachDiscard(1 to Burst / 2)(_ => start.enforce(call(None)))
+          _ <- ZIO.foreachDiscard(1 to Burst - Burst / 2)(_ => start.enforce(call(Some("not-an-address"))))
+          missing <- refusedWith(start.enforce(call(None)))
+          garbage <- refusedWith(start.enforce(call(Some("not-an-address"))))
+          // what a proxy that appends to the header sends on when the caller put a value of its own in front
+          list <- refusedWith(start.enforce(call(Some("x, 203.0.113.7"))))
+          otherPeer <- start.enforce(call(Some("x, 203.0.113.7"), peer = "10.0.0.2")).either
+          readable <- start.enforce(call(Some("203.0.113.7"))).either
+        yield assertTrue(missing.isDefined, garbage.isDefined, list.isDefined, otherPeer.isRight, readable.isRight)
+      },
+      test("a refusal carries the RateLimit fields of the limit, as the other refusals of the limiter do") {
+        for
+          start <- limit(forwarded, ZIO.succeed(enforced))
+          _ <- ZIO.foreachDiscard(1 to Burst)(_ => start.enforce(call(Some("203.0.113.7"))))
+          refused <- start.enforce(call(Some("203.0.113.7"))).flip
+        yield assertTrue(
+          refused match
+            case NativeError.RateLimited(seconds, headers) =>
+              headers.toMap.get("RateLimit-Policy").contains(s"\"${NativeStartRateLimit.PolicyName}\";q=60;w=60") &&
+              headers.toMap.get("RateLimit").contains(s"\"${NativeStartRateLimit.PolicyName}\";r=0;t=$seconds")
+            case _ => false,
+        )
       },
       test("is divided by the number of pods") {
         for

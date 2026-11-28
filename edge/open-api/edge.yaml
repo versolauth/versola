@@ -637,6 +637,31 @@ paths:
           $ref: '#/components/responses/NativeNonceRequired'
         '404':
           $ref: '#/components/responses/NativeUnknownClient'
+        '429':
+          description: |
+            The source address is over the limit on this endpoint (`rateLimits.nativeStart` of the edge, or the
+            default of a partner's edge). No body. Answered before the client is looked up, the proof is read
+            or Auth is called, so the proof that was sent is not spent: retry with it after `Retry-After`.
+          headers:
+            Retry-After:
+              description: Whole seconds to wait before the next call from this address.
+              schema:
+                type: integer
+                minimum: 1
+            RateLimit-Policy:
+              description: The limit that refused, as `"<name>";q=<calls>;w=<seconds>` (draft-ietf-httpapi-ratelimit-headers).
+              schema:
+                type: string
+                example: '"native-start";q=60;w=60'
+            RateLimit:
+              description: '`"<name>";r=0;t=<seconds to wait>`.'
+              schema:
+                type: string
+                example: '"native-start";r=0;t=7'
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
 
   /native/complete/{clientId}:
     post:

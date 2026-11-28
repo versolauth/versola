@@ -57,8 +57,8 @@ enum NativeError:
     * proxied path's `Outcome.UseDpopNonce`. */
   case NonceRequired(nonce: String)
 
-  /** Over the limit on `/native/start` (see [[NativeStartLimit]]): the wait, in whole seconds. */
-  case RateLimited(retryAfterSeconds: Int)
+  /** Over the limit on `/native/start` (see [[NativeStartLimit]]): the wait, in whole seconds, and the `RateLimit` fields of the refusal. */
+  case RateLimited(retryAfterSeconds: Int, headers: List[(String, String)] = Nil)
 
 object NativeService:
 

@@ -587,7 +587,7 @@ final class PartnerApi(
   private def recommendedRateLimits(session: Session, request: Request): IO[Fail | Throwable, Response] =
     forward(session, Method.GET, List("rate-limits", "recommended")).map(answer => ok(answer.obj.getOrElse(Json.Obj())))
 
-  /** Replaces the group's rate limits as a whole. Only `rateLimits` and `expectedRevision` go on to central, which validates them; `rateLimits`
+  /** Replaces the group's rate limits as a whole. Only `rateLimits` and a numeric `expectedRevision` go on to central, which validates them; `rateLimits`
     * must be in the body (`null` removes them), so a body without it is refused here and not read as a removal. */
   private def putRateLimits(session: Session, request: Request): IO[Fail | Throwable, Response] =
     for
@@ -599,9 +599,13 @@ final class PartnerApi(
           fields = List("rateLimits"),
           message = Some("rateLimits is required: the limits, or null to remove them"),
         ))
-      payload = Json.Obj(
-        (List("rateLimits" -> limits) ++ field(body, "expectedRevision").collect { case number: Json.Num => "expectedRevision" -> (number: Json) })*,
-      )
+      // a revision that is not a number is refused: sent on without it, the save would overwrite a change it never saw
+      revision <- field(body, "expectedRevision").filter(_ != Json.Null) match
+        case None => ZIO.none
+        case Some(number: Json.Num) => ZIO.some(number)
+        case Some(_) =>
+          ZIO.fail(Fail(Status.BadRequest, "invalid_request", fields = List("expectedRevision"), message = Some("expectedRevision is a number: the revision that was read")))
+      payload = Json.Obj((List("rateLimits" -> limits) ++ revision.map(number => "expectedRevision" -> (number: Json)))*)
       answer <- forward(session, Method.PUT, List("rate-limits"), body = Some(payload))
     yield ok(rateLimitsDto(answer.obj.getOrElse(Json.Obj())))
 

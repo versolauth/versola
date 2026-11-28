@@ -97,21 +97,29 @@ object RateLimitPolicyApplier:
   private def describe(policies: List[RateLimitPolicy]): String =
     if policies.isEmpty then "none" else policies.map(p => s"${p.name}=${p.mode.toString.toLowerCase}").mkString(", ")
 
+/** How many pods share the traffic now: what `replicas-from` counts when it is set and answers, else the `replicas` central holds.
+  * Resolved once for the edge, so its limiters divide by the same number and one loop asks the DNS. */
+final class EdgeReplicas(val current: UIO[Int])
+
+object EdgeReplicas:
+  val live: ZLayer[RateLimitPolicySource & Scope & EdgeConfig, Nothing, EdgeReplicas] =
+    ZLayer.fromZIO:
+      for
+        source <- ZIO.service[RateLimitPolicySource]
+        config <- ZIO.service[EdgeConfig]
+        resolved <- config.replicasFrom match
+          case None => ZIO.succeed(ZIO.succeed(Option.empty[Int]))
+          case Some(spec) =>
+            ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)).orDie.flatMap(name =>
+              ReplicaCounter.dns(name, ReplicaCounter.resolver, 10.seconds),
+            )
+      yield EdgeReplicas(ReplicaCounter.effective(resolved, source.replicas))
+
 /** The edge's [[RateLimiter]], fed by the [[RateLimitPolicySource]], with its sweep and metrics publishing running for the life
   * of the service.
   */
 object EdgeRateLimiter:
-  /** How many pods share the traffic now: what `replicas-from` counts when it is set and answers, else the `replicas` central holds. */
-  def replicas(config: EdgeConfig, source: RateLimitPolicySource): URIO[Scope, UIO[Int]] =
-    (config.replicasFrom match
-      case None => ZIO.succeed(ZIO.succeed(Option.empty[Int]))
-      case Some(spec) =>
-        ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)).orDie.flatMap(name =>
-          ReplicaCounter.dns(name, ReplicaCounter.resolver, 10.seconds),
-        )
-    ).map(resolved => ReplicaCounter.effective(resolved, source.replicas))
-
-  val live: ZLayer[RateLimitPolicySource & Scope & EdgeConfig, Nothing, RateLimiter] =
+  val live: ZLayer[RateLimitPolicySource & EdgeReplicas & Scope & EdgeConfig, Nothing, RateLimiter] =
     ZLayer.fromZIO:
       for
         source <- ZIO.service[RateLimitPolicySource]
@@ -120,8 +128,8 @@ object EdgeRateLimiter:
           s"client-ip = forwarded: the address limit trusts the ${config.clientIpHeader} header, so this edge must be reachable only through the proxy that sets it",
         ).when(config.clientIp == ClientIpSource.Forwarded)
         scope <- ZIO.service[Scope]
-        pods <- replicas(config, source)
+        pods <- ZIO.service[EdgeReplicas]
         limiter <- RateLimiter.make()
-        _ <- RateLimitPolicyApplier.run(source.current, limiter, pods, source.declared).forkIn(scope)
+        _ <- RateLimitPolicyApplier.run(source.current, limiter, pods.current, source.declared).forkIn(scope)
         _ <- limiter.run.forkIn(scope)
       yield limiter

@@ -359,7 +359,8 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
             ),
           )
           savedBody <- saved.body.asString
-          removed <- send(admin, write(Method.PUT, "/rate-limits", """{"rateLimits":null,"expectedRevision":"2"}"""))
+          removed <- send(admin, write(Method.PUT, "/rate-limits", """{"rateLimits":null}"""))
+          textRevision <- send(admin, write(Method.PUT, "/rate-limits", """{"rateLimits":null,"expectedRevision":"2"}"""))
           missing <- send(admin, write(Method.PUT, "/rate-limits", """{"expectedRevision":2}"""))
           wrongShape <- send(admin, write(Method.PUT, "/rate-limits", """{"rateLimits":[]}"""))
           viewerCalls <- viewer.central.calls.get
@@ -380,8 +381,11 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           sent.head._4.exists(body =>
             body.toJson.contains("\"nativeStart\"") && body.toJson.contains("\"expectedRevision\":2") && !body.toJson.contains("groupId"),
           ),
-          // a removal is sent as null, and a revision that is not a number is not passed on
+          // a removal is sent as null
+          removed.status == Status.Ok,
           sent(1)._4.map(_.toJson) == Some("""{"rateLimits":null}"""),
+          // a revision that is not a number is refused here: sent on without it, the save would not be compared with anything
+          textRevision.status == Status.BadRequest,
           // a body without the limits is refused here: it is not read as a removal
           missing.status == Status.BadRequest,
           wrongShape.status == Status.BadRequest,

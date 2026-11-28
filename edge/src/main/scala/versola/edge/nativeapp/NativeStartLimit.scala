@@ -1,6 +1,6 @@
 package versola.edge.nativeapp
 
-import versola.edge.{ClientAddress, EdgeConfig, EdgeMode, EdgeRateLimiter, RateLimitPolicySource}
+import versola.edge.{ClientAddress, EdgeConfig, EdgeMode, EdgeReplicas, RateLimitPolicySource}
 import versola.util.http.{
   Checkpoint,
   ClientIpSource,
@@ -29,7 +29,9 @@ import zio.http.Request
   * The default applies only when the address is one this edge can tell callers apart by: `client-ip = forwarded`. With `socket`
   * behind a proxy every caller would have the proxy's address and the limit would count the whole world as one caller, so there
   * nothing applies until somebody sets a limit, who then knows what the address is. A call whose forwarded header is missing or
-  * not an address is never counted.
+  * not an address is counted under the address of its peer, as the address checkpoint counts it ([[versola.edge.AddressLimit]]):
+  * a header the caller can make unreadable (a value put in front of the one a proxy appends) must not take the call out of the
+  * limit.
   *
   * It is counted in a limiter of its own (`edge_native_start_rate_limit_decisions_total{policy,result}`, `policy` being
   * `native-start` for a limit that was set and `native-start-default` for the default), apart from the policies of the edge.
@@ -41,14 +43,15 @@ final class NativeStartLimit private (own: RateLimiter, config: EdgeConfig):
     if !own.active(Checkpoint.Address) then ZIO.unit
     else
       val resolved = ClientAddress.resolve(request, config.clientIp, config.clientIpHeader)
-      resolved.address.filter(_ => resolved.origin != ClientAddress.Origin.ForwardedMissing) match
+      resolved.address match
         case None => ZIO.unit
         case Some(address) =>
           Clock.nanoTime.flatMap: now =>
             own.check(Checkpoint.Address, RateLimitKeys(ip = address), now) match
               case RateDecision.Allowed => ZIO.unit
-              case RateDecision.Limited(policy, retryAfterSeconds) =>
-                Observability.setError("rate_limited", Some(policy)) *> ZIO.fail(NativeError.RateLimited(retryAfterSeconds))
+              case limited @ RateDecision.Limited(policy, retryAfterSeconds) =>
+                Observability.setError("rate_limited", Some(policy)) *>
+                  ZIO.fail(NativeError.RateLimited(retryAfterSeconds, own.responseHeaders(limited)))
 
 object NativeStartLimit:
 
@@ -88,11 +91,11 @@ object NativeStartLimit:
       _ <- own.run.forkIn(scope)
     yield NativeStartLimit(own, config)
 
-  val live: URLayer[RateLimitPolicySource & EdgeConfig & Scope, NativeStartLimit] =
+  val live: URLayer[RateLimitPolicySource & EdgeReplicas & EdgeConfig & Scope, NativeStartLimit] =
     ZLayer.fromZIO:
       for
         source <- ZIO.service[RateLimitPolicySource]
         config <- ZIO.service[EdgeConfig]
-        pods <- EdgeRateLimiter.replicas(config, source)
-        limit <- make(source.nativeStart, pods, config)
+        pods <- ZIO.service[EdgeReplicas]
+        limit <- make(source.nativeStart, pods.current, config)
       yield limit
