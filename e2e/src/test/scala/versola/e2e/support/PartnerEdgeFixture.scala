@@ -159,7 +159,7 @@ object PartnerEdgeFixture:
         _ <- ZIO.foreachDiscard(sys.env.get("E2E_PARTNER_EDGE_LOG"))(file =>
           ZIO.addFinalizer(running.output.flatMap(out => ZIO.attemptBlocking(Files.writeString(Path.of(file), out))).ignore),
         )
-        _ <- ExtraService.awaitReady(running).provide(ZLayer.succeed(client))
+        _ <- ExtraService.awaitReady(running)
         api = EdgeApi(client, config.copy(edgeUrl = baseUrl))
       yield PartnerEdgeFixture(id, groupId, edgeId, s"$id-console", baseUrl, api, admin, Fixtures.suiteTenant)
 
@@ -236,7 +236,7 @@ object PartnerEdgeFixture:
       _ <- ZIO.foreachDiscard(sys.env.get("E2E_PARTNER_EDGE_LOG"))(file =>
         ZIO.addFinalizer(running.output.flatMap(out => ZIO.attemptBlocking(Files.writeString(Path.of(s"$file.second"), out))).ignore),
       )
-      _ <- ExtraService.awaitReady(running).provide(ZLayer.succeed(client))
+      _ <- ExtraService.awaitReady(running)
     yield EdgeApi(client, config.copy(edgeUrl = baseUrl))
 
   val SecondPort = "9131"

@@ -248,22 +248,21 @@ object AntifraudFixture:
           ),
         ) -> conf,
     )((started, conf) =>
-      ZIO.attemptBlocking {
+      ExtraService.timed(s"$name stopped")(ZIO.attemptBlocking {
         started.process.destroy()
         if !started.process.waitFor(30, TimeUnit.SECONDS) then started.process.destroyForcibly()
         Files.deleteIfExists(conf)
         Files.deleteIfExists(started.log)
-      }.ignore,
+      }).ignore,
     ).flatMap: (started, _) =>
-      awaitReady(started, client).as(started.instance)
+      ExtraService.timed(s"$name ready")(awaitReady(started)).as(started.instance)
 
   /** Waits until the instance answers `/readiness`, or fails with what it wrote if it stops or never gets there. */
-  private def awaitReady(started: Started, client: Client): Task[Unit] =
-    val ready = ZIO.scoped(client.request(zio.http.Request.get(URL.decode(s"${started.instance.diagnosticsUrl}/readiness").toOption.get)))
-      .map(_.status.isSuccess).catchAll(_ => ZIO.succeed(false))
+  private def awaitReady(started: Started): Task[Unit] =
+    val ready = ExtraService.isReady(s"${started.instance.diagnosticsUrl}/readiness")
     val stopped = ZIO.attemptBlocking(!started.process.isAlive)
     (ready <*> stopped)
-      .repeat(Schedule.spaced(1.second) *> Schedule.recurUntil[(Boolean, Boolean)]((r, s) => r || s))
+      .repeat(Schedule.spaced(ExtraService.ReadinessPoll) *> Schedule.recurUntil[(Boolean, Boolean)]((r, s) => r || s))
       .timeout(StartTimeout)
       .flatMap:
         case Some((true, _)) => ZIO.unit
@@ -271,6 +270,22 @@ object AntifraudFixture:
           ZIO.attemptBlocking(Files.readString(started.log)).flatMap(out =>
             ZIO.fail(RuntimeException(s"${started.instance.name} did not become ready:\n${out.takeRight(4000)}")),
           )
+
+  /** The users of the fixture, registered and given passwords; nobody signs in here. */
+  private def registerUsers(oauth: OAuthClient) =
+    for
+      setups <- ZIO.foreach(List.range(0, Setups))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
+      // Users for the cases about a passkey in place of the code: they sign in once with the code on the running stack (which
+      // has no antifraud in the way) and enroll a passkey, which the instances then find in the one database.
+      passkeyRegistered <- ZIO.foreach(List.range(0, PasskeyUsers))(_ => Flows.setupPhoneOtpPasskey().provideEnvironment(ZEnvironment(oauth)))
+      withoutPasskey <- ZIO.foreach(List.range(0, UsersWithoutPasskey))(_ => Flows.setupPhoneOtpPasskey().provideEnvironment(ZEnvironment(oauth)))
+      noFlowRegistered <-
+        ZIO.foreach(List.range(0, PasskeyUsersOfFlowWithoutPasskey))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
+      passwordRegistered <- ZIO.foreach(List.range(0, PasskeyUsersWithPassword))(_ =>
+        Flows.setupPhoneOtpPasskey(authFlow = Flows.phoneOtpPasswordPasskeyAuthFlow).provideEnvironment(ZEnvironment(oauth)),
+      )
+      registration <- Flows.setupPhoneRegistration(authFlow = Flows.phoneOtpPasskeyAuthFlow).provideEnvironment(ZEnvironment(oauth))
+    yield (setups, passkeyRegistered, withoutPasskey, noFlowRegistered, passwordRegistered, registration)
 
   /** Registers the setups, then starts the two instances, which stop with the scope. */
   val layer: ZLayer[E2EConfig & Client & OAuthClient, Throwable, AntifraudFixture] =
@@ -285,17 +300,10 @@ object AntifraudFixture:
         //
         // With a limit nothing can reach (1000 in an hour), so that the steps of it a request takes are recorded and can be counted.
         _ <- oauth.upsertChallengeSettings(otpRequestLimits = """[{"maxAttempts":1000,"windowSeconds":3600}]""")
-        setups <- ZIO.foreach(List.range(0, Setups))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
-        // Users for the cases about a passkey in place of the code: they sign in once with the code on the running stack (which
-        // has no antifraud in the way) and enroll a passkey, which the instances then find in the one database.
-        passkeyRegistered <- ZIO.foreach(List.range(0, PasskeyUsers))(_ => Flows.setupPhoneOtpPasskey().provideEnvironment(ZEnvironment(oauth)))
-        withoutPasskey <- ZIO.foreach(List.range(0, UsersWithoutPasskey))(_ => Flows.setupPhoneOtpPasskey().provideEnvironment(ZEnvironment(oauth)))
-        noFlowRegistered <-
-          ZIO.foreach(List.range(0, PasskeyUsersOfFlowWithoutPasskey))(_ => Flows.setupPhoneOtp().provideEnvironment(ZEnvironment(oauth)))
-        passwordRegistered <- ZIO.foreach(List.range(0, PasskeyUsersWithPassword))(_ =>
-          Flows.setupPhoneOtpPasskey(authFlow = Flows.phoneOtpPasswordPasskeyAuthFlow).provideEnvironment(ZEnvironment(oauth)),
-        )
-        registration <- Flows.setupPhoneRegistration(authFlow = Flows.phoneOtpPasskeyAuthFlow).provideEnvironment(ZEnvironment(oauth))
+        // Fifty-six users are given a password here and none signs in before the last has one: the second of a password
+        // change is waited out once, after the block, not after each (see `OAuthClient.waitingOnceForPasswordChanges`).
+        registered <- OAuthClient.waitingOnceForPasswordChanges(registerUsers(oauth))
+        (setups, passkeyRegistered, withoutPasskey, noFlowRegistered, passwordRegistered, registration) = registered
         _ <- oauth.flushUserOutbox()
         // The running auth learns the clients on a sync, and central's own cache catches up with a registration on a
         // notification of its own: a sign-in that finds the client unknown is made again after another sync.
@@ -314,7 +322,10 @@ object AntifraudFixture:
         // is when they first read it.
         asn <- asnFile
         geo <- geoFile
-        instances <- launch("antifraud-a", config, client, APorts, asn, geo) <&> launch("antifraud-b", config, client, BPorts, asn, geo)
+        // And both stopped at once: each takes its shutdown's seconds, and neither waits for the other.
+        instances <- ZIO.parallelFinalizers(
+          launch("antifraud-a", config, client, APorts, asn, geo) <&> launch("antifraud-b", config, client, BPorts, asn, geo),
+        )
         unused <- Ref.make(setups)
         passkeyRef <- Ref.make(passkeyUsers)
         withoutRef <- Ref.make(withoutPasskey)
