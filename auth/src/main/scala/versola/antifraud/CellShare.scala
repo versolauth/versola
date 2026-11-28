@@ -25,7 +25,7 @@ object CellShare:
       * that would round a limit down to nothing gives 1, which is the least that still limits. */
     def of(limit: Int): Int =
       if limit <= 0 then limit
-      else math.max(1L, Math.ceilDiv(limit.toLong * numerator, denominator)).toInt
+      else math.max(1L, (limit.toLong * numerator + denominator - 1) / denominator).toInt
 
     def value: Double = numerator.toDouble / denominator.toDouble
 
