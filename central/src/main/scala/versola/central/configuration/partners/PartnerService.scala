@@ -140,6 +140,9 @@ object PartnerService:
   /** Enrollment tokens of partner edges live a day: a token travels to another organisation. */
   val TokenValidity: Duration = 24.hours
 
+  /** How long a suspension or a resumption waits for the registry to hear of it before it tells auth anyway. */
+  val RegistryWait: Duration = 5.seconds
+
   /** The longest access token of a console client, in seconds: the staff member's token authorises management calls (central checks
     * its signature, expiry, issuer and client, not a revocation), so it lives minutes. */
   val ConsoleAccessTokenTtlMax: Long = 600
@@ -250,6 +253,14 @@ object PartnerService:
 
     private def nextId: UIO[ApprovalId] = Random.nextUUID.map(uuid => ApprovalId(uuid.toString))
 
+    /** Waits until the registry of this pod holds the partner as `seen` says: the `partner_change` notification of a write that was just
+      * made brings it there, usually within milliseconds. `false` when it has not after [[PartnerService.RegistryWait]] (the listener of
+      * the notifications is down); the registry's own refresh interval catches up then. */
+    private def seenByRegistry(id: PartnerId)(seen: PartnerRecord => Boolean): UIO[Boolean] =
+      def poll: UIO[Boolean] =
+        registry.find(id).flatMap(record => if record.exists(seen) then ZIO.succeed(true) else ZIO.sleep(20.millis) *> poll)
+      poll.timeout(RegistryWait).map(_.getOrElse(false))
+
     private def partner(id: PartnerId): IO[PartnerError | Throwable, PartnerRecord] =
       registry.findFresh(id).someOrFail(PartnerError.NotFound(s"partner '$id'"))
 
@@ -307,7 +318,6 @@ object PartnerService:
         _ <- partners.create(record).catchAll:
           case PartnerAlreadyExists(id) => ZIO.fail(PartnerError.Conflict(s"partner '$id' already exists"))
           case error: Throwable => ZIO.fail(error)
-        _ <- registry.refreshNow
         // The console client: the partner's staff sign in to their console through it, on the group's certificate. Not held
         // to the partner's limits (its scope is what the console needs, its redirect is the console's), but a partner's
         // client in every other way.
@@ -431,20 +441,23 @@ object PartnerService:
         _ <- partner(id)
         updated <- partners.updateProfile(id, expectedVersion, displayName, logoUri, contact, reviewAt)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '$id' was changed meanwhile; read it again")).unless(updated)
-        _ <- registry.refreshNow
       yield ()
 
     override def suspend(id: PartnerId): IO[PartnerError | Throwable, StatusChangeOutcome] =
       for
         record <- partner(id)
         _ <- partners.setStatus(id, PartnerStatus.Suspended)
-        // seen by the next sync of auth and by the next call of the partner's edges, not by the next refresh
-        _ <- registry.refreshNow
+        // The `partner_change` notification of this write is what tells the registry, here and on every other pod. Auth's reload is
+        // answered from the registry, so auth is told only once the registry has it: told earlier, it would be served the partner's
+        // clients once more and keep them until its next interval.
+        seen <- seenByRegistry(id)(_.status == PartnerStatus.Suspended)
+        _ <- ZIO.logWarning(s"partner '$id' is suspended and the registry has not heard of it after $RegistryWait").unless(seen)
         // Auth is asked to reload its clients now, rather than at its next interval: it then omits the partner's, which is what makes a
         // certificate of the group useless there. Nothing is deleted or revoked: sessions, refresh tokens and access tokens that were
         // issued run out on their own.
-        synced <- auth.syncConfiguration().as(true).catchAll: error =>
+        told <- auth.syncConfiguration().as(true).catchAll: error =>
           ZIO.logWarning(s"partner '$id' is suspended and auth could not be told to reload its clients: $error").as(false)
+        synced = seen && told
         // an enrollment token that was printed and not used must not turn into a certificate later
         edgesOfPartner <- edges(record)
         _ <- ZIO.foreachDiscard(edgesOfPartner)(edge => enrollmentTokens.revoke(edge.id))
@@ -455,10 +468,13 @@ object PartnerService:
         record <- partner(id)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '$id' is not suspended")).unless(record.status == PartnerStatus.Suspended)
         _ <- partners.setStatus(id, PartnerStatus.Active)
-        _ <- registry.refreshNow
-        // as for a suspension: auth is asked to reload its clients now, rather than at its next interval, so that it knows the partner's again
-        synced <- auth.syncConfiguration().as(true).catchAll: error =>
+        // as for a suspension: the notification of the write tells the registry, and auth is asked to reload its clients once it has, so
+        // that the reload is answered with the partner's clients again
+        seen <- seenByRegistry(id)(_.status == PartnerStatus.Active)
+        _ <- ZIO.logWarning(s"partner '$id' is active again and the registry has not heard of it after $RegistryWait").unless(seen)
+        told <- auth.syncConfiguration().as(true).catchAll: error =>
           ZIO.logWarning(s"partner '$id' is active again and auth could not be told to reload its clients: $error").as(false)
+        synced = seen && told
       yield StatusChangeOutcome(synced)
 
     override def setLimits(id: PartnerId, limits: PartnerLimits): IO[PartnerError | Throwable, Vector[ClientOutsideLimits]] =
@@ -467,7 +483,6 @@ object PartnerService:
         _ <- ZIO.foreachDiscard(validateLimits(limits))(ZIO.fail(_))
         withOpenId = limits.copy(scopes = limits.scopes + ScopeToken("openid"))
         _ <- partners.setLimits(id, withOpenId)
-        _ <- registry.refreshNow
         changed = record.copy(limits = withOpenId)
         own <- clients.getPartnerClients(id).map(_.filter(_.id != record.consoleClientId))
         outside = own.flatMap: client =>
@@ -521,7 +536,6 @@ object PartnerService:
               .mapError(reason => PartnerError.Invalid(s"the profile change cannot be read: $reason"))
             // the name and the logo alone: what either side has written to the contact since is not overwritten
             _ <- partners.setNameAndLogo(record.id, change.displayName, change.logoUri)
-            _ <- registry.refreshNow
           yield ()
         case ApprovalKind.RateLimitsChange =>
           for
@@ -552,9 +566,7 @@ object PartnerService:
 
     override def activate(partner: PartnerRecord): Task[Unit] =
       // conditional in the database: a read of `onboarding` that a suspension has since made stale must not undo it
-      ZIO.when(partner.status == PartnerStatus.Onboarding)(partners.activate(partner.id).flatMap(activated =>
-        registry.refreshNow.when(activated),
-      )).unit
+      ZIO.when(partner.status == PartnerStatus.Onboarding)(partners.activate(partner.id)).unit
 
     override def setSettings(
         partner: PartnerRecord,
@@ -565,7 +577,6 @@ object PartnerService:
       for
         updated <- partners.setSettings(partner.id, expectedVersion, contact, settings)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '${partner.id}' was changed meanwhile; read the settings again")).unless(updated)
-        _ <- registry.refreshNow
       yield ()
 
     override def requestProfileChange(

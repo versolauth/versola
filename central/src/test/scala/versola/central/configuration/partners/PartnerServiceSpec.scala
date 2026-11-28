@@ -197,7 +197,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         groups.find.succeedsWith(None) *>
         clients.findClient.succeedsWith(None) *>
         edges.findFresh.succeedsWith(None) *>
-        registry.refreshNow.succeedsWith(()) *>
         clients.checkRegistration.succeedsWith(())
 
   private val configured = TestCentralConfig.config.copy(
@@ -358,20 +357,22 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     suite("the kill switch")(
       test(
-        "suspend records the status, makes it visible at once, tells auth to reload its clients and voids the unused enrollment tokens; it revokes nothing",
+        "suspend records the status, tells auth to reload its clients once the registry has heard of it, and voids the unused enrollment tokens; it revokes nothing",
       ) {
         val env = Env()
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setStatus.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
+          // the notification of the write has reached the registry
+          _ <- env.registry.find.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
           _ <- env.auth.syncConfiguration().succeedsWith(())
           _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1")), edge(EdgeId("other"), EdgeGroupId("globex"))))
           _ <- env.enrollmentTokens.revoke.succeedsWith(0)
           outcome <- env.service.suspend(acme.id)
         yield assertTrue(
           env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
-          env.registry.refreshNow.calls.size == 1,
+          // the registry is asked whether it has heard, never told: the notification of the write is what tells it
+          env.registry.find.calls == List(acme.id),
           env.auth.syncConfiguration().calls.size == 1,
           // an enrollment token that was printed and not used is void: of the partner's edges only
           env.enrollmentTokens.revoke.calls == List(EdgeId("edge-acme-1")),
@@ -380,12 +381,36 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           outcome == PartnerService.StatusChangeOutcome(authSynced = true),
         )
       },
+      test(
+        "a suspension the registry has not heard of in time still tells auth, and says the reload may have been answered with the partner's clients",
+      ) {
+        val env = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme))
+          _ <- env.partners.setStatus.succeedsWith(true)
+          // the notification never comes: the registry keeps the partner as active
+          _ <- env.registry.find.succeedsWith(Some(acme))
+          _ <- env.auth.syncConfiguration().succeedsWith(())
+          _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
+          suspending <- env.service.suspend(acme.id).fork
+          _ <- TestClock.adjust(PartnerService.RegistryWait.minus(1.second))
+          toldEarly = env.auth.syncConfiguration().calls.size
+          _ <- TestClock.adjust(1.second)
+          outcome <- suspending.join
+        yield assertTrue(
+          // auth is not asked to reload while the registry would still answer with the partner's clients
+          toldEarly == 0,
+          env.auth.syncConfiguration().calls.size == 1,
+          env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
+          outcome == PartnerService.StatusChangeOutcome(authSynced = false),
+        )
+      },
       test("a suspension auth could not be told of is still a suspension, and says so") {
         val env = Env()
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setStatus.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.registry.find.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
           _ <- env.auth.syncConfiguration().failsWith(RuntimeException("auth is down"))
           _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
           outcome <- env.service.suspend(acme.id)
@@ -399,7 +424,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
           _ <- env.partners.setStatus.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.registry.find.succeedsWith(Some(acme))
           _ <- env.auth.syncConfiguration().succeedsWith(())
           resumed <- env.service.resume(acme.id)
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
@@ -421,7 +446,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
         _ <- env.partners.setStatus.succeedsWith(true)
-        _ <- env.registry.refreshNow.succeedsWith(())
+        _ <- env.registry.find.succeedsWith(Some(acme))
         _ <- env.auth.syncConfiguration().failsWith(RuntimeException("auth is down"))
         resumed <- env.service.resume(acme.id)
       yield assertTrue(
@@ -435,7 +460,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.registry.findFresh.succeedsWith(Some(acme))
         _ <- env.partners.setLimits.succeedsWith(true)
-        _ <- env.registry.refreshNow.succeedsWith(())
         _ <- env.clients.getPartnerClients.succeedsWith(Vector(client(ClientId("acme-console"), ClientApproval.Approved), shop))
         outside <- env.service.setLimits(acme.id, limits.copy(accessTokenTtlMax = 300))
       yield assertTrue(
@@ -522,7 +546,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.partnerClients.checkOverrides.succeedsWith(None)
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setNameAndLogo.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.approvals.decide.succeedsWith(true)
           _ <- env.service.approve(profile.id, Some("admin-1"), None, None)
         yield assertTrue(
@@ -562,18 +585,17 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val env = Env()
         for
           _ <- env.partners.activate.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.service.activate(acme.copy(status = PartnerStatus.Onboarding))
           _ <- env.service.activate(acme)
         yield assertTrue(env.partners.activate.calls == List(acme.id), env.partners.setStatus.calls.isEmpty)
       },
-      test("an activation that finds the partner suspended meanwhile changes nothing, and nothing is reloaded") {
+      test("an activation that finds the partner suspended meanwhile changes nothing") {
         val env = Env()
         for
           // the read said `onboarding`; the row says otherwise, and the conditional update is what decides
           _ <- env.partners.activate.succeedsWith(false)
           _ <- env.service.activate(acme.copy(status = PartnerStatus.Onboarding))
-        yield assertTrue(env.partners.activate.calls == List(acme.id), env.registry.refreshNow.calls.isEmpty, env.partners.setStatus.calls.isEmpty)
+        yield assertTrue(env.partners.activate.calls == List(acme.id), env.partners.setStatus.calls.isEmpty)
       },
       test("a profile change is a request for the operator, and only one at a time") {
         val env = Env()
@@ -641,7 +663,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // each names the version the CALLER read (not one the service reads for itself, which would protect nothing)
           env.partners.updateProfile.calls.map(_._2) == List(3L),
           env.partners.setSettings.calls.map(_._2) == List(3L),
-          env.registry.refreshNow.calls.isEmpty,
         )
       },
       test("a token for an edge of the partner's group lives a day; an edge of another group is not the partner's") {
@@ -669,8 +690,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.partners.setRateLimits.calls == List((acme.id, Some(policies), Some(2))),
           // what an edge is served is the partner's value: no edge is written
           env.edges.patchPolicies.calls.isEmpty,
-          // nothing is reloaded by hand: the `partner_change` notification of the write tells the registry of every pod
-          env.registry.refreshNow.calls.isEmpty,
           set == PartnerService.GroupRateLimits(Some(policies), 3),
         )
       },
@@ -815,8 +834,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           overridden.isInstanceOf[PartnerError.Invalid],
           approved.status == ApprovalStatus.Approved,
           env.partners.setRateLimits.calls == List((acme.id, Some(RateLimitPolicies.recommended.copy(nativeStart = Some(asked))), None)),
-          // nothing is reloaded by hand: the `partner_change` notification of the write tells the registry of every pod
-          env.registry.refreshNow.calls.isEmpty,
           rejected.status == ApprovalStatus.Rejected,
           rejecting.partners.setRateLimits.calls.isEmpty,
         )
@@ -826,7 +843,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.partners.setRateLimits.failsWith(PartnerRateLimitsChanged(acme.id, 5))
           refused <- env.service.setRateLimits(acme, None, Some(4), "staff-1").flip
-        yield assertTrue(refused.isInstanceOf[PartnerError.Conflict], env.registry.refreshNow.calls.isEmpty)
+        yield assertTrue(refused.isInstanceOf[PartnerError.Conflict])
       },
       test("what is read is what the partner stores, with its revision; a partner that has none set reads none") {
         val env = Env()

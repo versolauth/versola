@@ -474,11 +474,9 @@ object PartnerEdgeController extends Controller:
 
   val getSettingsEndpoint =
     Method.GET / "edge" / "partner" / "settings" -> managed("partner", None, "/edge/partner/settings") { (caller, _, _) =>
-      ZIO.succeed(Response.json(PartnerSettingsResponse(
-        contact = caller.partner.contact,
-        defaults = caller.partner.settings.defaults,
-        version = caller.partner.version,
-      ).toJson))
+      // as stored, not as cached: the console reads the settings back right after a save, for the version the next save names
+      ZIO.serviceWithZIO[PartnerRegistry](_.findFresh(caller.partner.id)).map(_.getOrElse(caller.partner)).map: partner =>
+        Response.json(PartnerSettingsResponse(contact = partner.contact, defaults = partner.settings.defaults, version = partner.version).toJson)
     }
 
   val putSettingsEndpoint =
