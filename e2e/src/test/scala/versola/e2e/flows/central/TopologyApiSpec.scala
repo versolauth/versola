@@ -74,9 +74,9 @@ object TopologyApiSpec extends CentralApiSpec:
   /** Removes what a test registered, in the order the rules allow: a cell closed and deleted, then its region. */
   private def cleanup(central: CentralApi, ids: Ids): UIO[Unit] =
     (central.put("/configuration/cells", cell(ids.cell, ids.region, ids.key, state = "closed")) *>
-      central.delete("/configuration/cells", "cellId" -> ids.cell) *>
+      central.delete("/configuration/cells", "cellId" -> ids.cell, "force" -> "true") *>
       central.put("/configuration/cells", cell(ids.otherCell, ids.region, ids.otherKey, state = "closed")) *>
-      central.delete("/configuration/cells", "cellId" -> ids.otherCell) *>
+      central.delete("/configuration/cells", "cellId" -> ids.otherCell, "force" -> "true") *>
       central.delete("/configuration/regions", "regionId" -> ids.region) *>
       central.delete("/configuration/regions", "regionId" -> ids.otherRegion)).ignore
 
@@ -96,7 +96,9 @@ object TopologyApiSpec extends CentralApiSpec:
           regionInUse <- central.delete("/configuration/regions", "regionId" -> ids.region)
           deletedWhileDraining <- central.delete("/configuration/cells", "cellId" -> ids.cell)
           closed <- central.put("/configuration/cells", cell(ids.cell, ids.region, ids.key, state = "closed", weight = 0))
-          deleted <- central.delete("/configuration/cells", "cellId" -> ids.cell)
+          // the cell of this case has an address nothing answers at, so it cannot say what it still answers for
+          unanswered <- central.delete("/configuration/cells", "cellId" -> ids.cell)
+          deleted <- central.delete("/configuration/cells", "cellId" -> ids.cell, "force" -> "true")
           regionDeleted <- central.delete("/configuration/regions", "regionId" -> ids.region)
           afterDelete <- cells(central)
         yield assertTrue(listed.exists(c => c.str("id").contains(ids.cell) && c.str("state").contains("open")))
@@ -109,7 +111,9 @@ object TopologyApiSpec extends CentralApiSpec:
             .label("an update changes the state") &&
           assertTrue(regionInUse.status == Status.Conflict).label("a region with a cell in it is not deleted") &&
           assertTrue(deletedWhileDraining.status == Status.Conflict).label("a draining cell still holds users") &&
-          assertTrue(closed.status == Status.NoContent, deleted.status == Status.NoContent).label("a closed cell is deleted") &&
+          assertTrue(closed.status == Status.NoContent, unanswered.status == Status.Conflict)
+            .label("a closed cell that does not say whether it still answers for refresh tokens of moved users is kept") &&
+          assertTrue(deleted.status == Status.NoContent).label("and deleted once the operator says so with force") &&
           assertTrue(regionDeleted.status == Status.NoContent).label("and then its region") &&
           assertTrue(!afterDelete.exists(_.str("id").contains(ids.cell)))).ensuring(cleanup(central, ids))
       yield result
