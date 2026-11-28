@@ -32,13 +32,13 @@ object CsrfReportSpec extends ZIOSpecDefault:
         out.exists((_, message) => message.contains("Sec-Fetch-Site: same-site")),
       )
     },
-    test("a call with no origin headers is counted and logged at info, not as a refusal") {
+    test("a call with no origin headers is counted and nothing is logged: there is no origin to name, and it is a success path") {
       val report = CsrfReport("spec-noheaders")
       for
-        _ <- report.record(Verdict.NoHeaders, call(), "web")
+        _ <- ZIO.foreachDiscard(1 to 5)(_ => report.record(Verdict.NoHeaders, call(), "web"))
         n <- counted("spec-noheaders", "no_headers")
         out <- lines
-      yield assertTrue(n == 1.0, out.count((level, message) => level == LogLevel.Info && message.contains("no origin headers")) == 1, !out.exists(_._1 == LogLevel.Warning))
+      yield assertTrue(n == 5.0, out.isEmpty)
     },
     test("an allowed call is neither counted nor logged") {
       val report = CsrfReport("spec-allowed")
@@ -60,16 +60,23 @@ object CsrfReportSpec extends ZIOSpecDefault:
         n <- counted("spec-window", "refused_origin")
       yield assertTrue(first == 1, second == 2, n == 21.0)
     },
-    test("an attacker who writes a new origin every time cannot grow what is remembered or the log: past the bound it is counted and not logged") {
+    test("an attacker who writes a new origin every time cannot grow what is remembered or flood the log: past the bound it is counted, and one line a minute says the names are being left out") {
       val report = CsrfReport("spec-bound")
       for
         _ <- ZIO.foreachDiscard(1 to CsrfReport.MaxKeys + 50)(n => report.record(Verdict.RefusedOrigin, call("Origin" -> s"https://h$n.example.com"), "web"))
-        logged <- lines.map(_.size)
+        out <- lines
         n <- counted("spec-bound", "refused_origin")
+        named = out.count((_, message) => message.contains("origin='https://h"))
+        saturated = out.count((_, message) => message.contains("further origins are counted and not named"))
         _ <- TestClock.adjust(61.seconds)
         _ <- report.record(Verdict.RefusedOrigin, call("Origin" -> "https://fresh.example.com"), "web")
-        after <- lines.map(_.size)
-      yield assertTrue(logged == CsrfReport.MaxKeys, n == (CsrfReport.MaxKeys + 50).toDouble, after == CsrfReport.MaxKeys + 1)
+        after <- lines
+      yield assertTrue(
+        named == CsrfReport.MaxKeys,
+        saturated == 1,
+        n == (CsrfReport.MaxKeys + 50).toDouble,
+        after.exists((_, message) => message.contains("origin='https://fresh.example.com'")),
+      )
     },
     test("what a caller wrote is made fit for a log line: printable ASCII, no quote or backslash, at most 100 characters") {
       val written = "https://a.example\u0000\u001b[31m'\\" + "x" * 200

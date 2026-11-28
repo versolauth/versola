@@ -62,9 +62,6 @@ object CsrfGuard:
 
   def refused(verdict: Verdict): Boolean = verdict == Verdict.RefusedOrigin || verdict == Verdict.RefusedFetchSite
 
-  /** Whether the browser says this call comes from an origin that is not in `allowed`. */
-  def refuses(request: Request, allowed: List[URL]): Boolean = refused(verdict(request, allowed))
-
   /** Scheme, host and port, with the default port made explicit. An `Origin` is only these three, so a path on either side is ignored. */
   private def sameOrigin(a: URL, b: URL): Boolean =
     a.host.isDefined && a.scheme.isDefined &&

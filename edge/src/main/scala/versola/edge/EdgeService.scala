@@ -843,11 +843,11 @@ object EdgeService:
       // The session's own cookie, when this request rotated it, is added to whatever `proxy` answers with.
       yield response.updateHeaders(ProxyHeaders.toCaller).removeHeader(Header.SetCookie)
 
+    private val csrfReport = CsrfReport("resources")
+
     /** A call made with the session cookie, by a method that changes state, has to come from an origin that is ours when the browser says
       * where it comes from (see [[CsrfGuard]]). Before the token is read, so a call from elsewhere learns nothing about the session.
       */
-    private val csrfReport = CsrfReport("resources")
-
     private def checkCookieOrigin(request: Request, authSource: AuthSource): IO[Outcome, Unit] =
       authSource match
         case AuthSource.Cookie(presetId) if !CsrfGuard.isSafe(request.method) =>

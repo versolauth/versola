@@ -30,7 +30,7 @@ object CsrfGuardSpec extends ZIOSpecDefault:
   private def call(method: Method, headers: (String, String)*): Request =
     headers.foldLeft(Request(method = method, url = URL.empty / "resources" / "api", body = Body.empty))((r, h) => r.addHeader(h._1, h._2))
 
-  private def refused(method: Method, headers: (String, String)*): Boolean = CsrfGuard.refuses(call(method, headers*), allowed)
+  private def refused(method: Method, headers: (String, String)*): Boolean = CsrfGuard.refused(CsrfGuard.verdict(call(method, headers*), allowed))
 
   private val unsafe = List(Method.POST, Method.PUT, Method.PATCH, Method.DELETE)
 
@@ -113,8 +113,8 @@ object CsrfGuardSpec extends ZIOSpecDefault:
       test("without the preset (removed, or a cookie from before presets), only edge's own origin goes on") {
         val onlyEdge = CsrfGuard.allowedOrigins(edgeUrl, None)
         assertTrue(
-          !CsrfGuard.refuses(call(Method.POST, "Origin" -> "https://edge.example.com"), onlyEdge),
-          CsrfGuard.refuses(call(Method.POST, "Origin" -> "https://app.example.com"), onlyEdge),
+          !CsrfGuard.refused(CsrfGuard.verdict(call(Method.POST, "Origin" -> "https://edge.example.com"), onlyEdge)),
+          CsrfGuard.refused(CsrfGuard.verdict(call(Method.POST, "Origin" -> "https://app.example.com"), onlyEdge)),
         )
       },
     ),

@@ -222,6 +222,20 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           silent.status == Status.BadRequest,
         )
       },
+      test("`Origin: null` is refused, a safe method is never refused whatever it says, and the edge's own origin is matched by scheme, host and port, not by spelling") {
+        for
+          h <- harness(Some(StaffLevel.developer))
+          nullOrigin <- send(h, write(Method.POST, "/clients", "{}", origin = Some("null")))
+          options <- send(h, write(Method.OPTIONS, "/clients", "{}", origin = Some("https://evil.example")))
+          spelled <- send(h, write(Method.POST, "/clients", "{}", origin = Some("https://LOGIN.acme.example:443")))
+          (code, _) <- errorOf(nullOrigin)
+        yield assertTrue(
+          nullOrigin.status == Status.Forbidden,
+          code == "origin_mismatch",
+          options.status != Status.Forbidden,
+          spelled.status == Status.BadRequest,
+        )
+      },
       test("the cookie a refresh produced is set on the answer") {
         for
           h <- harness(Some(StaffLevel.viewer), current = session(rotated = Some(Cookie.Response("EDGE_SESSION", "acme-console:next"))))
