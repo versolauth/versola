@@ -131,7 +131,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         edge <- edgeAnswering(Response.seeOther(URL.decode("/somewhere/else").toOption.get))
         failure <- edge.startConversation(EdgeLoginStarted(authorizeUrl = StubSut.authorizeUrl, state = None, loginCookie = None), None).either
       yield assertTrue(failure.left.exists:
-        case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("/somewhere/else") && detail.contains("SSO_CONVERSATION")
+        case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("/somewhere/else") && detail.contains("__Host-SSO_CONVERSATION")
         case _ => false)
     },
     test("an authorize response that starts no conversation is malformed") {
@@ -142,7 +142,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
           None,
         ).either
       yield assertTrue(failure.left.exists:
-        case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("SSO_CONVERSATION")
+        case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("__Host-SSO_CONVERSATION")
         case _ => false)
     },
     test("complete returns the cookie with the Max-Age edge set on it") {

@@ -1,9 +1,11 @@
 package versola.oauth.introspect
 
+import versola.oauth.AuthMetrics
 import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorResponse, IntrospectionResponse}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
+import versola.user.move.DepartureResponses
 import versola.util.http.{Controller, Observability, extractCredentials}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
 import zio.*
@@ -55,6 +57,12 @@ object IntrospectionController extends Controller:
           case _: JWT.Error =>
             Observability.setError("inactive") *> ZIO.succeed(Response.json(IntrospectionResponse.Inactive.toJson))
 
+          // The user is moving, or moved (versolauth/versola#1051).
+          case IntrospectionError.Unavailable =>
+            Observability.setError("temporarily_unavailable", Some("user_leaving")).as(DepartureResponses.leaving)
+          case IntrospectionError.Moved(cell) =>
+            Observability.setError("moved") *> AuthMetrics.movedAnswered("introspect") *> ZIO.succeed(DepartureResponses.moved(cell))
+
           case error: IntrospectionError =>
             ZIO.succeed:
               Response
@@ -72,6 +80,6 @@ object IntrospectionController extends Controller:
       if s.isJWT then
         Right(Right(s))
       else
-        RefreshToken.fromBase64Url(s).map(Left(_))
+        RefreshToken.fromPresented(s).map(Left(_))
 
     FormDecoder.single(form, "token", parse)

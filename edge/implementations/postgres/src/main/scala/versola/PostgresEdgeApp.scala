@@ -12,6 +12,7 @@ import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
   AccessLogPolicyService,
   AddressLimit,
+  CellTable,
   ClientCertificateFiles,
   ConfigurationSource,
   DeclaredRateLimitService,
@@ -23,6 +24,7 @@ import versola.edge.{
   EdgeRateLimiter,
   EdgeService,
   InternalSurface,
+  IssuerFront,
   JwksService,
   OAuthClientService,
   OverloadPolicyService,
@@ -70,6 +72,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       AccessLogPolicyService &
       DeclaredRateLimitService &
       RateLimitPolicyService &
+      CellTable &
       RateLimiter &
       OAuthClientService &
       ResourceService &
@@ -92,6 +95,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeService &
       NativeAuthClient &
       NativeService &
+      IssuerFront.Upstream &
       PartnerSurface
 
   override protected def admissionTiers = Some(versola.edge.EdgeAdmission.tierOf)
@@ -122,6 +126,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       List(
         EdgeController.routes,
         NativeController.routes,
+        IssuerFront.routes,
       ).reduce(_ ++ _),
       AddressLimit.Listener.Plain,
     )
@@ -199,13 +204,16 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       RevocationCache.live >++>
       TokenRevocationService.live >++>
       ClientCertificateFiles.live >++>
+      CellTable.live >++>
       SSOClient.live >++>
       RevocationFeedClient.live >++>
+      RevocationFeedClient.Factory.live >++>
       RevocationFeedPuller.live >++>
       DpopReplayGuard.shared >++>
       DpopVerifier.live >++>
       EdgeService.live >++>
       NativeAuthClient.live >++>
+      IssuerFront.upstream >++>
       NativeService.live >++>
       PartnerSurface.live >++>
       SSOClientWarmUp.live

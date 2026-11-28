@@ -38,6 +38,10 @@ trait SessionRepository:
 
   def findSession(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
 
+  /** The user a session belongs to, by the id that travels in logout hints and front-channel URIs; none for a session that is not
+    * here. Asked before a logout ends it, so that a user who is leaving this cell is not touched (versolauth/versola#1051). */
+  def findSessionOwner(publicId: PublicSessionId): Task[Option[UserId]]
+
   /** Slide the idle expiry of an online session forward. No-op for sessions created without an idle window. */
   def prolongIdle(id: MAC.Of[SessionId], idleTtl: Duration): Task[Unit]
 
@@ -152,6 +156,11 @@ trait SessionRepository:
   ): Task[Option[(MAC.Of[RefreshToken], RefreshTokenRecord)]]
 
   def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
+
+  /** The user a retired (rotated away) token of `clientId` belongs to, as [[revokeFamily]] would find the family of; none when
+    * the token is not a retired one of that client. Asked before a replay revokes the family, so that a user who is leaving this
+    * cell is not touched (versolauth/versola#1051). */
+  def findRetiredTokenOwner(token: MAC.Of[RefreshToken], clientId: ClientId): Task[Option[UserId]]
 
   /** Revokes the whole rotation family of an already-retired `token`, i.e. one presented
     * after it was exchanged for its successor. That is a proven leak -- to whoever stole it,

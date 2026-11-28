@@ -137,6 +137,13 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           found <- env.repository.findSession(sessionId1)
         yield assertTrue(withoutExpiry(found).contains(session1))
       },
+      test("findSessionOwner names the user of a session by its public id, and nobody for a public id this cell does not have") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, None, None)
+          owner <- env.repository.findSessionOwner(publicId1)
+          unknown <- env.repository.findSessionOwner(publicId2)
+        yield assertTrue(owner.contains(userId1), unknown.isEmpty)
+      },
       test("find returns None for non-existent session") {
         for
           found <- env.repository.findSession(sessionId1)

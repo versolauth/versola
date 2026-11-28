@@ -297,7 +297,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
           json(Json.Obj("tenants" -> array(s.tenants.toList.sortBy(_._1).map { (id, tenant) =>
             Json.Obj(
               Chunk[(String, Json)]("id" -> Json.Str(id), "description" -> Json.Str(tenant.description)) ++
-                Chunk.fromIterable(tenant.edgeId.map(edge => "edgeId" -> Json.Str(edge))),
+                Chunk.fromIterable(tenant.edgeGroupId.map(edge => "edgeGroupId" -> Json.Str(edge))),
             )
           })))
 
@@ -312,7 +312,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
             case _ =>
               (
                 Response.status(Status.Created),
-                s.copy(tenants = s.tenants.updated(id, StoredTenant(str(spec, "description"), optionalStr(spec, "edgeId"), profile))),
+                s.copy(tenants = s.tenants.updated(id, StoredTenant(str(spec, "description"), optionalStr(spec, "edgeGroupId"), profile))),
               )
 
       case (Method.PUT, "/configuration/tenants") =>
@@ -321,7 +321,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
         state.modify: s =>
           (
             Response.status(Status.NoContent),
-            s.copy(tenants = s.tenants.updatedWith(id)(_.map(_.copy(edgeId = optionalStr(spec, "edgeId"))))),
+            s.copy(tenants = s.tenants.updatedWith(id)(_.map(_.copy(edgeGroupId = optionalStr(spec, "edgeGroupId"))))),
           )
 
       case (Method.GET, "/configuration/challenges/challenge-settings") =>
@@ -588,7 +588,7 @@ object FakeCentral:
     private def patched(current: Set[String], patch: Json.Obj): Set[String] =
       current -- strings(patch, "remove") ++ strings(patch, "add")
 
-  case class StoredTenant(description: String, edgeId: Option[String], profile: String)
+  case class StoredTenant(description: String, edgeGroupId: Option[String], profile: String)
 
   case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID], audience: Set[String]):
     /** Applies the audience patch the way central's `PatchAudience.patch` does: remove before

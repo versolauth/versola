@@ -50,5 +50,6 @@ object ServiceController extends AuditedController:
           yield Response.status(Status.NoContent))
             .catchAll:
               case UserNotFound => Observability.setError("user_not_found").as(Response.status(Status.NotFound))
+              case UserMoving => Observability.setError("user_moving").as(Response.status(Status.Conflict))
               case error: Throwable => ZIO.fail(error)
     }

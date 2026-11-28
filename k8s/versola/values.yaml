@@ -137,7 +137,7 @@ tmpSizeLimit: 64Mi
 #
 # One Secret for every service, not one per service: the required values
 # were already generated as a single coherent set by gen-env.scala (its
-# own comment on CENTRAL_SECRET_KEY/CLIENT_SECRETS_SECRET: "a first-time
+# own comment on CLIENT_SECRETS_SECRET: "a first-time
 # value gets stored [in OpenBao]... writing it into both [auth.conf and
 # central.conf] is harmless") -- splitting it into per-service Secrets
 # here would invent a boundary the source of truth doesn't have. Each
@@ -145,8 +145,9 @@ tmpSizeLimit: 64Mi
 # nothing gains broader access than the per-service split would've given
 # it; see templates/_helpers.tpl's versola.secretKeyFor for the exact
 # per-service required-key lists and key-naming (kebab-case of the VAR
-# name, service-prefixed except for the two values genuinely shared
-# between auth and central).
+# name, service-prefixed except for the one value genuinely shared
+# between auth and central, CLIENT_SECRETS_SECRET; the service keys are
+# not shared by name: each half of a pair is held by one service).
 secrets:
   existingSecret: ""
   # How replicas notice a rotated value in existingSecret:
@@ -769,6 +770,11 @@ ingress:
   # host only ever exposes what you actually list:
   #   oidc     -> auth:    /authorize /token /par /introspect /revoke
   #                        /userinfo /logout /.well-known/ /challenge
+  #   pages    -> edge:    /authorize /logout /challenge -- the pages of a sign-in, on a
+  #                        host whose issuer address is an edge's (several cells). In
+  #                        place of `oidc` on that host, never beside it
+  #   endpoints-> auth:    /token /par /introspect /revoke /userinfo /.well-known/ --
+  #                        `oidc` without the pages, for a client that calls auth itself
   #   login    -> edge:    /login/ /complete /logout/
   #   api      -> edge:    /resources/ /permissions/
   #   native   -> edge:    /native/ -- the endpoints a mobile app calls under FAPI 2.0

@@ -3,6 +3,7 @@ package versola.central.users
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.util.{Email, Patch, Phone}
 import zio.json.ast.Json
 import zio.json.{JsonCodec, jsonExplicitNull}
@@ -18,14 +19,53 @@ case class CreateUserRequest(
 
 case class CreateUserResponse(id: UserId) derives JsonCodec, Schema
 
-/** An account auth created through self-service registration. */
+/** The claim of an account's identifiers by the `auth` that is about to create it through self-service registration
+  * (versolauth/versola#1041).
+  *
+  * @param cell the cell the caller says it is; absent from an `auth` that is not one. It is only a statement: the cell of a
+  *   new claim is the one the key of the caller's token belongs to (#1050), and a body that names another is refused
+  *   (`403 cell_mismatch`). An `auth` central is configured with and that is no registered cell yet names its own here.
+  */
 case class RegisteredUserRequest(
+    email: Option[Email],
+    phone: Option[Phone],
+    login: Option[Login],
+    cell: Option[CellId],
+) derives JsonCodec, Schema
+
+/** Who holds the identifiers now.
+  *
+  * @param cell the cell that holds the user: the caller's own for a new claim, the owner's for identifiers claimed
+  *   before. Absent for a user of an installation with no cell.
+  */
+case class RegisteredUserResponse(userId: UserId, cell: Option[CellId]) derives JsonCodec, Schema
+
+/** The body of the `409` that refuses a registration in a cell that does not take users. `cell` is the cell that does, and is
+  * absent when none does.
+  */
+case class CellRefusalResponse(error: String, cell: Option[CellId]) derives JsonCodec, Schema
+
+/** Who holds a credential, asked by a cell that did not find it in its own database (versolauth/versola#1046). */
+case class LookupUserRequest(
     email: Option[Email],
     phone: Option[Phone],
     login: Option[Login],
 ) derives JsonCodec, Schema
 
-case class RegisteredUserResponse(userId: UserId) derives JsonCodec, Schema
+/** Where a sign-in that names a login, a user or an address is to be sent (versolauth/versola#1048, #1052): asked by a
+  * cell that does not hold it. Exactly one of the four is given; anything else is answered as "nowhere". */
+case class HomeCellRequest(
+    login: Option[Login],
+    userId: Option[UserId],
+    email: Option[Email],
+    phone: Option[Phone],
+) derives JsonCodec, Schema
+
+case class HomeCellResponse(cell: CellId) derives JsonCodec, Schema
+
+/** A session a sign-in finished in another cell took the place of (versolauth/versola#1048): sent by the cell where the
+  * sign-in finished, passed on to the cell of the session's user. */
+case class SupersededSessionRequest(userId: UserId, sessionId: String) derives JsonCodec, Schema
 
 case class PatchUserRequest(
     id: UserId,
@@ -59,6 +99,8 @@ case class UserSearchRecord(
     phone: Option[Phone],
     login: Option[Login],
     claims: Json.Obj,
+    cell: Option[CellId],
+    move: Option[UserMoveResponse],
 ) derives JsonCodec, Schema
 
 case class UserSearchResponse(users: Vector[UserSearchRecord]) derives JsonCodec, Schema

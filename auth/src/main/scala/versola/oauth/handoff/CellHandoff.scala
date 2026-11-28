@@ -1,0 +1,355 @@
+package versola.oauth.handoff
+
+import versola.oauth.authorize.model.ResponseTypeEntry
+import versola.oauth.client.model.{PassedFactorRecord, TenantId}
+import versola.oauth.conversation.model.ConversationRecord
+import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.SupersededSession
+import versola.user.given
+import versola.util.{Base64, CoreConfig, Dpop, Email, Phone, RoutingKey, SecureRandom}
+import zio.http.{Path, URL}
+import zio.json.*
+import zio.{Clock, Duration, IO, Task, UIO, ZIO, ZLayer, durationInt}
+
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+
+/** A sign-in handed from the cell that took it to the cell that holds its user (versolauth/versola#547 D18, #1046).
+  *
+  * A new sign-in is placed in a cell before anyone knows who is signing in. When the address typed belongs to a user of
+  * another cell, the first cell seals what the authorization request asked for together with the address, and sends
+  * the browser to the home cell with it; the home cell opens it and starts the request as its own `/authorize` would,
+  * with the address as the login hint.
+  *
+  * The seal is a JWS signed with the key of the cell that makes it, encrypted to the key of the cell it is for
+  * (versolauth/versola#1050): only the home cell reads it, so the address is not readable in the URL, and only a cell the
+  * home cell knows by its key can have made it, and which one is in the seal. No key is shared between cells, so a cell
+  * cannot make a seal in another's name or open one meant for another. It names the cell it is for and lives
+  * [[CellHandoff.Lifetime]]. It grants nothing: opening it starts a sign-in for that address, which is what typing the
+  * address does, so it is not kept to be refused a second time.
+  *
+  * ==A submission handed over (versolauth/versola#1048)==
+  * A login and password, or a passkey with no address typed, name the user only once they are submitted, and the person
+  * is not asked for them twice: the first cell answers the POST with a `307` to the home cell, the browser repeats the
+  * same POST there, and the home cell checks it in the request it starts. Such a seal does more than start a sign-in,
+  * so it carries more: an id the home cell takes once, a digest of the first cell's conversation cookie, which the
+  * browser must still present (a seal made for somebody's own account cannot be posted from another site into a
+  * browser that never held that conversation), and, for a passkey, the request the assertion answers.
+  */
+trait CellHandoff:
+  /** The value of the `handoff` parameter: the routing key of `to` in front of the seal, so that what is in front of the
+    * cells sends the browser there. Fails with [[CellHandoff.NoKey]] when `to` has no key to seal for. */
+  def seal(record: ConversationRecord, credential: Either[Email, Phone], to: RoutingKey.CellId): Task[String]
+
+  /** The same for a submission the home cell is to check ([[CellHandoff.Submission]]).
+    *
+    * @param cookie the content of this cell's conversation cookie, as the browser presented it
+    * @param passkeyRequest the assertion request a passkey submission answers; none for a login and password
+    */
+  def sealSubmission(record: ConversationRecord, to: RoutingKey.CellId, cookie: String, passkeyRequest: Option[String]): Task[String]
+
+  /** What was sealed for this cell and has not expired. */
+  def open(presented: String): IO[CellHandoff.Refused, CellHandoff.Payload]
+
+  /** A registration whose credential was verified in this cell, handed to `to`, which takes users (versolauth/versola#1052): the
+    * value of the `registration` parameter of `/challenge/registration`. Bound to the browser's conversation cookie and taken once
+    * by the cell that opens it, like a submission. Fails with [[CellHandoff.NoKey]] and [[CellHandoff.TooLarge]] as [[seal]] does.
+    *
+    * @param cookie the content of this cell's conversation cookie, as the browser presented it
+    */
+  def sealRegistration(record: ConversationRecord, registered: CellHandoff.Registered, to: RoutingKey.CellId, cookie: String): Task[String]
+
+  /** What was sealed for this cell as a registration and has not expired. A seal made for another use is refused as
+    * [[CellHandoff.Refused.Purpose]], whoever made it. */
+  def openRegistration(presented: String): IO[CellHandoff.Refused, CellHandoff.RegistrationPayload]
+
+object CellHandoff:
+  val Lifetime: Duration = 1.minute
+
+  /** The most a seal may be, in the characters of its parameter. It travels in a URL, and what is in front of the cells
+    * refuses a request line or a `Location` header past a few kilobytes (8 KiB is the usual default); an authorization
+    * request with a very large `authorization_details` or `claims` would otherwise be lost on the way, after the first
+    * cell had ended its conversation. */
+  val MaxLength = 6000
+
+  /** A request too large to be sealed into a URL ([[MaxLength]]). The caller keeps its conversation. */
+  final case class TooLarge(length: Int) extends RuntimeException(s"a handoff of $length characters is over $MaxLength")
+
+  /** A cell this auth has no key for (not listed by central, or listed with none): nothing can be sealed for it. The caller
+    * keeps its conversation, as for a directory that does not answer. */
+  final case class NoKey(cell: String) extends RuntimeException(s"cell '$cell' has no key to seal a handoff for")
+
+  /** The parameter of `/challenge/handoff`. */
+  val Parameter = "handoff"
+
+  /** The parameter of `/challenge/registration`. */
+  val RegistrationParameter = "registration"
+
+  /** Why a handoff is not taken; a closed set, it is the description of the recorded error. */
+  enum Refused(val reason: String):
+    case Malformed extends Refused("malformed")
+    case Forged extends Refused("not sealed by a cell")
+    case Expired extends Refused("expired")
+    case Elsewhere extends Refused("sealed for another cell")
+    case NotACell extends Refused("this auth is not a cell")
+    case NotASubmission extends Refused("sealed to start a sign-in, not to carry a submission")
+    case Submission extends Refused("sealed to carry a submission, which a GET does not have")
+    case AnotherBrowser extends Refused("not the browser the sign-in was started in")
+    case Replayed extends Refused("presented before")
+    case Purpose extends Refused("sealed for another use than a handoff")
+
+  /** What an authorization request asked for, as the parameters of `/authorize` it was made with or resolved to, with
+    * the address typed as its `login_hint`. The home cell validates them as it validates any authorization request.
+    *
+    * @param from the cell that made the seal; the home cell checks it is the one whose key signed it
+    * @param to the cell the seal is for
+    * @param expiresAt epoch seconds
+    * @param submission set when the request that follows the seal is the submission the first cell took
+    * @param superseded the session the browser had in the first cell when the sign-in was started there, which a
+    *   sign-in that finishes in the home cell replaces: the home cell has it ended through central once the sign-in is
+    *   finished, as the first cell would have ended it itself
+    */
+  final case class Payload(
+      params: Map[String, List[String]],
+      from: String,
+      to: String,
+      expiresAt: Long,
+      submission: Option[Submission],
+      superseded: Option[SupersededSession],
+  ) derives JsonCodec
+
+  /** What a seal that hands a submission over carries besides the request.
+    *
+    * @param id taken once by the home cell: the submission is a credential, and a passkey assertion must not be good twice
+    * @param cookie [[cookieDigest]] of the first cell's conversation cookie
+    * @param passkeyRequest the assertion request (with its challenge) the passkey answered; none for a login and password
+    */
+  final case class Submission(id: String, cookie: String, passkeyRequest: Option[String]) derives JsonCodec
+
+  /** What a cell that verified a credential says of it to the cell that registers the user.
+    *
+    * @param credential the email or phone number the code was verified for
+    * @param verified which factor verified it and when, as the conversation recorded it: the sign-in that ends in the other cell
+    *   has the same `amr` and `auth_time`
+    * @param tenantId the tenant of the client the request is for; the cell that registers checks it is the one of its own client
+    */
+  final case class Registered(credential: Either[Email, Phone], verified: PassedFactorRecord, tenantId: TenantId)
+
+  /** What a seal that hands a verified registration over carries: the request, as for a handoff, and [[Registered]] in place of the
+    * login hint.
+    *
+    * @param id taken once by the cell that registers
+    * @param cookie [[cookieDigest]] of the first cell's conversation cookie
+    * @param superseded as in [[Payload]]
+    */
+  final case class RegistrationPayload(
+      params: Map[String, List[String]],
+      from: String,
+      to: String,
+      expiresAt: Long,
+      id: String,
+      cookie: String,
+      email: Option[Email],
+      phone: Option[Phone],
+      verified: PassedFactorRecord,
+      tenantId: TenantId,
+      superseded: Option[SupersededSession],
+  ) derives JsonCodec:
+    /** `None` unless exactly one of the email and the phone number is there. */
+    def registered: Option[Registered] =
+      (email, phone) match
+        case (Some(email), None) => Some(Registered(credential = Left(email), verified = verified, tenantId = tenantId))
+        case (None, Some(phone)) => Some(Registered(credential = Right(phone), verified = verified, tenantId = tenantId))
+        case _ => None
+
+  /** What a seal keeps of a conversation cookie. */
+  def cookieDigest(content: String): String =
+    Base64.urlEncode(MessageDigest.getInstance("SHA-256").digest(content.getBytes(StandardCharsets.UTF_8)))
+
+  /** Whether `content` is the cookie a seal was made with. */
+  def sameCookie(submission: Submission, content: String): Boolean = sameCookie(submission.cookie, content)
+
+  /** Whether `content` is the cookie whose [[cookieDigest]] is `digest`. */
+  def sameCookie(digest: String, content: String): Boolean =
+    MessageDigest.isEqual(digest.getBytes(StandardCharsets.UTF_8), cookieDigest(content).getBytes(StandardCharsets.UTF_8))
+
+  /** The parameters of the request a conversation was started for, with the credential, where there is one, as the login
+    * hint. A pushed request and a request object are already resolved in the record, so what is written here is the
+    * request itself.
+    *
+    * What decides whether a session the browser already has may be used is not written, because the home cell has no
+    * such session to decide about: a session cookie names its cell, so a browser with a session in the home cell was
+    * sent there by `/authorize` in the first place. That is `max_age`, `prompt=login` and `prompt=select_account`; the
+    * sign-in in the home cell is always a new authentication, and its `auth_time` says so. `prompt=none` never starts
+    * a conversation, and an `id_token_hint` that names a user starts one that knows its user, which is not handed over.
+    *
+    * The session the browser had in the first cell is named in the seal beside the parameters
+    * ([[Payload.superseded]]): a sign-in that finishes in the home cell has it ended through central. Its refresh
+    * tokens are ended with it and not moved to the new session, as they are for the same user in one cell: the user of
+    * a session in this cell is not a user of the home cell. */
+  private[handoff] def paramsOf(record: ConversationRecord, credential: Option[Either[Email, Phone]]): Map[String, List[String]] =
+    def one(name: String, value: Option[String]) = value.map(name -> List(_))
+    List(
+      one("client_id", Some(record.clientId)),
+      one("redirect_uri", Some(record.redirectUri.encode)),
+      one("response_type", Some(if record.responseType.contains(ResponseTypeEntry.IdToken) then "code id_token" else "code")),
+      one("response_mode", Some(record.responseMode.parameterValue)),
+      one("scope", Option.when(record.scope.nonEmpty)(record.scope.toList.map(identity[String]).sorted.mkString(" "))),
+      one("state", record.state.map(identity[String])),
+      one("code_challenge", record.codeChallenge.map(identity[String])),
+      one("code_challenge_method", record.codeChallengeMethod.map(_.toString)),
+      one("nonce", record.nonce.map(identity[String])),
+      one("claims", record.requestedClaims.map(_.toJson)),
+      one("ui_locales", record.uiLocales.filter(_.nonEmpty).map(_.mkString(" "))),
+      one("prompt", Option.when(record.promptConsent)("consent")),
+      one("acr_values", record.targetAcr.map(identity[String])),
+      one("authorization_details", record.authorizationDetails.map(_.toJson)),
+      one(Dpop.Jkt.Parameter, record.dpopJkt),
+      one("login_hint", credential.map(_.merge)),
+      Option.when(record.resources.nonEmpty)("resource" -> record.resources.map(identity[String])),
+    ).flatten.toMap
+
+  val live: ZLayer[CoreConfig & CellEnvelope & SecureRandom & SessionRepository, Nothing, CellHandoff] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
+
+  /** The sign-in is sealed and opened by [[CellEnvelope]], for the purpose [[CellEnvelope.Purpose.Handoff]]; what is checked
+    * here is what only a handoff has: the cell it names, the cell it is from, and its own expiry. */
+  class Impl(config: CoreConfig, envelope: CellEnvelope, random: SecureRandom, sessions: SessionRepository) extends CellHandoff:
+
+    override def seal(record: ConversationRecord, credential: Either[Email, Phone], to: RoutingKey.CellId): Task[String] =
+      sealOf(record, params = paramsOf(record, Some(credential)), to = to, submission = None)
+
+    override def sealSubmission(record: ConversationRecord, to: RoutingKey.CellId, cookie: String, passkeyRequest: Option[String]): Task[String] =
+      random.nextHex(32).flatMap: id =>
+        sealOf(
+          record,
+          params = paramsOf(record, None),
+          to = to,
+          submission = Some(Submission(id = id, cookie = cookieDigest(cookie), passkeyRequest = passkeyRequest)),
+        )
+
+    override def sealRegistration(
+        record: ConversationRecord,
+        registered: Registered,
+        to: RoutingKey.CellId,
+        cookie: String,
+    ): Task[String] =
+      for
+        own <- ZIO.fromOption(config.cellId).orElseFail(IllegalStateException("an auth that is no cell has no registration to seal"))
+        id <- random.nextHex(32)
+        ticket <- envelope.sealMade(
+          to,
+          CellEnvelope.Purpose.Registration,
+          for
+            now <- Clock.instant
+            superseded <- supersededBy(record)
+            payload = RegistrationPayload(
+              params = paramsOf(record, None),
+              from = own,
+              to = to,
+              expiresAt = now.plus(Lifetime).getEpochSecond,
+              id = id,
+              cookie = cookieDigest(cookie),
+              email = registered.credential.left.toOption,
+              phone = registered.credential.toOption,
+              verified = registered.verified,
+              tenantId = registered.tenantId,
+              superseded = superseded,
+            )
+          yield payload.toJson.getBytes(StandardCharsets.UTF_8),
+        ).mapError:
+          case CellEnvelope.NoKey(cell) => NoKey(cell)
+          case other => other
+        _ <- ZIO.fail(TooLarge(ticket.length)).when(ticket.length > MaxLength)
+      yield ticket
+
+    override def openRegistration(presented: String): IO[Refused, RegistrationPayload] =
+      for
+        own <- ZIO.fromOption(config.cellId).orElseFail(Refused.NotACell)
+        opened <- envelope.open(CellEnvelope.Purpose.Registration, presented).mapError(refusedBy)
+        (from, content) = opened
+        payload <- ZIO.fromEither(String(content, StandardCharsets.UTF_8).fromJson[RegistrationPayload]).orElseFail(Refused.Forged)
+        _ <- ZIO.fail(Refused.Forged).unless(payload.from == from)
+        _ <- ZIO.fail(Refused.Elsewhere).unless(payload.to == (own: String))
+        // Exactly one credential, or the seal is not one a cell makes.
+        _ <- ZIO.fail(Refused.Forged).unless(payload.registered.isDefined)
+        now <- Clock.instant
+        _ <- ZIO.fail(Refused.Expired).when(now.getEpochSecond >= payload.expiresAt)
+      yield payload
+
+    private def refusedBy(refused: CellEnvelope.Refused): Refused = refused match
+      case CellEnvelope.Refused.Malformed => Refused.Malformed
+      case CellEnvelope.Refused.Forged => Refused.Forged
+      case CellEnvelope.Refused.Expired => Refused.Expired
+      case CellEnvelope.Refused.Elsewhere => Refused.Elsewhere
+      case CellEnvelope.Refused.NotACell => Refused.NotACell
+      case CellEnvelope.Refused.WrongPurpose => Refused.Purpose
+
+    /** The session this sign-in replaces, as the home cell can name it: the one handed here with the sign-in, or this
+      * cell's own, by its public id. A session that cannot be read is left out, and stays until it expires: the
+      * sign-in is not refused for it. */
+    private def supersededBy(record: ConversationRecord): UIO[Option[SupersededSession]] =
+      record.supersededSession match
+        case handed @ Some(_) => ZIO.succeed(handed)
+        case None =>
+          (record.priorSessionId, record.priorSessionUserId) match
+            case (Some(id), Some(userId)) =>
+              sessions.findSession(id)
+                .map(_.map(session => SupersededSession(userId = userId, sessionId = session.publicId)))
+                .catchAllCause(cause =>
+                  ZIO.logWarningCause("Could not read the session a handed sign-in replaces; it is left to expire", cause).as(None),
+                )
+            case _ => ZIO.none
+
+    private def sealOf(
+        record: ConversationRecord,
+        params: Map[String, List[String]],
+        to: RoutingKey.CellId,
+        submission: Option[Submission],
+    ): Task[String] =
+      for
+        own <- ZIO.fromOption(config.cellId).orElseFail(IllegalStateException("an auth that is no cell has no handoff to seal"))
+        ticket <- envelope.sealMade(
+          to,
+          CellEnvelope.Purpose.Handoff,
+          // Made once the cell is known to have a key: nothing is read for one that has none.
+          for
+            now <- Clock.instant
+            superseded <- supersededBy(record)
+            payload = Payload(
+              params = params,
+              from = own,
+              to = to,
+              expiresAt = now.plus(Lifetime).getEpochSecond,
+              submission = submission,
+              superseded = superseded,
+            )
+          yield payload.toJson.getBytes(StandardCharsets.UTF_8),
+        ).mapError:
+          case CellEnvelope.NoKey(cell) => NoKey(cell)
+          case other => other
+        _ <- ZIO.fail(TooLarge(ticket.length)).when(ticket.length > MaxLength)
+      yield ticket
+
+    /** Everything that is not the cell's own key, the sealing cell's, the audience, or the clock is a seal that was not
+      * made by a cell this one knows. */
+    override def open(presented: String): IO[Refused, Payload] =
+      for
+        own <- ZIO.fromOption(config.cellId).orElseFail(Refused.NotACell)
+        opened <- envelope.open(CellEnvelope.Purpose.Handoff, presented).mapError(refusedBy)
+        (from, content) = opened
+        payload <- ZIO.fromEither(String(content, StandardCharsets.UTF_8).fromJson[Payload]).orElseFail(Refused.Forged)
+        // The cell that signed is the cell the seal says made it, or a cell could make a seal in another's name.
+        _ <- ZIO.fail(Refused.Forged).unless(payload.from == from)
+        _ <- ZIO.fail(Refused.Elsewhere).unless(payload.to == (own: String))
+        now <- Clock.instant
+        _ <- ZIO.fail(Refused.Expired).when(now.getEpochSecond >= payload.expiresAt)
+      yield payload
+
+  /** Where the first cell sends the browser. */
+  def location(ticket: String): URL =
+    URL.root.copy(path = Path.root / "challenge" / "handoff").addQueryParam(Parameter, ticket)
+
+  /** Where the cell that verified a registration sends the browser, to the cell that takes it. */
+  def registrationLocation(ticket: String): URL =
+    URL.root.copy(path = Path.root / "challenge" / "registration").addQueryParam(RegistrationParameter, ticket)

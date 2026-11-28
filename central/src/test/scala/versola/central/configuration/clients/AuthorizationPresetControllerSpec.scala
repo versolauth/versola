@@ -6,6 +6,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.{AuthorizationPresetInput, AuthorizationPresetResponse, SaveAuthorizationPresetsRequest}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.{RedirectUri, Secret}
@@ -97,7 +98,9 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           AuthorizationPresetController.routes.provideEnvironment(
             ZEnvironment[AuthorizationPresetService](service) ++ ZEnvironment(config) ++ tracing ++
-              ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+              ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++ ZEnvironment[ResourceService](
+                resourceService,
+              ),
           ).sandbox,
         )
         _ <- resourceService.verifySecret.succeedsWith(true)

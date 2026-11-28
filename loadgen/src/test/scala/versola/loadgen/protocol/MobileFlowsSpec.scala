@@ -58,7 +58,7 @@ object MobileFlowsSpec extends ZIOSpecDefault:
         flowNames <- recorder.flowNames
       yield assertTrue(
         tokens == expectedTokens,
-        // The newly-issued SSO_SESSION cookie (§7.4) must reach the caller, not just get
+        // The newly-issued __Host-SSO_SESSION cookie (§7.4) must reach the caller, not just get
         // consumed and dropped somewhere in `converse`/`follow`.
         ssoSession == Some(SsoSession(StubSut.ssoSession)),
         hops == Vector(

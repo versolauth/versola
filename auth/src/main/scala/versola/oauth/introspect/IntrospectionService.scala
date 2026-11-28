@@ -9,9 +9,14 @@ import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.RefreshTokenRecord
+import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, UserDepartures}
 import versola.util.{CoreConfig, Secret, SecurityService}
 import zio.json.ast.Json
 import zio.{IO, UIO, ZIO, ZLayer}
+
+import java.util.UUID
+import scala.util.Try
 
 trait IntrospectionService:
   def introspectAccessToken(
@@ -29,10 +34,10 @@ trait IntrospectionService:
 object IntrospectionService:
   def live: ZLayer[
     OAuthConfigurationService & ClientAuthentication & SessionRepository & SecurityService & CoreConfig &
-      AccessTokenRevocationService,
+      AccessTokenRevocationService & UserDepartures,
     Nothing,
     IntrospectionService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   class Impl(
       oauthClientService: OAuthConfigurationService,
@@ -41,7 +46,13 @@ object IntrospectionService:
       securityService: SecurityService,
       config: CoreConfig,
       accessTokenRevocation: AccessTokenRevocationService,
+      departures: UserDepartures,
   ) extends IntrospectionService:
+
+    private def toIntrospectionError(error: Throwable | DepartureRefusal): Throwable | IntrospectionError = error match
+      case DepartureRefusal.Leaving => IntrospectionError.Unavailable
+      case DepartureRefusal.Moved(cell) => IntrospectionError.Moved(cell)
+      case other: Throwable => other
 
     override def introspectAccessToken(
         token: AccessTokenPayload,
@@ -55,8 +66,13 @@ object IntrospectionService:
         // RFC 7662 §2.2: a revoked token is `active: false`, with nothing to say why. After the
         // caller's right to ask about this token is established, not before: otherwise a caller
         // with no such right could tell a revoked token from a live one by the difference in
-        // answer. Answered from the replica's in-memory list, no query.
+        // answer. Answered from the replica's in-memory list, no query. Before the departure is looked at: a token this cell
+        // knows to be revoked is inactive whatever became of its user, and is not pointed at another cell (versolauth/versola#1051).
         revoked <- accessTokenRevocation.isRevoked(token)
+        // A live token of a user who is leaving, or has gone, after the same right is established.
+        _ <- ZIO.foreachDiscard(Try(UUID.fromString(token.subject)).toOption)(id =>
+          departures.refuse(UserId(id)).mapError(toIntrospectionError),
+        ).unless(revoked)
       yield if revoked then IntrospectionResponse.Inactive else buildJwtIntrospectionResponse(token, audience)
 
     private def resolveAudience(
@@ -124,6 +140,9 @@ object IntrospectionService:
 
         _ <- ZIO.fail(IntrospectionError.Unauthenticated)
           .when(tokenRecord.exists(_.clientId != client.id))
+        _ <- tokenRecord match
+          case Some(record) => departures.refuse(record.userId).mapError(toIntrospectionError)
+          case None => departures.refuseToken(tokenMac, client.id).mapError(toIntrospectionError)
       yield buildIntrospectionResponse(tokenRecord)
 
     /** RFC 7662 requires the introspection endpoint to authenticate the caller, and a bare

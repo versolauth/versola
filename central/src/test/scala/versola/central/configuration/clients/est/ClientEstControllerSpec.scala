@@ -5,6 +5,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
@@ -17,7 +18,6 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 import java.time.Instant
-import javax.crypto.spec.SecretKeySpec
 
 /** What auth and the operator are told: auth's token alone reaches the issuing endpoints (an edge's, and none, do not),
   * and each refusal is the status auth maps it to. */
@@ -39,7 +39,7 @@ object ClientEstControllerSpec extends ZIOSpecDefault, ZIOStubs:
         JWT.serialize(
           JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(SecretKeySpec(Array.fill(32)(7.toByte), "AES")),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
@@ -57,7 +57,9 @@ object ClientEstControllerSpec extends ZIOSpecDefault, ZIOStubs:
         Observability.handleErrors(
           ClientEstController.routes.provideEnvironment(
             ZEnvironment[ClientEstService](estService) ++ ZEnvironment[ResourceService](resources) ++
-              ZEnvironment(TestCentralConfig.config) ++ ZEnvironment[EdgeService](stub[EdgeService]) ++ tracing,
+              ZEnvironment(TestCentralConfig.config) ++ ZEnvironment[EdgeService](stub[EdgeService]) ++ ZEnvironment[CellRegistry](
+                TestCentralConfig.noCells,
+              ) ++ tracing,
           ),
         ),
       )

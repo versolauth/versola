@@ -173,7 +173,7 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
       httpClient <- ZIO.service[Client]
       files <- ZIO.service[ClientCertificateFiles]
       config = edgeConfig(port, trust)
-      sso = SSOClient.Impl(httpClient, config, files, noIdentity)
+      sso = SSOClient.Impl(httpClient, config, files, noIdentity, CellTable.empty)
       _ <- sso.exchangeAuthorizationCode(
         Code("c-1"),
         CodeVerifier("v-1"),
@@ -209,7 +209,7 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
       httpClient <- ZIO.service[Client]
       files <- ZIO.service[ClientCertificateFiles]
       config = chartEdgeConfig(port, listenerTrust, internalTrust)
-      sso = SSOClient.Impl(httpClient, config, files, noIdentity)
+      sso = SSOClient.Impl(httpClient, config, files, noIdentity, CellTable.empty)
       _ <- sso.exchangeAuthorizationCode(
         Code("c-1"),
         CodeVerifier("v-1"),
@@ -260,7 +260,7 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
         _ <- listening.seen.set(None)
         config = chartEdgeConfig(listening.port, pem.serverTrust, pem.foreignTrust)
         edgeIdentity = identityOf(Some(material(client)))
-        sso = SSOClient.Impl(httpClient, config, files, edgeIdentity)
+        sso = SSOClient.Impl(httpClient, config, files, edgeIdentity, CellTable.empty)
         _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Key)
         presented <- listening.seen.get
       yield assertTrue(presented.contains(client.certificate))
@@ -279,7 +279,7 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
           versolaInternalUrl = Some(URL.decode("https://localhost:1").toOption.get),
           versolaInternalTrustedCertificates = Set.empty,
         )
-        sso = SSOClient.Impl(httpClient, vps, files, identityOf(Some(material(client))))
+        sso = SSOClient.Impl(httpClient, vps, files, identityOf(Some(material(client))), CellTable.empty)
         _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.CallerCertificate)
         presented <- listening.seen.get
       yield assertTrue(presented.contains(client.certificate))

@@ -8,20 +8,29 @@ import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.FromConfigSourceTypesafe
 import zio.test.*
 
+import java.security.KeyPairGenerator
+import java.util.Base64
+
 /** The audit log has no key in central's config: its two switches are a tenant's Security settings, and the rest is fixed. A config
   * written before that still has the `audit` block, which must not stop the start. */
 object PostgresCentralAuditConfigSpec extends ZIOSpecDefault:
 
   import PostgresCentralApp.given
 
+  /** A fresh RSA key for the `service-key` block, in the encoding an edge's `private-key` has: base64 of the PKCS#8. */
+  private val servicePrivateKey: String =
+    val generator = KeyPairGenerator.getInstance("RSA")
+    generator.initialize(2048)
+    Base64.getEncoder.encodeToString(generator.generateKeyPair().getPrivate.getEncoded)
+
   private val required =
-    """
-      |client-secrets-secret = "AAAAAAAAAAAAAAAAAAAAAA"
-      |secret-key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-      |auth { url = "http://localhost:9003" }
-      |user-outbox { poll-interval = "1 second", batch-size = 1, lease = "1 minute", max-backoff = "1 minute", max-attempts = 3 }
-      |configuration-cache-refresh-interval = "5 minutes"
-      |""".stripMargin
+    s"""
+       |client-secrets-secret = "AAAAAAAAAAAAAAAAAAAAAA"
+       |service-key { key-id = "central-test", private-key = "$servicePrivateKey" }
+       |auth { url = "http://localhost:9003" }
+       |user-outbox { poll-interval = "1 second", batch-size = 1, lease = "1 minute", max-backoff = "1 minute", max-attempts = 3 }
+       |configuration-cache-refresh-interval = "5 minutes"
+       |""".stripMargin
 
   private val oldBlock =
     """audit { retention = "14 days", overflow = "block", block-timeout = "500 millis", events { admin-user-viewed = false } }"""

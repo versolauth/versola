@@ -153,7 +153,7 @@ final class HttpAuthClient(
     * in the push. Used by [[NativeAuthClient]], whose pushes edge makes on the device's behalf.
     *
     * Left is a conversation to walk, Right the redirect auth answered with directly because the
-    * `SSO_SESSION` supplied already satisfied the request (§7.4).
+    * `__Host-SSO_SESSION` supplied already satisfied the request (§7.4).
     */
   private[protocol] def authorizePushed(
       clientId: String,
@@ -492,8 +492,8 @@ final class HttpAuthClient(
 private[protocol] case class AuthorizedRedirect(code: AuthCode, state: Option[String], iss: Option[String])
 
 object HttpAuthClient:
-  private[protocol] val conversationCookie = "SSO_CONVERSATION"
-  private[protocol] val ssoSessionCookie = "SSO_SESSION"
+  private[protocol] val conversationCookie = "__Host-SSO_CONVERSATION"
+  private[protocol] val ssoSessionCookie = "__Host-SSO_SESSION"
 
   // Endpoint labels and expected-status sets are values, not interpolations built per failure:
   // the failure path allocates nothing beyond the error itself.

@@ -15,6 +15,7 @@ import versola.central.configuration.edges.{EdgeId, EdgeService}
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.{CellRecord, CellRegistry}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.audit.AuditEvents
 import versola.util.http.Observability
@@ -43,19 +44,23 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val currentSecret = Secret(Array.fill(48)(1.toByte))
   private val previousSecret = Secret(Array.fill(48)(2.toByte))
   private val rotatedSecret = Secret(Array.fill(32)(3.toByte))
-  private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
   private val config = TestCentralConfig.config
   private val syncToken = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj()),
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(secretKey),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
+  }
+
+  private val cellKeyPair = TestCentralConfig.newKeyPair("kz-1-key")
+  private val cellSyncToken = Unsafe.unsafe { unsafe ?=>
+    Runtime.default.unsafe.run(TestCentralConfig.authTokenBy(cellKeyPair, cellId = Some("kz-1"))).getOrThrowFiberFailure()
   }
 
   private val createRequest = CreateClientRequest(
@@ -346,17 +351,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")),
     )
 
-  private val securityLayer: ULayer[SecurityService] =
-    ZLayer.succeed(new SecurityService:
-      override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
-      override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
-      override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
-      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
-      override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
-      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) =
-        ZIO.dieMessage("Unused in test")
-      override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
-      override def generateEcKeyPair = ZIO.dieMessage("Unused in test"))
+  /** The real one: the secrets of a sync answer are encrypted to a key, and the tests open them with the private half. */
+  private val securityLayer: ULayer[SecurityService] = ZLayer.make[SecurityService](SecureRandom.live, SecurityService.live)
 
   /** No certificate is ever issued here: the controller is what is under test, and the real
     * service passes a plain registration straight through to the stubbed [[OAuthClientService]]. */
@@ -395,6 +391,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus: Status,
       setup: Stub[OAuthClientService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[OAuthClientService], SecurityService) => Task[TestResult] = (_, _, _) => ZIO.succeed(assertTrue(true)),
+      cells: List[CellRecord] = Nil,
   ) =
     test(description) {
       for
@@ -413,7 +410,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[
                 versola.central.configuration.resources.ResourceService,
               ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++
+                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++ ZEnvironment[CellRegistry](
+                  TestCentralConfig.registryOf(cells*),
+                ) ++
                 ZEnvironment[versola.central.configuration.clients.est.ClientEstService](estService),
             ),
           ),
@@ -429,10 +428,11 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
-  private def decryptSyncedSecret(value: String, securityService: SecurityService): Task[Secret] =
+  /** What `auth` does with a secret of the answer: opens it with its own private key (`central.private-key`). */
+  private def decryptSyncedSecret(value: String, securityService: SecurityService, key: RsaKeyPair = TestCentralConfig.authKeyPair): Task[Secret] =
     for
       encrypted <- ZIO.attempt(Base64.urlDecode(value))
-      decrypted <- securityService.decryptAes256(encrypted, config.secretKey)
+      decrypted <- securityService.decryptRsaHybrid(encrypted, key.privateKey)
     yield Secret(decrypted)
 
   private case class DecryptedSyncOAuthClientRecord(
@@ -625,6 +625,52 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               frontChannelLogoutSessionRequired = false,
             ),
           ),
+        ),
+    ),
+    controllerTestCase(
+      description = "encrypt the synced secrets to the caller's key only: another auth's private key opens none of them",
+      request = Request.get(
+        (URL.empty / "configuration" / "clients" / "sync")
+          .addQueryParam("tenantId", tenantId.toString),
+      ).addHeader(Header.Authorization.Bearer(syncToken)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getClientsForSync.succeedsWith(clients),
+      verify = (response, _, securityService) =>
+        for
+          payload <- response.body.asJson[GetOAuthClientsSyncResponse]
+          secrets = payload.clients.flatMap(client => client.secret.toList ++ client.previousSecret.toList)
+          withOwnKey <- ZIO.foreach(secrets)(decryptSyncedSecret(_, securityService).either)
+          withOthersKey <- ZIO.foreach(secrets)(decryptSyncedSecret(_, securityService, TestCentralConfig.foreignKeyPair).either)
+        yield assertTrue(
+          secrets.nonEmpty,
+          withOwnKey.forall(_.isRight),
+          withOthersKey.forall(_.isLeft),
+        ),
+    ),
+    controllerTestCase(
+      description =
+        "encrypt the synced secrets of a registered cell to that cell's key: neither the configured auth's key nor another cell's opens them",
+      request = Request.get(
+        (URL.empty / "configuration" / "clients" / "sync")
+          .addQueryParam("tenantId", tenantId.toString),
+      ).addHeader(Header.Authorization.Bearer(cellSyncToken)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getClientsForSync.succeedsWith(clients),
+      cells = List(TestCentralConfig.cellRecord("kz-1", cellKeyPair)),
+      verify = (response, _, securityService) =>
+        for
+          payload <- response.body.asJson[GetOAuthClientsSyncResponse]
+          secrets = payload.clients.flatMap(client => client.secret.toList ++ client.previousSecret.toList)
+          withCellKey <- ZIO.foreach(secrets)(decryptSyncedSecret(_, securityService, cellKeyPair).either)
+          withConfiguredKey <- ZIO.foreach(secrets)(decryptSyncedSecret(_, securityService, TestCentralConfig.authKeyPair).either)
+          withOthersKey <- ZIO.foreach(secrets)(decryptSyncedSecret(_, securityService, TestCentralConfig.foreignKeyPair).either)
+        yield assertTrue(
+          secrets.nonEmpty,
+          withCellKey.forall(_.isRight),
+          withConfiguredKey.forall(_.isLeft),
+          withOthersKey.forall(_.isLeft),
         ),
     ),
     controllerTestCase(

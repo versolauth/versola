@@ -38,9 +38,16 @@ object AuthAuditKinds:
   val AccountUpdated: AuditKind = AuditKind("account.updated")
   val AccountRolesUpdated: AuditKind = AuditKind("account.roles_updated")
 
-  /** An administrator's change to the antifraud lists, settings or counters, as central told auth. */
-  val AntifraudListChanged: AuditKind = AuditKind("antifraud.list_changed")
-  val AntifraudSettingsChanged: AuditKind = AuditKind("antifraud.settings_changed")
+  /** A user's rows left this cell for another, or arrived from one (versolauth/versola#1051): the effect of a move central drove. Not
+    * `account.deleted`, which is a deletion and ends the user's tokens; a move ends none. The other cell is in the details. */
+  val UserMovedOut: AuditKind = AuditKind("user.moved_out")
+  val UserMovedIn: AuditKind = AuditKind("user.moved_in")
+
+  /** An arrival that central abandoned: the rows it had brought in were removed (no deletion, no revocation). */
+  val UserArrivalDiscarded: AuditKind = AuditKind("user.arrival_discarded")
+
+  /** An administrator's reset of the antifraud counters, as central told auth. A change to the lists or the settings is
+    * made in central and is in its audit log. */
   val AntifraudCountersReset: AuditKind = AuditKind("antifraud.counters_reset")
   val CertEnrolled: AuditKind = AuditKind("cert.enrolled")
   val CertRenewed: AuditKind = AuditKind("cert.renewed")
@@ -74,8 +81,9 @@ object AuthAuditKinds:
     AccountDeleted,
     AccountUpdated,
     AccountRolesUpdated,
-    AntifraudListChanged,
-    AntifraudSettingsChanged,
+    UserMovedOut,
+    UserMovedIn,
+    UserArrivalDiscarded,
     AntifraudCountersReset,
     CertEnrolled,
     CertRenewed,
@@ -111,8 +119,9 @@ object AuthAudit:
       AuthAuditKinds.AccountDeleted,
       AuthAuditKinds.AccountUpdated,
       AuthAuditKinds.AccountRolesUpdated,
-      AuthAuditKinds.AntifraudListChanged,
-      AuthAuditKinds.AntifraudSettingsChanged,
+      AuthAuditKinds.UserMovedOut,
+      AuthAuditKinds.UserMovedIn,
+      AuthAuditKinds.UserArrivalDiscarded,
       AuthAuditKinds.AntifraudCountersReset,
     ),
   )

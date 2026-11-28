@@ -116,7 +116,7 @@ object WebSessionPersistenceSpec extends LoadgenPostgresSpec:
         found.exists(_.refreshToken.isEmpty),
         found.exists(_.refreshExpiresAt.isEmpty),
         found.exists(_.accessExpiresAt.contains(expiresAt)),
-        // The SSO_SESSION auth left behind survives with it -- the one credential that outlives
+        // The __Host-SSO_SESSION auth left behind survives with it -- the one credential that outlives
         // the cookie.
         found.exists(_.ssoSession == ssoSession),
         // A driver restarting mid-campaign must see this session as resumable, which for a web

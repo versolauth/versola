@@ -2,6 +2,7 @@ package versola.loadgen.seed
 
 import versola.loadgen.model.{CredentialKind, Platform, SessionKind, VirtualUser}
 import versola.loadgen.store.StoreCodes
+import versola.util.IdentifierDirectory
 
 import java.time.Instant
 import java.util.UUID
@@ -238,11 +239,18 @@ object SeedRows:
   private def base64Url(bytes: Array[Byte]): String =
     java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(bytes)
 
-  /** `user_index (id, phone)` */
-  def userIndex(seeded: SeededUser): String =
+  /** `user_directory (user_id)`: the cell is left null, the user is in the one `auth` under test. */
+  def userDirectory(seeded: SeededUser): String =
     CopyRow.empty
       .uuid(seeded.sutUserId)
-      .text(seeded.user.phone)
+      .render
+
+  /** `identifier_directory (kind, mac, user_id)`, the MAC central itself computes for this phone. */
+  def identifierDirectory(seeded: SeededUser, key: IdentifierDirectory.Key): String =
+    CopyRow.empty
+      .text(IdentifierDirectory.Phone)
+      .bytes(key.mac(IdentifierDirectory.Phone, seeded.user.phone))
+      .uuid(seeded.sutUserId)
       .render
 
   /** `vu_users`, in the column order V0001 declares and `PostgresVirtualUserRepository` reads.

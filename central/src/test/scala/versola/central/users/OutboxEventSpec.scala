@@ -2,6 +2,7 @@ package versola.central.users
 
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.util.{Email, Phone}
 import zio.json.*
 import zio.test.*
@@ -38,6 +39,18 @@ object OutboxEventSpec extends ZIOSpecDefault:
       )
       val decoded = event.toJson.fromJson[OutboxEvent]
       assertTrue(decoded == Right(event))
+    },
+    test("DeleteUser round-trip with and without the cell that held the user") {
+      val held = OutboxEvent.DeleteUser(userId = userId, cell = Some(CellId("kz-1")))
+      val none = OutboxEvent.DeleteUser(userId = userId, cell = None)
+      assertTrue(
+        held.toJson.fromJson[OutboxEvent] == Right(held),
+        none.toJson.fromJson[OutboxEvent] == Right(none),
+      )
+    },
+    test("a DeleteUser stored before the cell was recorded decodes with no cell") {
+      val old = s"""{"DeleteUser":{"userId":"$userId"}}"""
+      assertTrue(old.fromJson[OutboxEvent] == Right(OutboxEvent.DeleteUser(userId = userId, cell = None)))
     },
     test("UpdateUserRoles round-trip") {
       val event = OutboxEvent.UpdateUserRoles(

@@ -68,8 +68,7 @@ object PermissionService:
         case Some(id) =>
           for
             permissions <- cache.get
-            tenants <- tenantRepository.getAll
-            allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
+            allowedTenantIds <- tenantRepository.getServedBy(id).map(_.toSet)
           yield permissions.filter(p => allowedTenantIds.contains(p.tenantId))
 
     override def createPermission(

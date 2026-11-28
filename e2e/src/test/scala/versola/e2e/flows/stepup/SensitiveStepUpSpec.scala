@@ -17,7 +17,7 @@ object SensitiveStepUpSpec extends E2ESpec:
   // In non-prod the OTP is always the first N digits of "1234567890"; default length is 6.
   private val fixedOtp = "123456"
 
-  /** `session` is the `SSO_SESSION` the password sign-in left behind, which has passed a password and nothing else. */
+  /** `session` is the `__Host-SSO_SESSION` the password sign-in left behind, which has passed a password and nothing else. */
   private case class Enrolled(credential: TestAuthenticator.Credential, idToken: String, session: String)
 
   private def claimsOf(idToken: String): Task[String] =
@@ -31,7 +31,7 @@ object SensitiveStepUpSpec extends E2ESpec:
       challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
       submit <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf)
       code <- submit.assertRedirect
-      session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("no SSO_SESSION after the password sign-in"))
+      session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("no __Host-SSO_SESSION after the password sign-in"))
       token <- auth.token(
         code,
         authorize.verifier,
@@ -64,7 +64,7 @@ object SensitiveStepUpSpec extends E2ESpec:
       challenge <- auth.getChallenge(cookie)
     yield (cookie, challenge, result.verifier)
 
-  /** Completes the email + one-time code sign-in and returns the `SSO_SESSION` cookie. */
+  /** Completes the email + one-time code sign-in and returns the `__Host-SSO_SESSION` cookie. */
   private def completeOtpAuth(s: Flows.Setup, auth: OAuthClient): Task[String] =
     for
       authorize <- auth.authorize(scope = "openid", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
@@ -74,7 +74,7 @@ object SensitiveStepUpSpec extends E2ESpec:
       otp <- auth.getChallenge(cookie)
       submit <- auth.submitOtp(cookie, fixedOtp, otp.csrf)
       _ <- ZIO.succeed(submit).assertRedirect(auth, cookie)
-      session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
+      session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie in final submission response"))
     yield session
 
   /** A client and user of their own. The shared setup has one user, which holds every passkey the other tests enrolled. */
@@ -160,7 +160,7 @@ object SensitiveStepUpSpec extends E2ESpec:
         challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         submit <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf)
         _ <- submit.assertRedirect
-        session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("no SSO_SESSION after the sign-in"))
+        session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("no __Host-SSO_SESSION after the sign-in"))
         // What edge's login asks for when the token already carries the class but its sign-in is too old: both
         // the class and the age, so that the new sign-in is not left without the class.
         started <- auth.authorizeRaw(

@@ -9,7 +9,7 @@ import versola.oauth.client.model.{ClientId, FormRecord, Locales, OAuthClientRec
 import versola.oauth.consent.ConsentService
 import versola.oauth.conversation.model.{CodeAlternative, ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
-import versola.oauth.model.State
+import versola.oauth.model.{AuthorizationCode, State}
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
@@ -446,8 +446,20 @@ object ConversationRenderService:
         case ConversationResult.BadRequest | ConversationResult.WriteConflict =>
           ZIO.succeed(challenge)
 
+        // The conversation went to another cell with the browser: this cell's cookie has nothing behind it any more.
+        case ConversationResult.Handoff(location) =>
+          ZIO.succeed(Response.seeOther(location).addCookie(ConversationCookie.expired))
+
+        // Sealed and answered by the controller that took the submission, which has the cookie the seal is bound to
+        // (`ConversationController.sendOn`); a result that reaches this is one a caller forgot to seal.
+        case ConversationResult.Elsewhere(_, _) =>
+          Observability.setError("illegal_state", Some("a submission for another cell was not sealed")).as(Response.internalServerError)
+
+        case _: ConversationResult.RegistrationElsewhere =>
+          Observability.setError("illegal_state", Some("a registration for another cell was not sealed")).as(Response.internalServerError)
+
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
-          val encodedCode = Base64Url.encode(code)
+          val encodedCode = AuthorizationCode.present(code)
           for
             sessionTtl <- configuration.getSessionTtl(record.clientId)
             userAgentTtl <- configuration.getUserAgentTtl(record.clientId)
@@ -477,6 +489,7 @@ object ConversationRenderService:
                 value = sessionId,
                 ttl = sessionTtl,
                 secret = config.security.sessionCookieSecret,
+                cell = config.cellId,
               ),
             )
             .addCookie(

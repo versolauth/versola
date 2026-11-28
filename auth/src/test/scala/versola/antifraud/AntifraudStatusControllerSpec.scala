@@ -4,6 +4,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.util.JWT
+import versola.util.RsaKeyPair
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
@@ -12,21 +13,19 @@ import zio.json.ast.Json
 import zio.test.*
 
 import java.time.Instant
-import javax.crypto.SecretKey
-import javax.crypto.spec.SecretKeySpec
 
 object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val config = TestEnvConfig.coreConfig
-  private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+  private val wrongKey = TestEnvConfig.impostorKeyPair
   private val rules = URL.empty / "antifraud" / "rules"
   private val status = URL.empty / "antifraud" / "status"
 
-  private def token(key: SecretKey) =
+  private def token(key: RsaKeyPair) =
     JWT.serialize(
       claims = JWT.Claims("central", "central", List("auth"), Json.Obj()),
       ttl = 10.minutes,
-      signature = JWT.Signature.Symmetric(key),
+      signature = TestEnvConfig.signedBy(key),
     )
 
   private def call(
@@ -34,7 +33,8 @@ object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tuning: AntifraudTuningStore,
       request: Request,
       decisionEnabled: Boolean = true,
-      key: SecretKey = config.central.secretKey,
+      share: CellShare = CellShare.whole,
+      key: RsaKeyPair = TestEnvConfig.centralKeyPair,
   ): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]
@@ -43,7 +43,7 @@ object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           AntifraudStatusController.routes.provideEnvironment(
-            ZEnvironment(lists) ++ ZEnvironment(tuning) ++ ZEnvironment(settings) ++ ZEnvironment(config) ++ tracing,
+            ZEnvironment(lists) ++ ZEnvironment(tuning) ++ ZEnvironment(settings) ++ ZEnvironment(config) ++ ZEnvironment(share) ++ tracing,
           ),
         ),
       )
@@ -114,6 +114,40 @@ object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
         parsed.exists(_.lists.snapshotAgeSeconds.exists(age => age >= 12 && age < 20)),
         parsed.exists(t => t.tuning.available && t.tuning.version.contains(7L) && t.tuning.ageSeconds.exists(age => age >= 3 && age < 10)),
       )
+    },
+    test("GET status says the share of a limit by address this cell applies, so that an operator can see why a limit of 100 is applied as 34") {
+      val lists = stub[AntifraudLists]
+      val tuning = stub[AntifraudTuningStore]
+      for
+        _ <- lists.status.succeedsWith(ListsStatus(enabled = true, loadedAt = None, size = 0, skipped = 0, lastError = None))
+        _ <- tuning.status.succeedsWith(TuningStatus(available = true, version = Some(1), checkedAt = None, lastError = None))
+        response <- call(
+          lists,
+          tuning,
+          Request.get(status),
+          share = new CellShare:
+            override def current: UIO[CellShare.Share] = ZIO.succeed(CellShare.Share(34, 100)),
+        )
+        body <- response.body.asString
+        json = body.fromJson[Json.Obj].toOption
+        parsed = body.fromJson[AntifraudStatusController.StatusResponse]
+      yield assertTrue(
+        response.status == Status.Ok,
+        parsed.exists(_.cellShare == 0.34),
+        // The name central's DTO reads it under, and the rest of the status is where it was.
+        json.flatMap(_.get("cellShare")).isDefined,
+        json.flatMap(_.get("lists")).isDefined,
+      )
+    },
+    test("GET status says 1 for an auth that is no cell") {
+      val lists = stub[AntifraudLists]
+      val tuning = stub[AntifraudTuningStore]
+      for
+        _ <- lists.status.succeedsWith(ListsStatus(enabled = true, loadedAt = None, size = 0, skipped = 0, lastError = None))
+        _ <- tuning.status.succeedsWith(TuningStatus(available = true, version = Some(1), checkedAt = None, lastError = None))
+        response <- call(lists, tuning, Request.get(status))
+        body <- response.body.asString
+      yield assertTrue(body.fromJson[AntifraudStatusController.StatusResponse].exists(_.cellShare == 1.0))
     },
     test("GET status with everything off, nothing loaded and a refresh that failed gives no ages and the message") {
       val lists = stub[AntifraudLists]

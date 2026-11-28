@@ -14,9 +14,13 @@ object PostgresUserRepositorySpec extends PostgresSpec, UserRepositorySpec:
       for
         xa <- ZIO.service[TransactorZIO]
         secureRandom <- SecureRandom.live.build.map(_.get[SecureRandom])
-      yield UserRepositorySpec.Env(PostgresUserRepository(xa, secureRandom))
+      yield UserRepositorySpec.Env(
+        repository = PostgresUserRepository(xa, secureRandom),
+      )
 
   override def beforeEach(env: UserRepositorySpec.Env) =
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
-      xa.connect(sql"TRUNCATE TABLE user_index, user_outbox".update.run())
+      xa.connect(
+        sql"TRUNCATE TABLE user_moves, user_directory, identifier_directory, user_outbox, user_outbox_dead".update.run(),
+      )
     }.unit

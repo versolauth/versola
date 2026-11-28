@@ -79,7 +79,7 @@ object NativeAuthClientSpec extends ZIOSpecDefault:
           record(request).as(
             Response.status(Status.SeeOther)
               .addHeader(Header.Location(URL.decode("/challenge").toOption.get))
-              .addCookie(Cookie.Response("SSO_CONVERSATION", StubSut.conversation)),
+              .addCookie(Cookie.Response("__Host-SSO_CONVERSATION", StubSut.conversation)),
           ),
         Method.POST / "native" / string("endpoint") / string("client") -> handler: (endpoint: String, client: String, request: Request) =>
           record(request) *> tokenReplies.modify:

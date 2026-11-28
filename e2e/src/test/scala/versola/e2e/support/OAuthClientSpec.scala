@@ -34,6 +34,7 @@ object OAuthClientSpec extends ZIOSpecDefault:
     authEnvConf = "env.conf",
     edgeLauncher = "edge-postgres-impl",
     edgeEnvConf = "env.conf",
+    authCellId = "local-1",
   )
   private val userId = UUID.fromString("018f0f2a-1c7b-7000-9000-000000000901")
 

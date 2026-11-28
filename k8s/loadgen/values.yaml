@@ -40,7 +40,7 @@
 #   actions = [ { path = "/resources/fapi-core/accounts", ... } ]            # namespaced resource ids
 #
 # `loadgen provision` creates the tenant on the profile (bound to the `default`
-# tenant's edge unless `provision.edge-id` says otherwise) and registers the
+# tenant's edge unless `provision.edge-group-id` says otherwise) and registers the
 # clients the profile admits: certificate clients for `fapi2`, secret/public
 # ones for `standard`. `namespace`, `phone-prefix` and `id-namespace` are what
 # keep two campaigns from colliding on client ids, resource ids, phone numbers

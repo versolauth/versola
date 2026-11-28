@@ -27,6 +27,7 @@ import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, RecordingDepartures, UserDepartures}
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
 import zio.json.*
@@ -136,7 +137,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
   )
 
   /** @param revoked what the revocation list answers for every token */
-  class Env(revoked: Boolean = false):
+  class Env(revoked: Boolean = false, val departures: UserDepartures = UserDepartures.none):
     val oauthClientService = stub[OAuthConfigurationService]
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
@@ -154,9 +155,130 @@ object IntrospectionServiceSpec extends UnitSpecBase:
       ZLayer.succeed(tokenRepository) ++
       ZLayer.succeed(securityService) ++
       ZLayer.succeed(config) ++
+      ZLayer.succeed[UserDepartures](departures) ++
       ZLayer.succeed(accessTokenRevocation) >>> IntrospectionService.live
 
   val spec = suite("IntrospectionService")(
+    // versolauth/versola#1051: a user who is leaving is not served, and what belongs to one who moved is told where they went.
+    suite("a user who is leaving or has moved")(
+      test("a refresh token of a user who moved is answered moved, and one of a leaving user unavailable") {
+        RecordingDepartures.make(Map.empty, Some("kz-2")).zip(RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None)).flatMap:
+          (gone, leaving) =>
+            val movedEnv = Env(departures = gone)
+            val leavingEnv = Env(departures = leaving)
+            for
+              now <- Clock.instant
+              credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+              _ <- movedEnv.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+              _ <- movedEnv.securityService.mac.succeedsWith(refreshTokenMac1)
+              _ <- movedEnv.tokenRepository.findToken.succeedsWith(None)
+              _ <- leavingEnv.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+              _ <- leavingEnv.securityService.mac.succeedsWith(refreshTokenMac1)
+              _ <- leavingEnv.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
+              moved <-
+                ZIO.serviceWithZIO[IntrospectionService](_.introspectRefreshToken(refreshToken1, credentials, None)).either.provide(movedEnv.layer)
+              unavailable <-
+                ZIO.serviceWithZIO[IntrospectionService](_.introspectRefreshToken(refreshToken1, credentials, None)).either.provide(leavingEnv.layer)
+            yield assertTrue(moved == Left(IntrospectionError.Moved("kz-2")), unavailable == Left(IntrospectionError.Unavailable))
+      },
+      test("a token no one knows is inactive as before, and a token this cell holds costs one read by user id") {
+        RecordingDepartures.make(Map.empty, None).flatMap: departures =>
+          val env = Env(departures = departures)
+          (for
+            now <- Clock.instant
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+            _ <- env.tokenRepository.findToken.succeedsWith(None)
+            service <- ZIO.service[IntrospectionService]
+            unknown <- service.introspectRefreshToken(refreshToken1, credentials, None)
+            _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+            _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
+            held <- service.introspectRefreshToken(refreshToken1, credentials, None)
+            asked <- departures.asked
+          yield assertTrue(unknown == IntrospectionResponse.Inactive, held.active, asked == List("token", s"user:$userId1"))).provide(env.layer)
+      },
+      test("an access token of a user who moved is answered moved, and of a leaving user unavailable, to a caller with the right to ask") {
+        RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Moved("kz-2")), None).zip(
+          RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None),
+        ).flatMap: (gone, leaving) =>
+          val publicResource = ResourceUri("https://api.example.com")
+          val resources = List(ResourceRecord(ResourceId("api"), testClient.tenantId, publicResource, List(testClient.id), internal = false))
+          val movedEnv = Env(departures = gone)
+          val leavingEnv = Env(departures = leaving)
+          for
+            now <- Clock.instant
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            payload = accessTokenPayload(now, audience = Vector(publicResource))
+            _ <- movedEnv.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- movedEnv.oauthClientService.getResourcesForClient.succeedsWith(resources)
+            _ <- leavingEnv.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- leavingEnv.oauthClientService.getResourcesForClient.succeedsWith(resources)
+            moved <- ZIO.serviceWithZIO[IntrospectionService](_.introspectAccessToken(payload, credentials, None)).either.provide(movedEnv.layer)
+            unavailable <-
+              ZIO.serviceWithZIO[IntrospectionService](_.introspectAccessToken(payload, credentials, None)).either.provide(leavingEnv.layer)
+          yield assertTrue(moved == Left(IntrospectionError.Moved("kz-2")), unavailable == Left(IntrospectionError.Unavailable))
+      },
+      test("an access token this cell knows to be revoked is inactive before any moved or leaving answer, and the departure is not read") {
+        RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Moved("kz-2")), None).zip(
+          RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Leaving), None),
+        ).flatMap: (gone, leaving) =>
+          val publicResource = ResourceUri("https://api.example.com")
+          val resources = List(ResourceRecord(ResourceId("api"), testClient.tenantId, publicResource, List(testClient.id), internal = false))
+          val movedEnv = Env(revoked = true, departures = gone)
+          val leavingEnv = Env(revoked = true, departures = leaving)
+          for
+            now <- Clock.instant
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            payload = accessTokenPayload(now, audience = Vector(publicResource))
+            _ <- movedEnv.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- movedEnv.oauthClientService.getResourcesForClient.succeedsWith(resources)
+            _ <- leavingEnv.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- leavingEnv.oauthClientService.getResourcesForClient.succeedsWith(resources)
+            moved <- ZIO.serviceWithZIO[IntrospectionService](_.introspectAccessToken(payload, credentials, None)).either.provide(movedEnv.layer)
+            unavailable <-
+              ZIO.serviceWithZIO[IntrospectionService](_.introspectAccessToken(payload, credentials, None)).either.provide(leavingEnv.layer)
+            askedMoved <- gone.asked
+            askedLeaving <- leaving.asked
+          yield assertTrue(
+            moved == Right(IntrospectionResponse.Inactive),
+            unavailable == Right(IntrospectionResponse.Inactive),
+            askedMoved.isEmpty,
+            askedLeaving.isEmpty,
+          )
+      },
+      test("a token this cell holds no record of is asked for with the client that presents it") {
+        RecordingDepartures.make(Map.empty, None).flatMap: departures =>
+          val env = Env(departures = departures)
+          (for
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+            _ <- env.tokenRepository.findToken.succeedsWith(None)
+            service <- ZIO.service[IntrospectionService]
+            result <- service.introspectRefreshToken(refreshToken1, credentials, None)
+            askedFor <- departures.askedFor
+          yield assertTrue(result == IntrospectionResponse.Inactive, askedFor == List(clientId1))).provide(env.layer)
+      },
+      test("a caller with no right to the token is not told where the user is: it is unauthenticated, and nothing is read") {
+        RecordingDepartures.make(Map(userId1 -> DepartureRefusal.Moved("kz-2")), Some("kz-2")).flatMap: departures =>
+          val env = Env(departures = departures)
+          (for
+            now <- Clock.instant
+            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+            // the caller's resources do not cover the token's audience
+            _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+            _ <- env.oauthClientService.getResourcesForClient.succeedsWith(Nil)
+            service <- ZIO.service[IntrospectionService]
+            result <- service.introspectAccessToken(
+              accessTokenPayload(now, audience = Vector(ResourceUri("https://api.example.com"))),
+              credentials,
+              None,
+            ).either
+            asked <- departures.asked
+          yield assertTrue(result == Left(IntrospectionError.Unauthenticated), asked.isEmpty)).provide(env.layer)
+      },
+    ),
     suite("introspectAccessToken")(
       test("returns the authorization details carried by the access token") {
         val env = Env()

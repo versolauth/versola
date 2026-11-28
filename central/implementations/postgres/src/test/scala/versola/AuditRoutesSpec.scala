@@ -105,7 +105,10 @@ object AuditRoutesSpec extends ZIOSpecDefault:
       val internal = entries.collect { case ((method, path), Entry.Internal) => method.name -> path }.toSet
       assertTrue(
         internal == Set(
+          "GET" -> "/antifraud/policy/sync",
+          "GET" -> "/antifraud/policy/lists/sync",
           "GET" -> "/configuration/authorization-detail-types/sync",
+          "GET" -> "/configuration/cells/sync",
           "GET" -> "/configuration/challenges/challenge-settings/sync",
           "GET" -> "/configuration/challenges/otp-templates/sync",
           "GET" -> "/configuration/clients/sync",
@@ -126,6 +129,9 @@ object AuditRoutesSpec extends ZIOSpecDefault:
           "POST" -> "/service/users/outbox/flush",
           "DELETE" -> "/service/users",
           "POST" -> "/users/registrations",
+          "POST" -> "/users/lookup",
+          "POST" -> "/users/home",
+          "POST" -> "/users/sessions/superseded",
         ),
       )
     },
@@ -134,7 +140,10 @@ object AuditRoutesSpec extends ZIOSpecDefault:
       assertTrue(
         internal.forall((_, path) =>
           path.endsWith("/sync") || path.endsWith("/registry") || path.endsWith("/signing-keys/sync") ||
-            path.startsWith("/service/") || path.startsWith("/est/") || path == "/users/registrations",
+            path.startsWith("/service/") || path.startsWith(
+              "/est/",
+            ) || path == "/users/registrations" || path == "/users/lookup" || path == "/users/home" ||
+            path == "/users/sessions/superseded",
         ),
         // an administrator's endpoint is never internal: it would go unrecorded
         !internal.exists((_, path) => path.startsWith("/configuration/") && !path.endsWith("sync") && !path.endsWith("registry")),
@@ -153,6 +162,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
         "extend",
         "revoke",
         "dpop",
+        "region",
         "rotate-key",
         "active",
         "default",
@@ -163,6 +173,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
         "resume",
         "approve",
         "reject",
+        "move",
       )
     if actions.contains(last) then s"action:$last"
     else

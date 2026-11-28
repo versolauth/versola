@@ -3,7 +3,8 @@ export interface Tenant {
   id: string;
   name: string;
   description?: string;
-  edgeId?: string | null;
+  /** The group of edges that serves the tenant: every edge of it syncs the tenant's configuration. */
+  edgeGroupId?: string | null;
   /** Fixed when the tenant is created; `GET /configuration/tenants` reads it from the challenge settings. */
   securityProfile: SecurityProfile;
   /** The `kid` the tenant's tokens are signed with; `null` when it falls back to auth's configured key. */
@@ -455,12 +456,99 @@ export interface Edge {
   partnerDisplayName?: string | null;
   partnerTenantId?: string | null;
   publicUrl?: string;
+  /** The region the edge site is in; absent for an edge in none. */
+  regionId?: string | null;
   /** The not-after of the edge's current certificate and when it was last renewed; absent until enrolled. */
   certificateNotAfter?: string;
   lastRenewedAt?: string;
 }
 
 export type EdgeGroupKind = 'first_party' | 'partner';
+
+/** One metro inside a partition: a cell and an edge site are each in one region. */
+export interface Region {
+  id: string;
+  partitionId: string;
+}
+
+/** One jurisdiction, with its own issuer, keys and directory. A deployment has one. */
+export interface Partition {
+  id: string;
+}
+
+/** Whether new users are placed in a cell; a cell in any state still serves the users it holds. */
+export type CellState = 'open' | 'closed' | 'draining';
+
+/** The capacity unit: one `auth` deployment with its own database, holding a fixed set of users. */
+export interface Cell {
+  id: string;
+  regionId: string;
+  internalUrl: string;
+  mtlsUrl?: string | null;
+  /** The leaf certificates (PEM) the cell's endpoints are pinned by. */
+  trustedCertificates: string[];
+  state: CellState;
+  /** The cell's share of new users among the open cells of its region. */
+  weight: number;
+  /** One public RSA JWK, or two while a key is being replaced: what the cell signs its calls to central with. The first is the one
+   *  other cells encrypt to. Required by central on create and edit. */
+  publicKeys: PublicJwk[];
+}
+
+/** A public RSA key (`kty`, `kid`, `n`, `e`; no private member); other members such as `alg` or `use` are kept as they were pasted. */
+export interface PublicJwk {
+  kty: 'RSA';
+  kid: string;
+  n: string;
+  e: string;
+  [member: string]: unknown;
+}
+
+/** A cell as `GET /configuration/topology` answers it: the record, and what the users and the moves add to it. */
+export interface CellStatus extends Cell {
+  /** How many users the directory places in the cell. */
+  users: number;
+  /** How many moves that leave the cell are not finished. */
+  moving: number;
+  /** The refresh tokens of moved-out users the cell still answers `moved` for. Absent when the cell did not answer: unknown, not zero. */
+  tokens?: number;
+  /** When the last of those tokens expires. */
+  tokensUntil?: string;
+  /** A draining cell that cannot be emptied now: no open cell of its partition (weight above 0) can take its users. */
+  drainBlocked?: 'no_open_cell';
+}
+
+export type UserMovePhase = 'leaving' | 'exported' | 'arrived' | 'flipped' | 'abandoning' | 'done' | 'failed';
+export type UserMoveReason = 'admin' | 'drain';
+export type UserMoveError = 'depart_failed' | 'source_lacks_user' | 'export_failed' | 'arrive_failed' | 'target_has_user'
+  | 'user_gone' | 'flip_failed' | 'complete_failed' | 'cell_unavailable' | 'source_changed' | 'departure_exists' | 'arrive_rejected'
+  | 'invalid_document' | 'keep_failed';
+
+/** One move of a user between cells; there is one per user, the latest. */
+export interface UserMove {
+  userId: string;
+  from: string;
+  to: string;
+  phase: UserMovePhase;
+  reason: UserMoveReason;
+  startedAt: string;
+  updatedAt: string;
+  attempts: number;
+  error?: UserMoveError;
+}
+
+/** What `GET /configuration/topology` answers. */
+export interface Topology {
+  partitions: Partition[];
+  regions: Region[];
+  cells: CellStatus[];
+}
+
+/** A group of edges, as `GET /configuration/edge-groups` lists it. */
+export interface EdgeGroup {
+  id: string;
+  kind: EdgeGroupKind;
+}
 
 // Partners (#549): an organisation that runs its own edge and owns clients inside the operator's tenant.
 export type PartnerStatus = 'onboarding' | 'active' | 'suspended';
@@ -549,6 +637,10 @@ export interface User {
   phone?: string;
   login?: string;
   claims: Record<string, unknown>;
+  /** The cell the directory places the user in; null: a user of no cell, which cannot be moved. */
+  cell?: string | null;
+  /** The user's latest move. While it is unfinished and the user is leaving its cell, the identifiers and claims above are empty. */
+  move?: UserMove | null;
 }
 
 // Role assignment for a user in a specific tenant

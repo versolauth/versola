@@ -8,7 +8,8 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.central.configuration.topology.{CellId, CellRecord, CellRegistry}
+import versola.central.{Caller, CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import versola.util.{Email, EnvName, JWT, Phone}
 import zio.*
@@ -50,6 +51,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     email = Some(email),
     phone = None,
     login = None,
+    cell = None,
   )
 
   private val registeredRequestBody = s"""{"email":"$email"}"""
@@ -58,8 +60,23 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     JWT.serialize(
       JWT.Claims("auth", "auth", List("central"), Json.Obj()),
       1.minute,
-      JWT.Signature.Symmetric(TestCentralConfig.config.secretKey),
+      TestCentralConfig.authSignature,
     ).map(token => Header.Authorization.Bearer(token))
+
+  private val kz1Key = TestCentralConfig.newKeyPair("kz-1-key")
+  private val kz1 = TestCentralConfig.cellRecord("kz-1", kz1Key)
+  private val kz2 = TestCentralConfig.cellRecord("kz-2", TestCentralConfig.newKeyPair("kz-2-key"))
+
+  /** What the `auth` of cell `kz-1` presents: signed with the key registered for the cell. */
+  private val cellAuthorization: Task[Header] =
+    TestCentralConfig.authTokenBy(kz1Key, cellId = Some("kz-1")).map(token => Header.Authorization.Bearer(token))
+
+  private def registration(body: String) =
+    Request(
+      method = Method.POST,
+      url = URL.empty / "users" / "registrations",
+      body = Body.fromString(body),
+    ).addHeader(Header.ContentType(MediaType.application.json))
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -76,6 +93,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup: Stub[UserService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[UserService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
       authorization: Task[Header] = ZIO.succeed(TestAdminAuth.basicAuthHeader),
+      cells: List[CellRecord] = Nil,
+      edgeRegistered: Boolean = false,
   ) =
     test(description) {
       for
@@ -90,13 +109,14 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[UserService](service) ++
                 ZEnvironment[CentralConfig](TestCentralConfig.config) ++
                 tracing ++ ZEnvironment[ResourceService](resourceService) ++
-                ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.registryOf(cells*)) ++
                 ZEnvironment[EnvName](env) ++
                 ZEnvironment[AuditReportService](stub[AuditReportService]),
             ),
           ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
+        _ <- ZIO.when(edgeRegistered)(edgeService.find.succeedsWith(Some(TestCentralConfig.edgeRecord)))
         _ <- setup(service)
         authorizationHeader <- authorization
         response <- client.batched(
@@ -133,14 +153,318 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(registeredRequestBody),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Ok,
-      setup = service => service.indexRegistered.succeedsWith(userId),
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None)),
       authorization = internalAuthorization,
       verify = (response, service) =>
         for body <- response.body.asJson[RegisteredUserResponse]
         yield assertTrue(
           service.indexRegistered.calls == List(registeredRequest),
-          body == RegisteredUserResponse(userId),
+          body == RegisteredUserResponse(userId = userId, cell = None),
         ),
+    ),
+    // versolauth/versola#1050: the cell of a new claim is the caller's, from the key of its token
+    controllerTestCase(
+      description = "a registration by the auth of a cell is claimed in that cell, whatever the body says of it: none",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-1")))),
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest.copy(cell = Some(CellId("kz-1")))))),
+    ),
+    controllerTestCase(
+      description = "a registration by the auth of a cell that names the same cell is claimed in it",
+      request = registration(s"""{"email":"$email","cell":"kz-1"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-1")))),
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest.copy(cell = Some(CellId("kz-1")))))),
+    ),
+    controllerTestCase(
+      description = "a registration by the auth of a cell that names another cell is 403, and nothing is claimed",
+      request = registration(s"""{"email":"$email","cell":"kz-2"}"""),
+      expectedStatus = Status.Forbidden,
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "a registration by the configured auth that names a cell that is not registered is claimed in that cell",
+      request = registration(s"""{"email":"$email","cell":"kz-9"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-9")))),
+      authorization = internalAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest.copy(cell = Some(CellId("kz-9")))))),
+    ),
+    controllerTestCase(
+      description = "a registration by the configured auth that names a registered cell is 403: it is not that cell, whose key it does not hold",
+      request = registration(s"""{"email":"$email","cell":"kz-1"}"""),
+      expectedStatus = Status.Forbidden,
+      authorization = internalAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "a registration by the configured auth that names no cell is claimed in none, with cells registered or not",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None)),
+      authorization = internalAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest))),
+    ),
+    controllerTestCase(
+      description = "a registration with a token that is nobody's is 401, whatever cell the body names",
+      request = registration(s"""{"email":"$email","cell":"kz-1"}"""),
+      expectedStatus = Status.Unauthorized,
+      authorization = TestCentralConfig.authTokenBy(TestCentralConfig.foreignKeyPair).map(token => Header.Authorization.Bearer(token)),
+      cells = List(kz1),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls.isEmpty)),
+    ),
+    test("the cell of a claim: the caller's, with the refusals named by their codes") {
+      val registered = Vector(CellId("kz-1"), CellId("kz-2"))
+      val key = kz1Key.publicKey
+      assertTrue(
+        UserController.claimCell(Caller.Cell(CellId("kz-1"), key), None, registered) == Right(Some(CellId("kz-1"))),
+        UserController.claimCell(Caller.Cell(CellId("kz-1"), key), Some(CellId("kz-1")), registered) == Right(Some(CellId("kz-1"))),
+        UserController.claimCell(Caller.Cell(CellId("kz-1"), key), Some(CellId("kz-2")), registered) == Left("cell_mismatch"),
+        UserController.claimCell(Caller.ConfiguredAuth(key), Some(CellId("kz-9")), registered) == Right(Some(CellId("kz-9"))),
+        UserController.claimCell(Caller.ConfiguredAuth(key), Some(CellId("kz-2")), registered) == Left("cell_registered"),
+        UserController.claimCell(Caller.ConfiguredAuth(key), None, registered) == Right(None),
+        UserController.claimCell(Caller.ConfiguredAuth(key), None, Vector.empty) == Right(None),
+      )
+    },
+    // versolauth/versola#1046
+    controllerTestCase(
+      description = "lookup answers the holder of a credential to auth's token",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "lookup",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.lookup.succeedsWith(Some(RegisteredUserResponse(userId = userId, cell = None))),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[RegisteredUserResponse]
+        yield assertTrue(
+          service.lookup.calls == List(LookupUserRequest(email = Some(email), phone = None, login = None)),
+          body == RegisteredUserResponse(userId = userId, cell = None),
+        ),
+    ),
+    controllerTestCase(
+      description = "lookup of a credential nobody holds is 404",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "lookup",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.lookup.succeedsWith(None),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "lookup is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "lookup",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.lookup.calls.isEmpty)),
+    ),
+    // an edge's token is genuine and registered, and these routes are an auth's: refused in the handler, whatever the group in front does
+    controllerTestCase(
+      description = "lookup is refused to a registered edge's token, and nothing is asked",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "lookup",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      authorization = TestCentralConfig.edgeToken.map(Header.Authorization.Bearer(_)),
+      edgeRegistered = true,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.lookup.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "home is refused to a registered edge's token, and nothing is asked",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString(s"""{"login":"alice"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      authorization = TestCentralConfig.edgeToken.map(Header.Authorization.Bearer(_)),
+      edgeRegistered = true,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "superseded session is refused to a registered edge's token, and no session is ended",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "sessions" / "superseded",
+        body = Body.fromString(s"""{"userId":"$userId","sessionId":"c2lk"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      authorization = TestCentralConfig.edgeToken.map(Header.Authorization.Bearer(_)),
+      edgeRegistered = true,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.supersedeSession.calls.isEmpty)),
+    ),
+    // versolauth/versola#1048
+    controllerTestCase(
+      description = "home answers the cell of a login to auth's token",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"login":"jdoe"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.homeCell.succeedsWith(Some(CellId("kz-1"))),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[HomeCellResponse]
+        yield assertTrue(
+          service.homeCell.calls == List(HomeCellRequest(login = Some(Login("jdoe")), userId = None, email = None, phone = None)),
+          body == HomeCellResponse(CellId("kz-1")),
+        ),
+    ),
+    controllerTestCase(
+      description = "home with nowhere to send the sign-in is 404",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"login":"jdoe"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.homeCell.succeedsWith(None),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "home is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"login":"jdoe"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "home answers the cell of an email to auth's token",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"email":"user@example.com"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.homeCell.succeedsWith(Some(CellId("kz-2"))),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[HomeCellResponse]
+        yield assertTrue(
+          service.homeCell.calls == List(HomeCellRequest(login = None, userId = None, email = Some(Email("user@example.com")), phone = None)),
+          body == HomeCellResponse(CellId("kz-2")),
+        ),
+    ),
+    controllerTestCase(
+      description = "home answers the cell of a phone to auth's token",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"phone":"+15551234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.homeCell.succeedsWith(Some(CellId("kz-3"))),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[HomeCellResponse]
+        yield assertTrue(
+          service.homeCell.calls == List(HomeCellRequest(login = None, userId = None, email = None, phone = Some(Phone("+15551234567")))),
+          body == HomeCellResponse(CellId("kz-3")),
+        ),
+    ),
+    controllerTestCase(
+      description = "home for an email with nowhere to send it is 404",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"email":"user@example.com"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.homeCell.succeedsWith(None),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "home for a phone with nowhere to send it is 404",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"phone":"+15551234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.homeCell.succeedsWith(None),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "home for an email is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"email":"user@example.com"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "home for a phone is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"phone":"+15551234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "superseded session is 204 when the cell ended it, and the service gets the parsed request",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "sessions" / "superseded",
+        body = Body.fromString(s"""{"userId":"$userId","sessionId":"c2lk"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.supersedeSession.succeedsWith(true),
+      authorization = internalAuthorization,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.supersedeSession.calls == List(SupersededSessionRequest(userId = userId, sessionId = "c2lk")),
+        )),
+    ),
+    controllerTestCase(
+      description = "superseded session is 404 when the cell does not know the session as the user's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "sessions" / "superseded",
+        body = Body.fromString(s"""{"userId":"$userId","sessionId":"c2lk"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.supersedeSession.succeedsWith(false),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "superseded session is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "sessions" / "superseded",
+        body = Body.fromString(s"""{"userId":"$userId","sessionId":"c2lk"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.supersedeSession.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "registered user maps UserIndexConflict to 409 Conflict",
@@ -154,6 +478,38 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       authorization = internalAuthorization,
     ),
     controllerTestCase(
+      description = "registered user maps CellNotTaking to 409 with the error code and the cell that takes the address",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Conflict,
+      setup = service => service.indexRegistered.failsWith(CellNotTaking(CellId("kz-2"))),
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (response, service) =>
+        for body <- response.body.asString
+        yield assertTrue(
+          body == """{"error":"cell_not_taking","cell":"kz-2"}""",
+          service.indexRegistered.calls == List(registeredRequest.copy(cell = Some(CellId("kz-1")))),
+        ),
+    ),
+    controllerTestCase(
+      description = "registered user maps NoCellTakesUsers to 409 with the error code and no cell",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Conflict,
+      setup = service => service.indexRegistered.failsWith(NoCellTakesUsers),
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body == """{"error":"no_cell_takes_users"}""")),
+    ),
+    controllerTestCase(
+      description = "registered user answers the configured auth's claim as before, and a refusal it gets is the service's",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Conflict,
+      setup = service => service.indexRegistered.failsWith(CellNotTaking(CellId("kz-2"))),
+      authorization = internalAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest))),
+    ),
+    controllerTestCase(
       description = "registered user forwards the login field when present",
       request = Request(
         method = Method.POST,
@@ -161,7 +517,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(s"""{"email":"$email","login":"jdoe"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Ok,
-      setup = service => service.indexRegistered.succeedsWith(userId),
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None)),
       authorization = internalAuthorization,
       verify = (_, service) =>
         ZIO.succeed(assertTrue(
@@ -256,7 +612,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         url = (URL.empty / "users").addQueryParam("id", userId.toString),
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.findById.succeedsWith(Some(UserSearchRecord(userId, Some(email), None, None, Json.Obj()))),
+      setup = service =>
+        service.findById.succeedsWith(Some(UserSearchRecord(
+          id = userId,
+          email = Some(email),
+          phone = None,
+          login = None,
+          claims = Json.Obj(),
+          cell = None,
+          move = None,
+        ))),
       verify = (response, _) =>
         for body <- response.body.asJson[UserSearchResponse]
         yield assertTrue(body.users.head.id == userId),
@@ -268,7 +633,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         url = (URL.empty / "users").addQueryParam("email", email.toString),
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.findByEmail.succeedsWith(Some(UserSearchRecord(userId, Some(email), None, None, Json.Obj()))),
+      setup = service =>
+        service.findByEmail.succeedsWith(Some(UserSearchRecord(
+          id = userId,
+          email = Some(email),
+          phone = None,
+          login = None,
+          claims = Json.Obj(),
+          cell = None,
+          move = None,
+        ))),
       verify = (response, service) =>
         for body <- response.body.asJson[UserSearchResponse]
         yield assertTrue(service.findByEmail.calls == List(email), body.users.head.id == userId),
@@ -280,7 +654,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         url = URL.decode("/users?phone=%2B16502530000").toOption.get,
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.findByPhone.succeedsWith(Some(UserSearchRecord(userId, None, Some(Phone("+16502530000")), None, Json.Obj()))),
+      setup = service =>
+        service.findByPhone.succeedsWith(Some(UserSearchRecord(
+          id = userId,
+          email = None,
+          phone = Some(Phone("+16502530000")),
+          login = None,
+          claims = Json.Obj(),
+          cell = None,
+          move = None,
+        ))),
       verify = (response, service) =>
         for body <- response.body.asJson[UserSearchResponse]
         yield assertTrue(service.findByPhone.calls == List(Phone("+16502530000")), body.users.head.id == userId),
@@ -292,7 +675,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         url = (URL.empty / "users").addQueryParam("login", "jdoe"),
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.findByLogin.succeedsWith(Some(UserSearchRecord(userId, None, None, Some(Login("jdoe")), Json.Obj()))),
+      setup = service =>
+        service.findByLogin.succeedsWith(Some(UserSearchRecord(
+          id = userId,
+          email = None,
+          phone = None,
+          login = Some(Login("jdoe")),
+          claims = Json.Obj(),
+          cell = None,
+          move = None,
+        ))),
       verify = (response, service) =>
         for body <- response.body.asJson[UserSearchResponse]
         yield assertTrue(service.findByLogin.calls == List(Login("jdoe")), body.users.head.id == userId),

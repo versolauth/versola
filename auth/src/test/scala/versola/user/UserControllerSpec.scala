@@ -26,6 +26,8 @@ import versola.oauth.session.model.{
 }
 import versola.role.model.RoleId
 import versola.user.model.*
+import versola.user.move.{DepartureRefusal, UserDepartures}
+import versola.util.RsaKeyPair
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, Email, JWT, Patch, Phone}
@@ -37,13 +39,12 @@ import zio.test.*
 
 import java.time.Instant
 import java.util.UUID
-import javax.crypto.spec.SecretKeySpec
 
 object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val config = TestEnvConfig.coreConfig
-  private val secretKey = config.central.secretKey
-  private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+  private val secretKey = TestEnvConfig.centralKeyPair
+  private val wrongKey = TestEnvConfig.impostorKeyPair
 
   private val userRepo = stub[UserRepository]
   private val logoutService = stub[LogoutService]
@@ -99,11 +100,11 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       _ <- configuration.find.succeedsWith(client)
     yield configuration
 
-  private def validToken(key: javax.crypto.SecretKey): Task[String] =
+  private def validToken(key: RsaKeyPair): Task[String] =
     JWT.serialize(
       claims = JWT.Claims("central", "central", List("auth"), Json.Obj()),
       ttl = 10.minutes,
-      signature = JWT.Signature.Symmetric(key),
+      signature = TestEnvConfig.signedBy(key),
     )
 
   private val passkeyUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
@@ -140,6 +141,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       audit: AuditEvents = audit,
       configuration: OAuthConfigurationService = noopConfiguration,
       revocation: AccessTokenRevocationService = noopRevocation,
+      departures: UserDepartures = UserDepartures.none,
   ) =
     Observability.handleErrors(
       UserController.routes
@@ -147,7 +149,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ZEnvironment(users) ++ ZEnvironment(config) ++
             ZEnvironment(logout) ++ ZEnvironment(sessionsService) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
             ZEnvironment(password) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](stub[AuditReportService]) ++
-            ZEnvironment(configuration) ++ ZEnvironment(revocation) ++ tracing,
+            ZEnvironment(configuration) ++ ZEnvironment(revocation) ++ ZEnvironment[UserDepartures](departures) ++ tracing,
         ),
     )
 
@@ -209,6 +211,140 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     body.fromJson[Json.Obj].toOption.get
 
   def spec = suite("UserController")(
+    // versolauth/versola#1051: a user who is leaving is not read or changed by central's own calls either: `409 user_leaving`.
+    suite("a user who is leaving or has moved")(
+      {
+        val uid = passkeyUserId.toString
+        val credential = Base64.urlEncode(credentialId)
+        def query(method: Method, path: String, params: (String, String)*) =
+          Request(method = method, url = URL.decode(path).toOption.get.addQueryParams(params.map((k, v) => k -> v).toList))
+        val calls: List[(String, String => Request)] = List(
+          ("PUT /users", t => json(Method.PUT, List("users"), s"""{"id":"$uid","version":"${UUID.randomUUID()}","email":"a@example.com"}""", t)),
+          ("PATCH /users", t => json(Method.PATCH, List("users"), s"""{"id":"$uid","version":"${UUID.randomUUID()}"}""", t)),
+          ("DELETE /users", t => query(Method.DELETE, "/users", "id" -> uid).addHeader(Header.Authorization.Bearer(t))),
+          ("PATCH /users/claims", t => json(Method.PATCH, List("users", "claims"), s"""{"id":"$uid","claims":{"name":"x"}}""", t)),
+          (
+            "PATCH /users/roles",
+            t => json(Method.PATCH, List("users", "roles"), s"""{"userId":"$uid","tenantId":"default","add":["admin"],"remove":[]}""", t),
+          ),
+          ("GET /users/claims", t => query(Method.GET, "/users/claims", "id" -> uid).addHeader(Header.Authorization.Bearer(t))),
+          (
+            "GET /users/roles",
+            t => query(Method.GET, "/users/roles", "id" -> uid, "tenantId" -> "default").addHeader(Header.Authorization.Bearer(t)),
+          ),
+          ("GET /users/sessions", t => query(Method.GET, "/users/sessions", "id" -> uid).addHeader(Header.Authorization.Bearer(t))),
+          ("DELETE /users/sessions", t => query(Method.DELETE, "/users/sessions", "userId" -> uid).addHeader(Header.Authorization.Bearer(t))),
+          ("GET /users/user-agents", t => query(Method.GET, "/users/user-agents", "id" -> uid).addHeader(Header.Authorization.Bearer(t))),
+          (
+            "DELETE /users/user-agents",
+            t =>
+              query(Method.DELETE, "/users/user-agents", "userId" -> uid, "userAgentId" -> agentId.toString).addHeader(Header.Authorization.Bearer(t)),
+          ),
+          ("GET /users/refresh-tokens", t => query(Method.GET, "/users/refresh-tokens", "id" -> uid).addHeader(Header.Authorization.Bearer(t))),
+          (
+            "DELETE /users/refresh-tokens",
+            t => query(Method.DELETE, "/users/refresh-tokens", "userId" -> uid, "clientId" -> "app").addHeader(Header.Authorization.Bearer(t)),
+          ),
+          ("POST /users/limits/reset", t => json(Method.POST, List("users", "limits", "reset"), s"""{"userId":"$uid","tenantId":"default"}""", t)),
+          ("GET /users/passkeys", t => query(Method.GET, "/users/passkeys", "id" -> uid).addHeader(Header.Authorization.Bearer(t))),
+          (
+            "PATCH /users/passkeys",
+            t => json(Method.PATCH, List("users", "passkeys"), s"""{"userId":"$uid","credentialId":"$credential","name":"x"}""", t),
+          ),
+          (
+            "DELETE /users/passkeys",
+            t => query(Method.DELETE, "/users/passkeys", "id" -> uid, "credentialId" -> credential).addHeader(Header.Authorization.Bearer(t)),
+          ),
+          ("POST /users/password/reset", t => json(Method.POST, List("users", "password", "reset"), s"""{"userId":"$uid"}""", t)),
+          ("POST /users/password/set", t => json(Method.POST, List("users", "password", "set"), s"""{"userId":"$uid","password":"Secret123!"}""", t)),
+        )
+        def refusing(refusal: DepartureRefusal): UserDepartures =
+          new UserDepartures:
+            override def refuse(userId: UserId) = ZIO.fail(refusal)
+            override def refuseToken(token: versola.util.MAC.Of[versola.oauth.model.RefreshToken], clientId: versola.oauth.client.model.ClientId) =
+              ZIO.fail(refusal)
+        def answer(build: String => Request, refusal: DepartureRefusal) =
+          for
+            client <- ZIO.service[Client]
+            tracing <- NoopTracing.layer.build
+            token <- validToken(secretKey)
+            // every collaborator is a stub that was told nothing: a call of one would not be a 409
+            _ <- TestClient.addRoutes(
+              routes(
+                tracing,
+                users = stub[UserRepository],
+                logout = stub[LogoutService],
+                throttle = stub[ChallengeThrottleRepository],
+                passkey = stub[PasskeyRepository],
+                sessionsService = stub[SessionService],
+                password = stub[PasswordService],
+                departures = refusing(refusal),
+              ),
+            )
+            response <- client.batched(build(token))
+            text <- response.body.asString
+          yield (response.status, text)
+        suite("every per-user call")(
+          calls.flatMap((name, build) =>
+            List(
+              test(s"$name is 409 user_leaving, and nothing of the user is read or changed") {
+                answer(build, DepartureRefusal.Leaving).map((status, text) =>
+                  assertTrue(status == Status.Conflict, text == """{"error":"user_leaving"}"""),
+                )
+              },
+              test(s"$name is 409 user_moved for a user who has moved") {
+                answer(build, DepartureRefusal.Moved("kz-2")).map((status, text) =>
+                  assertTrue(status == Status.Conflict, text == """{"error":"user_moved"}"""),
+                )
+              },
+            ),
+          )*,
+        )
+      },
+      test("the reports of the audit log are not refused: the log stays in the cell the user left") {
+        for
+          client <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          token <- validToken(secretKey)
+          reports = stub[AuditReportService]
+          _ <- reports.events.succeedsWith(
+            AuditReportService.EventsPage(events = Nil, nextCursor = None, retentionFrom = Instant.parse("2026-01-01T00:00:00Z")),
+          )
+          _ <- TestClient.addRoutes(
+            Observability.handleErrors(
+              UserController.routes.provideEnvironment(
+                ZEnvironment(userRepo) ++ ZEnvironment(config) ++ ZEnvironment(logoutService) ++ ZEnvironment(sessionService) ++
+                  ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++ ZEnvironment(noopPasswordSvc) ++
+                  ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](reports) ++ ZEnvironment(noopConfiguration) ++
+                  ZEnvironment(noopRevocation) ++
+                  ZEnvironment[UserDepartures](new UserDepartures:
+                    override def refuse(userId: UserId) = ZIO.fail(DepartureRefusal.Leaving)
+                    override def refuseToken(
+                        token: versola.util.MAC.Of[versola.oauth.model.RefreshToken],
+                        clientId: versola.oauth.client.model.ClientId,
+                    ) = ZIO.fail(DepartureRefusal.Leaving)) ++ tracing,
+              ),
+            ),
+          )
+          response <- client.batched(
+            Request.get(URL.decode(s"/users/audit-events?id=${passkeyUserId}").toOption.get).addHeader(Header.Authorization.Bearer(token)),
+          )
+        yield assertTrue(response.status != Status.Conflict, reports.events.calls.size == 1)
+      },
+      test("a user who is not leaving is served as before: the guard asks about the user the call names and says nothing") {
+        for
+          client <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          token <- validToken(secretKey)
+          users = stub[UserRepository]
+          _ <- users.find.succeedsWith(None)
+          _ <- TestClient.addRoutes(routes(tracing, users = users))
+          response <- client.batched(
+            Request.get(URL.decode(s"/users/claims?id=${passkeyUserId}").toOption.get).addHeader(Header.Authorization.Bearer(token)),
+          )
+        yield assertTrue(response.status == Status.NoContent, users.find.calls == List(passkeyUserId))
+      },
+    ),
     test("PUT /users without Authorization returns 401") {
       for
         client <- ZIO.service[Client]
@@ -420,7 +556,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     test("GET /users/claims with valid token returns the user's claims") {
       val repo = stub[UserRepository]
       val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
-      val record = UserRecord.empty(userId).copy(claims = Json.Obj("name" -> Json.Str("John")))
+      val record = UserRecord.empty(userId).copy(claims = Json.Obj("name" -> Json.Str("John")), phone = Some(Phone("+15551234567")))
       for
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
@@ -436,7 +572,58 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         resp.status == Status.Ok,
         decoded.claims == Json.Obj("name" -> Json.Str("John")),
+        // versolauth/versola#1041: central keeps only the MACs, so the identifiers are read here.
+        decoded.phone.contains(Phone("+15551234567")),
+        decoded.email.isEmpty,
+        decoded.login.isEmpty,
       )
+    },
+    test("PATCH /users without Authorization returns 401 and changes nothing") {
+      val repo = stub[UserRepository]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        resp <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users", body = Body.fromString("{}")))
+      yield assertTrue(resp.status == Status.Unauthorized, repo.patch.calls.isEmpty)
+    },
+    test("PATCH /users changes the identifiers named: an absent one is kept, null removes, a value replaces") {
+      val repo = stub[UserRepository]
+      val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+      val version = UUID.fromString("00000000-0000-0000-0000-000000000002")
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- repo.find.succeedsWith(Some(UserRecord.empty(userId)))
+        _ <- repo.patch.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        body = s"""{"id":"$userId","version":"$version","email":null,"phone":"+15551234567"}"""
+        resp <- client.batched(
+          Request(method = Method.PATCH, url = URL.empty / "users", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        repo.patch.calls == List((userId, version, Some(Patch.Deleted), Some(Patch.Modified(Phone("+15551234567"))), None)),
+      )
+    },
+    test("PATCH /users for a user this auth does not have is 404 and creates nothing") {
+      val repo = stub[UserRepository]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- repo.find.succeedsWith(None)
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        body = """{"id":"00000000-0000-0000-0000-000000000009","version":"00000000-0000-0000-0000-000000000002","phone":"+15551234567"}"""
+        resp <- client.batched(
+          Request(method = Method.PATCH, url = URL.empty / "users", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      yield assertTrue(resp.status == Status.NotFound, repo.patch.calls.isEmpty)
     },
     test("GET /users/claims returns 204 when the user is not found") {
       val repo = stub[UserRepository]
@@ -669,8 +856,55 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(
         resp.status == Status.NoContent,
-        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId)),
+        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId, RevocationCause.AdminRevoked)),
         logout.invalidateAllSessions.calls.isEmpty,
+      )
+    },
+    // versolauth/versola#1048: central ends the session a sign-in handed to another cell replaced.
+    test("DELETE /users/sessions with cause=superseded ends the session as superseded") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.invalidateSession.succeedsWith(true)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "sessions")
+              .addQueryParam("userId", testUserId.toString)
+              .addQueryParam("sessionId", "c2lk")
+              .addQueryParam("cause", "superseded"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId, RevocationCause.Superseded)),
+      )
+    },
+    test("DELETE /users/sessions with a cause other than superseded ends the session as an administrator's action") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.invalidateSession.succeedsWith(true)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "sessions")
+              .addQueryParam("userId", testUserId.toString)
+              .addQueryParam("sessionId", "c2lk")
+              .addQueryParam("cause", "anything-else"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId, RevocationCause.AdminRevoked)),
       )
     },
     test("DELETE /users/sessions with a sessionId that is not the user's answers 404") {
@@ -939,7 +1173,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
                     stub[AuditReportService],
-                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ tracing,
+                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ ZEnvironment[UserDepartures](UserDepartures.none) ++ tracing,
               ),
           ),
         )
@@ -977,7 +1211,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
                     stub[AuditReportService],
-                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ tracing,
+                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ ZEnvironment[UserDepartures](UserDepartures.none) ++ tracing,
               ),
           ),
         )
@@ -1014,7 +1248,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
                     stub[AuditReportService],
-                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ tracing,
+                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ ZEnvironment[UserDepartures](UserDepartures.none) ++ tracing,
               ),
           ),
         )
@@ -1051,7 +1285,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
                     stub[AuditReportService],
-                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ tracing,
+                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ ZEnvironment[UserDepartures](UserDepartures.none) ++ tracing,
               ),
           ),
         )

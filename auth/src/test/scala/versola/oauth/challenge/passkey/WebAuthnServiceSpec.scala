@@ -304,6 +304,63 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         id <- service.credentialIdFromResponse("not-json")
       yield assertTrue(id.isEmpty)
     },
+    // versolauth/versola#1048
+    suite("userFromResponse")(
+      test("reads the user a 16-byte userHandle names") {
+        val keyPair = VirtualAuthenticator.keyPair()
+        val response = VirtualAuthenticator.assertionResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = "AAAA",
+          credentialId = "cred-1".getBytes("UTF-8"),
+          userHandle = VirtualAuthenticator.userHandle(userId),
+          pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey],
+          priv = keyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey],
+        )
+        for
+          service <- ZIO.service[WebAuthnService].provide(
+            ZLayer.succeed(stub[PasskeyRepository]),
+            ZLayer.succeed(stub[OAuthConfigurationService]),
+            WebAuthnService.live,
+          )
+          found <- service.userFromResponse(response)
+        yield assertTrue(found == Some(userId))
+      },
+      test("is None when the userHandle is not 16 bytes") {
+        val response =
+          """{"id":"Y3JlZC0xMjM","rawId":"Y3JlZC0xMjM","response":{"clientDataJSON":"eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFBQSIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3QifQ","authenticatorData":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFAAAAAAAA","signature":"Y3JlZC0xMjM","userHandle":"Y3JlZC0xMjM"},"type":"public-key","clientExtensionResults":{}}"""
+        for
+          service <- ZIO.service[WebAuthnService].provide(
+            ZLayer.succeed(stub[PasskeyRepository]),
+            ZLayer.succeed(stub[OAuthConfigurationService]),
+            WebAuthnService.live,
+          )
+          found <- service.userFromResponse(response)
+        yield assertTrue(found.isEmpty)
+      },
+      test("is None when the response has no userHandle") {
+        val response =
+          """{"id":"Y3JlZC0xMjM","rawId":"Y3JlZC0xMjM","response":{"clientDataJSON":"eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFBQSIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3QifQ","authenticatorData":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFAAAAAAAA","signature":"Y3JlZC0xMjM"},"type":"public-key","clientExtensionResults":{}}"""
+        for
+          service <- ZIO.service[WebAuthnService].provide(
+            ZLayer.succeed(stub[PasskeyRepository]),
+            ZLayer.succeed(stub[OAuthConfigurationService]),
+            WebAuthnService.live,
+          )
+          found <- service.userFromResponse(response)
+        yield assertTrue(found.isEmpty)
+      },
+      test("is None, and does not fail, for garbage") {
+        for
+          service <- ZIO.service[WebAuthnService].provide(
+            ZLayer.succeed(stub[PasskeyRepository]),
+            ZLayer.succeed(stub[OAuthConfigurationService]),
+            WebAuthnService.live,
+          )
+          found <- service.userFromResponse("not-json")
+        yield assertTrue(found.isEmpty)
+      },
+    ),
     test("finishRegistration fails if repository insert fails") {
       val repository = stub[PasskeyRepository]
       val configService = stub[OAuthConfigurationService]

@@ -28,7 +28,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.user.model.UserId
 import versola.util.http.Observability
-import zio.{IO, Runtime, Task, Unsafe, ZIO, ZLayer}
+import zio.{IO, Runtime, Task, UIO, Unsafe, ZIO, ZLayer}
 
 import java.nio.ByteBuffer
 import java.util.UUID
@@ -94,6 +94,11 @@ trait WebAuthnService:
     * Used for pre-flight throttle checks before the full ceremony verification.
     */
   def credentialIdFromResponse(response: String): Task[Option[String]]
+
+  /** The user an assertion response names (its `userHandle`), before anything is verified: enough to ask which cell
+    * holds the user, never to accept anything (versolauth/versola#1048). `None` when the response has none or cannot be
+    * read. */
+  def userFromResponse(response: String): UIO[Option[UserId]]
 
   /** Verify an assertion response, update usage, and resolve the authenticated user. */
   def finishAssertion(settings: PasskeySettings, request: String, response: String): IO[WebAuthnError, AssertionOutcome]
@@ -324,6 +329,11 @@ object WebAuthnService:
       ZIO.attempt(PublicKeyCredential.parseAssertionResponseJson(response))
         .map(c => Some(c.getId.getBase64Url()).filter(_.nonEmpty))
         .orElse(ZIO.succeed(None))
+
+    override def userFromResponse(response: String): UIO[Option[UserId]] =
+      ZIO.attempt(PublicKeyCredential.parseAssertionResponseJson(response))
+        .map(_.getResponse.getUserHandle.toScala.flatMap(handleToUserId(_).toOption))
+        .orElseSucceed(None)
 
     override def finishAssertion(
         settings: PasskeySettings,

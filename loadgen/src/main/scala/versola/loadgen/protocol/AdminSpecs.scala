@@ -44,14 +44,14 @@ case class ClientSpec(
   * @param securityProfile `standard` or `fapi2`. Fixed when the tenant is created -- central
   *                        refuses any other value afterwards -- so a campaign of each profile
   *                        needs a tenant of its own.
-  * @param edgeId the edge serving it; `None` takes the `default` tenant's, since an edge only
-  *               receives the clients and presets of the tenants assigned to it
+  * @param edgeGroupId the group of edges serving it; `None` takes the `default` tenant's, since an edge only
+  *                    receives the clients and presets of the tenants its group serves
   */
 case class TenantSpec(
     tenantId: String,
     description: String,
     securityProfile: String,
-    edgeId: Option[String],
+    edgeGroupId: Option[String],
 )
 
 /** One protected endpoint of a resource, relative to `/resources/{resourceId}` -- the part edge

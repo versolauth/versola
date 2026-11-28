@@ -38,3 +38,9 @@ private[token] object ErrorCode:
 
   /** The request needs to be retried carrying the server-supplied RFC 9449 DPoP nonce */
   val UseDpopNonce: ErrorCode = "use_dpop_nonce"
+
+  /** The request cannot be served now, and may be repeated shortly (RFC 6749 §4.1.2.1 names it for the authorization endpoint) */
+  val TemporarilyUnavailable: ErrorCode = "temporarily_unavailable"
+
+  /** The user lives in another cell now; the response names it */
+  val Moved: ErrorCode = "moved"

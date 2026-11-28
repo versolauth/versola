@@ -4,6 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
@@ -19,7 +20,6 @@ import javax.crypto.spec.SecretKeySpec
 
 object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
-  private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
   private val en = LocaleRecord("en", "English", isDefault = true, active = true)
   private val ru = LocaleRecord("ru", "Russian", isDefault = false, active = true)
@@ -28,9 +28,9 @@ object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj()),
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(secretKey),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
@@ -61,7 +61,9 @@ object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             LocaleController.routes.provideEnvironment(
               ZEnvironment[LocaleService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++ ZEnvironment[ResourceService](
+                  resourceService,
+                ),
             ),
           ),
         )

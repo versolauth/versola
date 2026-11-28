@@ -18,6 +18,7 @@ import versola.central.configuration.clients.{
   OAuthClientRecord,
   OAuthClientService,
 }
+import versola.central.configuration.edges.{EdgeGroup, EdgeGroupId}
 import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
@@ -96,6 +97,22 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
 
   def spec = suite("BootstrapService")(
+    // #557: a tenant is served by a group of edges; bootstrap links the default tenant to the group of the seeded edge.
+    test("links the default tenant to the group the seeded edge is in, so that it syncs central-admin") {
+      assertTrue(
+        BootstrapService.groupToLink(current = None, seededEdgeGroup = Some(EdgeGroup.DefaultId)) == Some(EdgeGroup.DefaultId),
+        BootstrapService.groupToLink(current = None, seededEdgeGroup = Some(EdgeGroupId("almaty"))) == Some(EdgeGroupId("almaty")),
+      )
+    },
+    test("leaves the group a tenant already names alone on every later start, the default one and an operator's own alike") {
+      assertTrue(
+        BootstrapService.groupToLink(current = Some(EdgeGroup.DefaultId), seededEdgeGroup = Some(EdgeGroupId("almaty"))).isEmpty,
+        BootstrapService.groupToLink(current = Some(EdgeGroupId("almaty")), seededEdgeGroup = Some(EdgeGroup.DefaultId)).isEmpty,
+      )
+    },
+    test("links nothing in a deployment that seeds no edge: no edge would serve the tenant through the group") {
+      assertTrue(BootstrapService.groupToLink(current = None, seededEdgeGroup = None).isEmpty)
+    },
     test("starts a tenant with an otp class that asks for a one-time code and a passkey class that asks for a passkey") {
       val settings = BootstrapService.defaultChallengeSettings(
         versola.central.configuration.tenants.TenantId("default"),
@@ -522,6 +539,29 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // the path is under /users, but the endpoint is its own: no other permission grants a look at the trail (edge matches a path to
         // an endpoint segment by segment, not by prefix)
         BootstrapService.permissionCatalog.filter(_._3.contains(endpointId("GET", "/users/audit"))).map(_._1.toString) == List("audit:read"),
+      )
+    },
+    test("moving a user is registered for the console: the write with users:manage and the list with users:read, and with no other permission") {
+      def endpoints(permission: String) =
+        BootstrapService.permissionCatalog.find(
+          _._1 == versola.central.configuration.permissions.Permission(permission),
+        ).map(_._3).getOrElse(Set.empty)
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      val grantedBy = (method: String, path: String) =>
+        BootstrapService.permissionCatalog.filter(_._3.contains(endpointId(method, path))).map(_._1.toString)
+      assertTrue(
+        prod.contains("POST" -> "/users/move"),
+        prod.contains("GET" -> "/users/moves"),
+        endpoints("users:manage").contains(endpointId("POST", "/users/move")),
+        endpoints("users:read").contains(endpointId("GET", "/users/moves")),
+        // a read does not move anybody, and a write is not granted by the right to look
+        !endpoints("users:read").contains(endpointId("POST", "/users/move")),
+        !endpoints("users:manage").contains(endpointId("GET", "/users/moves")),
+        grantedBy("POST", "/users/move") == List("users:manage"),
+        grantedBy("GET", "/users/moves") == List("users:read"),
+        // told who the administrator is, as every other route of the console, so that the audit row names them
+        BootstrapService.centralInjects("POST", "/users/move") == BootstrapService.actorInjects,
+        BootstrapService.centralInjects("GET", "/users/moves") == BootstrapService.actorInjects,
       )
     },
     test("a deployment that registered the endpoints with older inject rules gets the current ones, and nothing but the inject rules is rewritten") {

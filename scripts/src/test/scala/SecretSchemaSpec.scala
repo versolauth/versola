@@ -25,10 +25,14 @@ object SecretSchemaSpec extends ZIOSpecDefault:
     "DPOP_NONCES_SECRET",
     "ANTIFRAUD_SUBJECT_SECRET",
     "JWT_PRIVATE_KEY",
-    "CENTRAL_SECRET_KEY",
+    "AUTH_SERVICE_PRIVATE_KEY",
+    "AUTH_SERVICE_KEY_ID",
+    "CENTRAL_SERVICE_PUBLIC_JWK",
   )
   private val centralKeys = Set(
-    "CENTRAL_SECRET_KEY",
+    "CENTRAL_SERVICE_PRIVATE_KEY",
+    "CENTRAL_SERVICE_KEY_ID",
+    "AUTH_SERVICE_PUBLIC_JWK",
     "CLIENT_SECRETS_SECRET",
     "ACCOUNT_RESOURCE_SECRET",
     "CENTRAL_RESOURCE_SECRET",
@@ -167,6 +171,15 @@ object SecretSchemaSpec extends ZIOSpecDefault:
           SecretSchema.specs.forall(spec => spec.since >= 1 && spec.since <= SecretSchema.Revision),
         )
       },
+      test("the service keys of versolauth/versola#1050 appeared in revision 2, after the baseline") {
+        val serviceKeys = SecretSchema.specs.filter(_.group.exists(_.endsWith("-service-key")))
+        assertTrue(
+          SecretSchema.Revision >= 2,
+          serviceKeys.size == 6,
+          serviceKeys.forall(_.since == 2),
+          SecretSchema.specs.filter(_.name == "EDGE_PRIVATE_KEY").forall(_.since == 1),
+        )
+      },
       test("the members of a group appeared in the same revision") {
         val byGroup = SecretSchema.specs.flatMap(spec => spec.group.map(_ -> spec.since)).groupBy(_._1)
         assertTrue(byGroup.nonEmpty, byGroup.values.forall(_.map(_._2).distinct.size == 1))
@@ -175,17 +188,24 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         val holders = SecretSchema.Services.toSet + "utils"
         assertTrue(SecretSchema.specs.forall(_.services.forall(holders.contains)))
       },
-      test("groups are the three cross-service sets") {
+      test("groups are the five cross-service sets") {
         assertTrue(
+          membersOf("auth-service-key") == Set("AUTH_SERVICE_PRIVATE_KEY", "AUTH_SERVICE_KEY_ID", "AUTH_SERVICE_PUBLIC_JWK"),
+          membersOf("central-service-key") == Set("CENTRAL_SERVICE_PRIVATE_KEY", "CENTRAL_SERVICE_KEY_ID", "CENTRAL_SERVICE_PUBLIC_JWK"),
           membersOf("jwt") == Set("JWT_PRIVATE_KEY", "JWKS_JSON"),
           membersOf("edge-key") == Set("EDGE_PRIVATE_KEY", "EDGE_KEY_ID", "EDGE_PUBLIC_JWK"),
           membersOf("utils") == Set("UTILITY_CLIENT_PUBLIC_JWK", "UTILS_PRIVATE_KEY_JWK"),
-          SecretSchema.specs.flatMap(_.group).toSet == Set("jwt", "edge-key", "utils"),
+          SecretSchema.specs.flatMap(_.group).toSet == Set("jwt", "edge-key", "utils", "auth-service-key", "central-service-key"),
         )
       },
       test("values shared between services are listed once, with every service") {
         assertTrue(
-          specNamed("CENTRAL_SECRET_KEY").services == List("auth", "central"),
+          // each half of a service key is held by one service only: the private half where it signs, the public one where it verifies
+          specNamed("AUTH_SERVICE_PRIVATE_KEY").services == List("auth"),
+          specNamed("AUTH_SERVICE_PUBLIC_JWK").services == List("central"),
+          specNamed("CENTRAL_SERVICE_PRIVATE_KEY").services == List("central"),
+          specNamed("CENTRAL_SERVICE_PUBLIC_JWK").services == List("auth"),
+          !SecretSchema.specs.exists(_.name == "CENTRAL_SECRET_KEY"),
           specNamed("CLIENT_SECRETS_SECRET").services == List("auth", "central"),
           // vps: one Postgres host, one generated password for all three.
           onTarget(SecretTarget.Vps, "POSTGRES_PASSWORD").map(_.services) == List(List("auth", "central", "edge")),
@@ -228,6 +248,12 @@ object SecretSchemaSpec extends ZIOSpecDefault:
             "EDGE_PRIVATE_KEY",
             "EDGE_KEY_ID",
             "EDGE_PUBLIC_JWK",
+            "AUTH_SERVICE_PRIVATE_KEY",
+            "AUTH_SERVICE_KEY_ID",
+            "AUTH_SERVICE_PUBLIC_JWK",
+            "CENTRAL_SERVICE_PRIVATE_KEY",
+            "CENTRAL_SERVICE_KEY_ID",
+            "CENTRAL_SERVICE_PUBLIC_JWK",
             "UTILITY_CLIENT_PUBLIC_JWK",
             "UTILS_PRIVATE_KEY_JWK",
           ),
@@ -247,7 +273,6 @@ object SecretSchemaSpec extends ZIOSpecDefault:
             "EDGE_DPOP_NONCE_SALT",
             "EDGE_NATIVE_BLOB_KEY",
             "ACCESS_TOKENS_SECRET",
-            "CENTRAL_SECRET_KEY",
           ).forall(specNamed(_).onMissing == OnMissing.Generate),
           notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).filter(_.name == "POSTGRES_PASSWORD")
             .map(_.targets) == List(Set(SecretTarget.Vps)),
@@ -317,7 +342,7 @@ object SecretSchemaSpec extends ZIOSpecDefault:
           SecretSchema.problems(List(rsa)) == Nil,
           SecretSchema.problems(List(rsa.copy(size = Some(2048)))).exists(_.contains("takes no size")),
           SecretSchema.specs.filter(_.tpe == SecretType.RsaPrivateKey).map(s => (s.name, s.size)) ==
-            List(("EDGE_PRIVATE_KEY", None)),
+            List(("AUTH_SERVICE_PRIVATE_KEY", None), ("CENTRAL_SERVICE_PRIVATE_KEY", None), ("EDGE_PRIVATE_KEY", None)),
         )
       },
       // JWT_PRIVATE_KEY is EC from gen-env but may still be RSA in an existing store, so its type

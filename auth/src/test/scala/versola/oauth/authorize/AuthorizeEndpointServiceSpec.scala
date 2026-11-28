@@ -536,6 +536,80 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         submitCalls.head._2 == EmailSubmission(emailHint, ProofInput.NoScript, "testcsrf1"),
       )
     },
+    test("answer with the redirect to the home cell when the login_hint belongs to a user of another cell") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val home = zio.http.URL.decode("/challenge/handoff?handoff=v1.kz-2.sealed").toOption.get
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        // What the router answers once it has sealed the request for the home cell and ended this conversation.
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.Handoff(home), dummyConversation))
+        result <- env.service.authorize(baseRequest.copy(loginHint = Some(Left(emailHint))))
+      yield assertTrue(result == AuthorizeResponse.HandedOff(home))
+    },
+    // versolauth/versola#1052: a sign-in another cell handed to this one is answered here, whatever central would say now.
+    test("a handed request submits its login hint through the handed path of the router, and never through the one that asks central") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.submitHanded.succeedsWith((ConversationResult.BadRequest, dummyConversation))
+        result <- env.service.authorizeHanded(baseRequest.copy(loginHint = Some(Left(emailHint))))
+        handedCalls = env.conversationRouter.submitHanded.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        handedCalls.map(c => (c._2, c._3)) == List((EmailSubmission(emailHint, ProofInput.NoScript, "testcsrf1"), None)),
+        env.conversationRouter.submit.calls.isEmpty,
+      )
+    },
+    test("a handed request with a phone hint does the same") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.submitHanded.succeedsWith((ConversationResult.BadRequest, dummyConversation))
+        _ <- env.service.authorizeHanded(baseRequest.copy(loginHint = Some(Right(phoneHint))))
+        handedCalls = env.conversationRouter.submitHanded.calls
+      yield assertTrue(
+        handedCalls.map(_._2) == List(PhoneSubmission(phoneHint, ProofInput.NoScript, "testcsrf1")),
+        env.conversationRouter.submit.calls.isEmpty,
+      )
+    },
+    test("a plain request with a login hint is submitted through the router that may send it on, and not as handed") {
+      val env = Env()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.BadRequest, dummyConversation))
+        _ <- env.service.authorize(baseRequest.copy(loginHint = Some(Left(emailHint))))
+      yield assertTrue(env.conversationRouter.submit.calls.size == 1, env.conversationRouter.submitHanded.calls.isEmpty)
+    },
+    test("a handed request with no hint submits nothing") {
+      val env = Env()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.service.authorizeHanded(baseRequest)
+      yield assertTrue(env.conversationRouter.submitHanded.calls.isEmpty, env.conversationRouter.submit.calls.isEmpty)
+    },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
       val env = Env()
       val uuid = UUID.randomUUID()

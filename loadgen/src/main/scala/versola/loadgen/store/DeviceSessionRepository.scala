@@ -102,7 +102,7 @@ trait DeviceSessionRepository:
 
   /** What a completed step-up leaves behind (§7.4): the session's assurance level, the fresh
     * `auth_time` behind it, the token pair the new code exchange produced, and the
-    * `SSO_SESSION` if auth re-set it on the way through.
+    * `__Host-SSO_SESSION` if auth re-set it on the way through.
     *
     * `ssoSession` is `None` when the response carried no new cookie, which leaves the stored
     * one alone rather than clearing it -- the same `COALESCE` rule as the token pair.

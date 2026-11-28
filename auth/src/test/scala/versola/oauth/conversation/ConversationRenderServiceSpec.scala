@@ -8,8 +8,9 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.conversation.ConversationRenderService.StepView
 import versola.oauth.conversation.model.*
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.jwks.JwksService
-import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, SessionCookie, State, UserAgentData}
+import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, ConversationCookie, SessionCookie, State, UserAgentData}
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
 import versola.util.*
@@ -1561,6 +1562,43 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderSubmit(ConversationResult.RenderStep(step), conversationRecord, Some("ru"))
         yield assertTrue(response.header(Header.Location).map(_.url.encode).contains("/challenge?ui_locale=ru"))
       },
+      // versolauth/versola#1052: an address nobody holds goes to the cell a keyed hash picks, and what the browser is told
+      // must not say whether the address is registered.
+      test("answers a handoff with a 303 to the handoff of the cell and the conversation cookie expired, whoever holds the address") {
+        val env = Env()
+        def answer(seal: String) =
+          env.service.renderSubmit(ConversationResult.Handoff(CellHandoff.location(seal)), conversationRecord, None)
+        for
+          heldElsewhere <- answer("v1.kz-2.AAAA")
+          nobodyHashesThere <- answer("v1.kz-2.BBBB")
+          shape = (r: Response, seal: String) =>
+            (r.status, r.header(Header.Location).map(_.url.encode.replace(seal, "SEAL")), r.headers(Header.SetCookie).map(_.value).toList)
+        yield assertTrue(
+          heldElsewhere.status == Status.SeeOther,
+          shape(heldElsewhere, "AAAA") == shape(nobodyHashesThere, "BBBB"),
+          heldElsewhere.header(Header.Location).map(_.url.encode).contains("/challenge/handoff?handoff=v1.kz-2.AAAA"),
+          heldElsewhere.headers(Header.SetCookie).map(_.value).toList == List(ConversationCookie.expired),
+        )
+      },
+      test("answers the first step of a user held here, and of an address nobody holds that is placed here, alike: a 303 to /challenge") {
+        val env = Env()
+        for
+          signIn <- env.service.renderSubmit(
+            ConversationResult.RenderStep(ConversationStep.Password(0, None, 0, false)),
+            conversationRecord,
+            None,
+          )
+          unknown <- env.service.renderSubmit(
+            ConversationResult.RenderStep(sentStep),
+            conversationRecord,
+            None,
+          )
+        yield assertTrue(
+          signIn.status == unknown.status,
+          signIn.header(Header.Location) == unknown.header(Header.Location),
+          signIn.headers(Header.SetCookie).toList == unknown.headers(Header.SetCookie).toList,
+        )
+      },
       test("redirects to /challenge on BadRequest") {
         val env = Env()
         for
@@ -1604,10 +1642,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.encode.contains("code=" + versola.util.Base64Url.encode(code)))) &&
           assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
-            c.value.name == "SSO_SESSION",
+            c.value.name == "__Host-SSO_SESSION",
           )) &&
           assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
-            c.value.name == "SSO_CONVERSATION" && c.value.maxAge.contains(Duration.Zero),
+            c.value.name == "__Host-SSO_CONVERSATION" && c.value.maxAge.contains(Duration.Zero),
           ))
       },
       test("includes id_token if provided in Complete") {

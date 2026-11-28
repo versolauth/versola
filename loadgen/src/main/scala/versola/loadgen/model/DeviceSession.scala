@@ -27,7 +27,7 @@ enum SessionKind:
   * -- the session would simply never authenticate again and read as a phantom SUT failure
   * (§8.4).
   *
-  * `ssoSession` is the auth-side `SSO_SESSION` the conversation left behind (§3.2). It is a
+  * `ssoSession` is the auth-side `__Host-SSO_SESSION` the conversation left behind (§3.2). It is a
   * credential like the other two, not a convenience: `AuthClient.authorize` takes it to re-run
   * on the *same* SSO session, which is what a silent reauthorization and an ACR step-up are
   * (§7.4). A session resumed without it can only start over at credentials.

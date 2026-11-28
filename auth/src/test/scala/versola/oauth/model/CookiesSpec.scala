@@ -7,6 +7,7 @@ import versola.oauth.conversation.model.AuthId
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
 import versola.util.Base64
+import versola.util.RoutingKey
 import versola.util.Secret
 import zio.*
 import zio.json.*
@@ -32,7 +33,7 @@ object CookiesSpec extends ZIOSpecDefault:
     suite("ConversationCookie")(
       test("responseCookie creates a secure cookie with valid signature") {
         val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None, None, useFragment = None)
-        val resp = ConversationCookie.responseCookie(cookie, 15.minutes, secret)
+        val resp = ConversationCookie.responseCookie(cookie, 15.minutes, secret, cell = None)
         assertTrue(
           resp.name == ConversationCookie.name,
           resp.path.nonEmpty,
@@ -51,18 +52,47 @@ object CookiesSpec extends ZIOSpecDefault:
           responseMode = Some(ResponseMode.Query),
           useFragment = None,
         )
-        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
+        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret, cell = None).content
         assertTrue(ConversationCookie.parse(content, secret) == Right(cookie))
+      },
+      test("under a cell id the content carries the routing key in front, and parses back to the same cookie") {
+        val cell = RoutingKey.CellId.parse("kz-1").toOption.get
+        val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None, None, useFragment = None)
+        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret, cell = Some(cell)).content
+        assertTrue(
+          content.startsWith("v1.kz-1."),
+          RoutingKey.strip(content) == ConversationCookie.responseCookie(cookie, 15.minutes, secret, cell = None).content,
+          ConversationCookie.parse(content, secret) == Right(cookie),
+        )
+      },
+      test("the routing key is a hint outside the signature: another cell's key does not make a cookie invalid, a tampered body still does") {
+        val cell = RoutingKey.CellId.parse("kz-1").toOption.get
+        val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None, None, useFragment = None)
+        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret, cell = Some(cell)).content
+        val elsewhere = content.replace("v1.kz-1.", "v1.kz-2.")
+        val tampered = content.dropRight(2) + "AA"
+        assertTrue(
+          ConversationCookie.parse(elsewhere, secret) == Right(cookie),
+          ConversationCookie.parse(tampered, secret).isLeft,
+          ConversationCookie.parse(content, Secret.Bytes32(Array.fill(32)(9.toByte))).isLeft,
+        )
+      },
+      test("a cookie that announces a routing key and does not spell one is refused") {
+        assertTrue(
+          ConversationCookie.parse("v1.kz-1", secret).isLeft,
+          ConversationCookie.parse("v1.KZ-1.abc.def", secret).isLeft,
+          ConversationCookie.parse("v1..abc.def", secret).isLeft,
+        )
       },
       test("parse fails with wrong secret") {
         val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None, None, useFragment = None)
-        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
+        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret, cell = None).content
         val wrongSecret = Secret.Bytes32(Array.fill(32)(9.toByte))
         assertTrue(ConversationCookie.parse(content, wrongSecret).isLeft)
       },
       test("parse fails with tampered payload") {
         val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None, None, useFragment = None)
-        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
+        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret, cell = None).content
         val parts = content.split('.')
         val tamperedPayload = "eyJhdXRoSWQiOiJiYmJiYmJiYi1iYmJiLWJiYmItYmJiYi1iYmJiYmJiYmJiYmIiLCJjbGllbnRJZCI6InRlc3QtY2xpZW50In0"
         val tamperedContent = s"$tamperedPayload.${parts(1)}"
@@ -70,9 +100,22 @@ object CookiesSpec extends ZIOSpecDefault:
       },
     ),
     suite("SessionCookie")(
+      test("under a cell id the session cookie carries the routing key in front, parses back, and a tampered body still fails") {
+        val cell = RoutingKey.CellId.parse("kz-1").toOption.get
+        val id = SessionId(Array.fill(32)(4.toByte))
+        val key = Secret.Bytes32(Array.fill(32)(6.toByte))
+        val content = SessionCookie(id, 1.hour, key, cell = Some(cell)).content
+        assertTrue(
+          content.startsWith("v1.kz-1."),
+          RoutingKey.strip(content) == SessionCookie(id, 1.hour, key, cell = None).content,
+          SessionCookie.parse(content, key).exists(_.sameElements(id)),
+          SessionCookie.parse(content.dropRight(2) + "AA", key).isLeft,
+          SessionCookie.parse("v1.KZ-1.abc.def", key).isLeft,
+        )
+      },
       test("creates a session cookie with valid signature") {
         val sessionId = SessionId(Array.fill(32)(1.toByte))
-        val cookie = SessionCookie(sessionId, 1.hour, sessionSecret)
+        val cookie = SessionCookie(sessionId, 1.hour, sessionSecret, cell = None)
         assertTrue(
           cookie.name == SessionCookie.name,
           cookie.isHttpOnly,
@@ -83,13 +126,13 @@ object CookiesSpec extends ZIOSpecDefault:
       },
       test("parse fails with wrong secret") {
         val sessionId = SessionId(Array.fill(32)(1.toByte))
-        val content = SessionCookie(sessionId, 1.hour, sessionSecret).content
+        val content = SessionCookie(sessionId, 1.hour, sessionSecret, cell = None).content
         val wrongSecret = Secret.Bytes32(Array.fill(32)(9.toByte))
         assertTrue(SessionCookie.parse(content, wrongSecret).isLeft)
       },
       test("parse fails with tampered content") {
         val sessionId = SessionId(Array.fill(32)(1.toByte))
-        val content = SessionCookie(sessionId, 1.hour, sessionSecret).content
+        val content = SessionCookie(sessionId, 1.hour, sessionSecret, cell = None).content
         val parts = content.split('.')
         val tamperedPayload = Base64.urlEncode(Array.fill(32)(2.toByte))
         val tamperedContent = s"$tamperedPayload.${parts(1)}"
@@ -97,7 +140,7 @@ object CookiesSpec extends ZIOSpecDefault:
       },
       test("parse rejects a payload that is not a 32-byte session id") {
         val shortPayload = Base64.urlEncode(Array.fill(8)(1.toByte))
-        val content = SessionCookie(SessionId(Array.fill(8)(1.toByte)), 1.hour, sessionSecret).content
+        val content = SessionCookie(SessionId(Array.fill(8)(1.toByte)), 1.hour, sessionSecret, cell = None).content
         assertTrue(
           SessionCookie.parse(content, sessionSecret) == Left("invalid session id length"),
           shortPayload.nonEmpty,
@@ -148,6 +191,7 @@ object CookiesSpec extends ZIOSpecDefault:
           ConversationCookie(authId, clientId, "https://example.com/callback", None, None, useFragment = None),
           15.minutes,
           secret,
+          cell = None,
         ).content
         val result = UserAgentCookie.parse(content, secret)
         assertTrue(
@@ -166,6 +210,7 @@ object CookiesSpec extends ZIOSpecDefault:
           ConversationCookie(authId, clientId, "https://example.com/callback", None, None, useFragment = None),
           15.minutes,
           secret,
+          cell = None,
         ).content
         assertTrue(ConversationCookie.parse(s"not base64!.${content.split('.')(1)}", secret).isLeft)
       },

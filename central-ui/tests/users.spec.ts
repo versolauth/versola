@@ -841,6 +841,145 @@ test.describe('delete user', () => {
   });
 });
 
+test.describe('move to another cell', () => {
+  const rsaKey = (kid: string) => ({ kty: 'RSA', kid, n: `${'q'.repeat(342 - kid.length)}${kid}`, e: 'AQAB' });
+  const cell = (id: string, regionId: string, cellState: 'open' | 'closed' | 'draining') =>
+    ({ id, regionId, internalUrl: `http://auth-${id}.internal:9003`, mtlsUrl: null, trustedCertificates: [] as string[], state: cellState, weight: 100, publicKeys: [rsaKey(`${id}-key`)] });
+  const move = (phase: string, extra = {}) => ({
+    userId: danaId, from: 'kz-1', to: 'kz-2', phase, reason: 'admin', startedAt: '2026-11-20T10:00:00Z', updatedAt: '2026-11-20T10:00:05Z', attempts: 0, ...extra,
+  });
+  const cellsState = {
+    ...state,
+    partitions: [{ id: 'kz' }, { id: 'ru' }],
+    regions: [{ id: 'almaty', partitionId: 'kz' }, { id: 'astana', partitionId: 'kz' }, { id: 'moscow', partitionId: 'ru' }],
+    cells: [cell('kz-1', 'almaty', 'open'), cell('kz-2', 'astana', 'closed'), cell('kz-3', 'astana', 'draining'), cell('ru-1', 'moscow', 'open')],
+    userCells: { [danaId]: 'kz-1' },
+  };
+  const row = (page: Page) => card(page, 'Security actions').locator('.record-row').filter({ hasText: 'Cell' }).filter({ hasText: 'Move to another cell' });
+
+  test('offers the cells of the partition that are not draining, and starts the move', async ({ page }) => {
+    const api = await openRecord(page, { state: cellsState });
+    await expect(row(page)).toContainText('kz-1');
+    await row(page).getByRole('button', { name: 'Move to another cell…' }).click();
+
+    const dialog = page.getByRole('dialog', { name: 'Move to another cell' });
+    // Not its own cell, not the draining kz-3, not the other partition's ru-1.
+    await expect(dialog.getByLabel('Target cell').locator('option')).toHaveText(['kz-2 (astana, closed)']);
+    await dialog.getByRole('button', { name: 'Move user' }).click();
+
+    expect((await findRequest(api.requests, 'POST', '/users/move')).body).toEqual({ userId: danaId, cell: 'kz-2' });
+    await expect(dialog).toBeHidden();
+    // The record is read again: the notice, and the phase in the cell row.
+    await expect(page.getByTestId('user-moving')).toContainText('being moved from kz-1 to kz-2');
+    await expect(row(page)).toContainText('Leaving');
+    await expect(row(page).getByRole('button', { name: 'Move to another cell…' })).toBeDisabled();
+  });
+
+  test('offers only the cells of the partition of a user that finished a move into its cell', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, userCells: { [danaId]: 'kz-2' }, moves: [move('done')] } });
+    await expect(row(page)).toContainText('kz-2');
+    await row(page).getByRole('button', { name: 'Move to another cell…' }).click();
+    await expect(page.getByRole('dialog', { name: 'Move to another cell' }).getByLabel('Target cell').locator('option')).toHaveText(['kz-1 (almaty, open)']);
+  });
+
+  test('says the user is being moved, hides the empty identifiers and shows the phase, for every unfinished phase', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, moves: [move('exported')] } });
+    const notice = page.getByTestId('user-moving');
+    await expect(notice).toContainText('This user is being moved from kz-1 to kz-2');
+    await expect(notice).toContainText('unavailable until the move ends');
+    await expect(page.getByText('Any one of them signs the user in.')).toHaveCount(0);
+    await expect(row(page)).toContainText('kz-1');
+    await expect(row(page)).toContainText('Exported');
+  });
+
+  test('a flipped move names the new cell and warns that the old one does not serve the user yet', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, moves: [move('flipped')] } });
+    await expect(page.getByTestId('user-moving')).toContainText('The old cell does not serve the user until it completes');
+    await expect(row(page)).toContainText('kz-2');
+    await expect(row(page).getByRole('button', { name: 'Move to another cell…' })).toBeDisabled();
+  });
+
+  test('no notice and the identifiers shown once the move is done', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, userCells: { [danaId]: 'kz-2' }, moves: [move('done')] } });
+    await expect(page.getByTestId('user-moving')).toHaveCount(0);
+    await expect(page.getByText('Any one of them signs the user in.')).toBeVisible();
+  });
+
+  test('says where the last move failed', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, moves: [move('failed', { error: 'target_has_user' })] } });
+    await expect(row(page)).toContainText('failed: The new cell already has this user');
+    await expect(row(page).getByRole('button', { name: 'Move to another cell…' })).toBeEnabled();
+  });
+
+  test('central is left to refuse a target of another partition', async ({ page }) => {
+    const api = await openRecord(page, { state: cellsState });
+    await row(page).getByRole('button', { name: 'Move to another cell…' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Move to another cell' });
+    await dialog.getByLabel('Target cell').evaluate(select => {
+      const option = document.createElement('option');
+      option.value = 'ru-1';
+      select.append(option);
+    });
+    await dialog.getByLabel('Target cell').selectOption('ru-1');
+    await dialog.getByRole('button', { name: 'Move user' }).click();
+
+    expect((await findRequest(api.requests, 'POST', '/users/move')).body).toEqual({ userId: danaId, cell: 'ru-1' });
+    // 400 is plain text: shown where the choice was made, and the dialog stays open to choose again.
+    await expect(dialog.getByRole('alert')).toContainText('the target cell is in another partition');
+  });
+
+  test('a refusal of 409, move_in_progress, is shown in the dialog', async ({ page }) => {
+    await openRecord(page, { state: cellsState });
+    await page.route('**/users/move', route => route.fulfill({ status: 409, contentType: 'text/plain', body: 'a move of the user is in progress' }));
+    await row(page).getByRole('button', { name: 'Move to another cell…' }).click();
+    await page.getByRole('dialog', { name: 'Move to another cell' }).getByRole('button', { name: 'Move user' }).click();
+    await expect(page.getByRole('dialog', { name: 'Move to another cell' }).getByRole('alert')).toContainText('already in progress');
+  });
+
+  test('a refusal of 404 is shown in the dialog', async ({ page }) => {
+    await openRecord(page, { state: cellsState });
+    await page.route('**/users/move', route => route.fulfill({ status: 404, contentType: 'text/plain', body: 'there is no such user' }));
+    await row(page).getByRole('button', { name: 'Move to another cell…' }).click();
+    await page.getByRole('dialog', { name: 'Move to another cell' }).getByRole('button', { name: 'Move user' }).click();
+    await expect(page.getByRole('dialog', { name: 'Move to another cell' }).getByRole('alert')).toContainText('there is no such user');
+  });
+
+  test('a user of no cell shows no cell row and no move action', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, userCells: {} } });
+    await expect(card(page, 'Security actions')).not.toContainText('Move to another cell');
+    await expect(card(page, 'Security actions')).not.toContainText('Cell');
+  });
+
+  test('is not offered where no cell is registered', async ({ page }) => {
+    await openRecord(page);
+    await expect(card(page, 'Security actions')).not.toContainText('Move to another cell');
+  });
+
+  test('a read-only console sees the cell and no button', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, myPermissions: readOnly, } });
+    await expect(card(page, 'Security actions')).toContainText('kz-1');
+    await expect(page.getByRole('button', { name: 'Move to another cell…' })).toHaveCount(0);
+  });
+
+  test('a write to a user whose move is running says so in words instead of a status', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, movingUsers: [danaId] } });
+    await page.getByRole('button', { name: 'Edit claims' }).click();
+    await page.locator('.claim-row', { hasText: 'name' }).first().locator('input[type=text]').fill('Dana R.');
+    await page.getByRole('button', { name: 'Save claims' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'This user is being moved to another cell' })).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'Try again when the move is done or has failed' })).toBeVisible();
+  });
+
+  test('editing identifiers of a moving user is not reported as a taken identifier', async ({ page }) => {
+    await openRecord(page, { state: { ...cellsState, movingUsers: [danaId] } });
+    await page.getByRole('button', { name: 'Edit identifiers' }).click();
+    await page.getByLabel('Login').fill('dana-new');
+    await page.getByRole('button', { name: 'Save identifiers' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'This user is being moved to another cell' })).toBeVisible();
+    await expect(page.getByText('already taken')).toHaveCount(0);
+  });
+});
+
 test('the offline access ID and device IDs are never broken mid-word', async ({ page }) => {
   await openRecord(page);
   const broken = await page.locator('versola-user-record').evaluate(host => {

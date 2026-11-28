@@ -30,43 +30,18 @@ class PostgresAntifraudSettingsRepository(xa: TransactorZIO, statementTimeout: D
     """.update.run()
     ()
 
-  override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]): Task[Option[Long]] =
-    xa.transactMeasured("put-antifraud-settings"):
+  override def replace(tuning: Option[Tuning], version: Long, at: Instant): Task[Unit] =
+    xa.transactMeasured("replace-antifraud-settings"):
       timed()
-      val written = expectedVersion match
-        // Whatever is there is replaced (the first change creates the row).
-        case None =>
+      tuning match
+        case Some(settings) =>
           sql"""
-            INSERT INTO af_settings (id, settings, updated_by, updated_at, version) VALUES (1, $tuning, $actor, $at, 1)
+            INSERT INTO af_settings (id, settings, updated_by, updated_at, version) VALUES (1, $settings, 'central', $at, $version)
             ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_by = EXCLUDED.updated_by,
-              updated_at = EXCLUDED.updated_at, version = af_settings.version + 1
-            RETURNING version
-          """.query[Long].run().headOption
-        // The row was not there when the caller read it, and still must not be.
-        case Some(0L) =>
-          sql"""
-            INSERT INTO af_settings (id, settings, updated_by, updated_at, version) VALUES (1, $tuning, $actor, $at, 1)
-            ON CONFLICT (id) DO NOTHING
-            RETURNING version
-          """.query[Long].run().headOption
-        case Some(expected) =>
-          sql"""
-            UPDATE af_settings SET settings = $tuning, updated_by = $actor, updated_at = $at, version = version + 1
-            WHERE id = 1 AND version = $expected
-            RETURNING version
-          """.query[Long].run().headOption
-      if written.isDefined then bumped()
-      written
-
-  override def seed(tuning: Tuning, actor: String, at: Instant): Task[Boolean] =
-    xa.transactMeasured("seed-antifraud-settings"):
-      timed()
-      val inserted = sql"""
-        INSERT INTO af_settings (id, settings, updated_by, updated_at, version) VALUES (1, $tuning, $actor, $at, 1)
-        ON CONFLICT (id) DO NOTHING
-      """.update.run()
-      if inserted > 0 then bumped()
-      inserted > 0
+              updated_at = EXCLUDED.updated_at, version = EXCLUDED.version
+          """.update.run()
+        case None => sql"DELETE FROM af_settings WHERE id = 1".update.run()
+      bumped()
 
   override def find: Task[Option[StoredTuning]] =
     xa.transactMeasured("find-antifraud-settings"):

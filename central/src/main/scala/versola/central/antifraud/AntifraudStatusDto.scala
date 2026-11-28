@@ -26,9 +26,29 @@ case class AntifraudTuningStatus(
     lastRefreshError: Option[String],
 ) derives JsonCodec, Schema
 
-/** What one auth instance says of its antifraud (the one that answers: another may be behind, the ages say by how much). */
+/** What one auth instance says of its antifraud (the one that answers: another may be behind, the ages say by how much).
+  *
+  * @param cellShare the share of a limit by address (`ip`, `asn`, `prefix`) this cell applies, so that the limit holds
+  *   for the deployment and not once per cell (versolauth/versola#1052): its weight among the cells that take users.
+  *   A limit of 100 at a share of 0.34 fires above 34 in this cell. `1` where there is one auth; absent from an auth
+  *   that does not report it.
+  */
+case class AntifraudInstanceStatus(
+    decision: AntifraudDecisionStatus,
+    lists: AntifraudListsStatus,
+    tuning: AntifraudTuningStatus,
+    cellShare: Option[Double],
+) derives JsonCodec, Schema
+
+/** What an instance of one cell says, or why the cell did not answer (`error`, and then no `status`). `tuning.version` is the
+  * version of central's settings the cell has copied: the same number in every cell once a change has reached them all. */
+case class AntifraudCellStatus(cell: String, status: Option[AntifraudInstanceStatus], error: Option[String]) derives JsonCodec, Schema
+
+/** The status of the `auth` central is configured with, and of an instance of every registered cell (none where there is
+  * no cell): the policy is one, but each cell copies and enforces it on its own. */
 case class AntifraudStatusResponse(
     decision: AntifraudDecisionStatus,
     lists: AntifraudListsStatus,
     tuning: AntifraudTuningStatus,
+    cells: List[AntifraudCellStatus],
 ) derives JsonCodec, Schema

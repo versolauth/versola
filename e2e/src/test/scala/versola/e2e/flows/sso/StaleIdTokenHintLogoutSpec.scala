@@ -18,7 +18,7 @@ object StaleIdTokenHintLogoutSpec extends E2ESpec:
   // In non-prod the OTP is always the first N digits of "1234567890"; default length is 6.
   private val fixedOtp = "123456"
 
-  /** A sign-in with email + code that returns the `SSO_SESSION` cookie it creates and the ID token it issues. With `sessionCookie`
+  /** A sign-in with email + code that returns the `__Host-SSO_SESSION` cookie it creates and the ID token it issues. With `sessionCookie`
     * the sign-in is a re-authentication (`prompt=login`) of a browser that already holds that session. */
   private def signIn(s: Flows.Setup, auth: OAuthClient, sessionCookie: Option[String]): Task[(String, String)] =
     for
@@ -34,7 +34,7 @@ object StaleIdTokenHintLogoutSpec extends E2ESpec:
       otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
       submit <- auth.submitOtp(cookie, fixedOtp, otp.csrf)
       code <- ZIO.succeed(submit).assertRedirect(auth, cookie)
-      session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("no SSO_SESSION cookie after the sign-in"))
+      session <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("no __Host-SSO_SESSION cookie after the sign-in"))
       tokens <- auth.token(
         code,
         authorize.verifier,
@@ -54,7 +54,7 @@ object StaleIdTokenHintLogoutSpec extends E2ESpec:
       else None
 
   private def clearsSessionCookie(response: Response): Boolean =
-    response.headers.toList.exists(h => h.headerName.equalsIgnoreCase("set-cookie") && h.renderedValue.startsWith("SSO_SESSION="))
+    response.headers.toList.exists(h => h.headerName.equalsIgnoreCase("set-cookie") && h.renderedValue.startsWith("__Host-SSO_SESSION="))
 
   /** Whether a request carrying the cookie is still answered with a code, without a login: the session is alive. */
   private def sessionAlive(s: Flows.Setup, auth: OAuthClient, sessionCookie: String): Task[Boolean] =

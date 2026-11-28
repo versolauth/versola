@@ -37,7 +37,7 @@ final class AuthSim(
 
   private def host(request: Request): String = request.url.path.segments.headOption.getOrElse("?")
 
-  private def cookie(request: Request): Option[String] = request.cookie("SSO_CONVERSATION").map(_.content)
+  private def cookie(request: Request): Option[String] = request.cookie("__Host-SSO_CONVERSATION").map(_.content)
 
   private def page(conversation: Conversation): String =
     val (step, pending) = conversation.step match
@@ -72,7 +72,7 @@ final class AuthSim(
             val id = s"conversation-${all.size}"
             (id, all + (id -> Conversation(host(request), "credential", None, 0, phone = "")))
           _ <- calls.update(_ :+ Call(host(request), "GET", "/authorize", id, Map.empty))
-        yield toChallenge.addCookie(Cookie.Response("SSO_CONVERSATION", id)),
+        yield toChallenge.addCookie(Cookie.Response("__Host-SSO_CONVERSATION", id)),
       Method.GET / "challenge" -> handler: (request: Request) =>
         for
           id = cookie(request).getOrElse("")

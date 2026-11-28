@@ -10,7 +10,8 @@ import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataService}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.{RoleController, RoleService}
-import versola.central.users.{UserController, UserId, UserService}
+import versola.central.configuration.topology.{CellRegistry, TopologyController, TopologyService}
+import versola.central.users.{RegisteredUserResponse, UserController, UserId, UserService}
 import versola.util.http.Observability
 import versola.util.{EnvName, JWT, RsaKeyPair}
 import zio.*
@@ -81,7 +82,7 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
     JWT.serialize(
       JWT.Claims("auth", "auth", List("central"), Json.Obj()),
       1.minute,
-      JWT.Signature.Symmetric(config.secretKey),
+      TestCentralConfig.authSignature,
     )
 
   private val tracingLayer: ULayer[Tracing] =
@@ -113,7 +114,8 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
         services = Services(stub[JwksService], stub[ServerMetadataService], stub[UserService], stub[RoleService], stub[EdgeService])
         resourceService = stub[ResourceService]
         tracing <- tracingLayer.build
-        routes = JwksController.routes ++ ServerMetadataController.routes ++ UserController.routes ++ RoleController.routes
+        routes =
+          JwksController.routes ++ ServerMetadataController.routes ++ UserController.routes ++ RoleController.routes ++ TopologyController.routes
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             (routes @@ refuseEdgeCallers).provideEnvironment(
@@ -121,7 +123,8 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[ServerMetadataService](services.metadata) ++
                 ZEnvironment[UserService](services.users) ++
                 ZEnvironment[RoleService](services.roles) ++
-                ZEnvironment[EdgeService](services.edges) ++
+                ZEnvironment[TopologyService](stub[TopologyService]) ++
+                ZEnvironment[EdgeService](services.edges) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[CentralConfig](config) ++
                 ZEnvironment[EnvName](EnvName.Test("test")) ++
@@ -135,7 +138,7 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- services.jwks.getRaw.succeedsWith(Json.Obj())
         _ <- services.jwks.getSigningKeys.succeedsWith(Map.empty)
         _ <- services.metadata.getMetadata.succeedsWith(None)
-        _ <- services.users.indexRegistered.succeedsWith(userId)
+        _ <- services.users.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None))
         _ <- services.roles.getTenantRoles.succeedsWith(Vector.empty)
         header <- authorization
         response <- httpClient.batched(header.fold(request)(request.addHeader))
@@ -177,6 +180,12 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
         verify = services => ZIO.succeed(assertTrue(services.metadata.getMetadata.calls.isEmpty)),
       ),
       testCase(
+        description = "GET /configuration/cells/sync, the cells an auth reads with their keys",
+        request = Request.get(URL.root / "configuration" / "cells" / "sync"),
+        authorization = asEdge,
+        expectedStatus = Status.Forbidden,
+      ),
+      testCase(
         description = "POST /users/registrations",
         request = registration,
         authorization = asEdge,
@@ -204,7 +213,7 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
       verify = services => ZIO.succeed(assertTrue(services.jwks.getRaw.calls.isEmpty)),
     ),
     // Taking `edge_id` out of the header does not turn an edge's token into auth's: the key that decides
-    // is picked by that header, and without it the token is checked against a secret the edge lacks.
+    // is picked by that header, and without it the token is looked up among the keys of the auths, which an edge's is not.
     suite("an edge's token with the edge_id left out is unauthenticated, and nothing behind the route runs")(
       testCase(
         description = "GET /configuration/jwks/signing-keys/sync",
@@ -235,6 +244,12 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
         authorization = asAuth,
         expectedStatus = Status.Ok,
         verify = services => ZIO.succeed(assertTrue(services.jwks.getSigningKeys.calls.size == 1)),
+      ),
+      testCase(
+        description = "auth's token still reads GET /configuration/cells/sync",
+        request = Request.get(URL.root / "configuration" / "cells" / "sync"),
+        authorization = asAuth,
+        expectedStatus = Status.Ok,
       ),
       testCase(
         description = "auth's token still posts to /users/registrations",

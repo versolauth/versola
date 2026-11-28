@@ -20,6 +20,7 @@ import versola.oauth.client.model.{
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.session.model.PublicSessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId}
 import versola.util.postgres.BasicCodecs
@@ -64,6 +65,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[Nonce] = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
   given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.toString)
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
+  given DbCodec[PublicSessionId] = DbCodec.StringCodec.biMap(PublicSessionId(_), identity[String])
   given DbCodec[AuthId] = DbCodec.UUIDCodec.biMap(AuthId(_), identity[UUID])
   given DbCodec[UserAgentCookiePayload] = jsonBCodec[UserAgentCookiePayload]
   given DbCodec[Instant] = DbCodec.InstantCodec
@@ -93,7 +95,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, response_mode, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, prior_session_user_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt, target_factors, challenge_failed, challenge_solved
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, response_mode, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, prior_session_user_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt, target_factors, challenge_failed, challenge_solved, superseded_session_id, superseded_session_user_id
               from auth_conversations
               where id = $authId AND expires_at > $now"""
           .query[ConversationRecord]
@@ -143,6 +145,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 target_factors,
                 challenge_failed,
                 challenge_solved,
+                superseded_session_id,
+                superseded_session_user_id,
                 expires_at
             ) values (
                 $authId,
@@ -184,6 +188,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.targetFactors},
                 ${record.challengeFailed},
                 ${record.challengeSolved},
+                ${record.supersededSessionId},
+                ${record.supersededSessionUserId},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()
@@ -207,6 +213,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
               target_acr = ${record.targetAcr},
               prior_session_id = ${record.priorSessionId},
               prior_session_user_id = ${record.priorSessionUserId},
+              superseded_session_id = ${record.supersededSessionId},
+              superseded_session_user_id = ${record.supersededSessionUserId},
               granted_scope = ${record.grantedScope}::text[],
               version = version + 1
             where id = $authId and version = ${record.version}"""

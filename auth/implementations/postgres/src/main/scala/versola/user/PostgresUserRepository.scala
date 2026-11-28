@@ -8,8 +8,9 @@ import versola.oauth.client.model.TenantId
 import versola.oauth.revocation.{PostgresAuthRevocationRepository, RevocationTerms}
 import versola.role.model.RoleId
 import versola.user.model.*
+import versola.util.Patch.toUpdate
 import versola.util.postgres.BasicCodecs
-import versola.util.{Email, Phone}
+import versola.util.{Email, Patch, Phone}
 import zio.json.*
 import zio.json.ast.Json
 import zio.{Clock, Task, ZIO, ZLayer}
@@ -100,32 +101,38 @@ class PostgresUserRepository(
          """.update.run()
     .unit
 
+  override def patch(
+      id: UserId,
+      version: UUID,
+      email: Option[Patch[Email]],
+      phone: Option[Patch[Phone]],
+      login: Option[Patch[Login]],
+  ): Task[Unit] =
+    val (updEmail, valEmail) = email.toUpdate
+    val (updPhone, valPhone) = phone.toUpdate
+    val (updLogin, valLogin) = login.toUpdate
+    xa.connectMeasured("patch-user"):
+      sql"""update users set
+              email = case when $updEmail then $valEmail else email end,
+              phone = case when $updPhone then $valPhone else phone end,
+              login = case when $updLogin then $valLogin else login end,
+              last_version = $version,
+              -- A verified flag describes the contact it was earned for: when the contact changes it goes.
+              claims = claims - array_remove(array[
+                case when $updEmail and $valEmail is distinct from email then 'email_verified' end,
+                case when $updPhone and $valPhone is distinct from phone then 'phone_number_verified' end
+              ]::text[], null)
+            where id = $id and (last_version is null or last_version < $version)
+         """.update.run()
+    .unit
+
   override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
     xa.connectMeasured("patch-user-claims"):
       sql"update users set claims = jsonb_strip_nulls(claims || $patch::jsonb) where id = $id".update.run()
     .unit
 
   override def delete(id: UserId): Task[Unit] =
-    xa.transactMeasured("delete-user"):
-      // Throttling is keyed by subject text -- the user id or the identifier a challenge was
-      // sent to -- so the identifiers are read before the account row goes.
-      sql"""delete from challenge_throttle
-            where subject in (
-              select id::text from users where id = $id
-              union select email from users where id = $id and email is not null
-              union select phone from users where id = $id and phone is not null
-            )""".update.run()
-      // A conversation that started from this user's session is as dead as the session.
-      sql"delete from auth_conversations where user_id = $id or prior_session_user_id = $id".update.run()
-      sql"delete from authorization_codes where user_id = $id".update.run()
-      sql"delete from refresh_tokens where user_id = $id".update.run()
-      sql"delete from sso_sessions where user_id = $id".update.run()
-      sql"delete from user_agents where user_id = $id".update.run()
-      sql"delete from passkeys where user_id = $id".update.run()
-      sql"delete from user_passwords where user_id = $id".update.run()
-      // user_roles and user_consents reference users and go with the row.
-      sql"delete from users where id = $id".update.run()
-    .unit
+    xa.transactMeasured("delete-user")(PostgresUserRepository.purge(id)).unit
 
   override def findRolesByUserAndTenant(userId: UserId, tenantId: TenantId): Task[List[RoleId]] =
     xa.connectMeasured("find-roles-by-user-and-tenant"):
@@ -202,5 +209,28 @@ class PostgresUserRepository(
   given DbCodec[UserRecord] = DbCodec.derived[UserRecord]
 
 object PostgresUserRepository:
+  /** Every row of the user in this cell. One set of deletions for what a deletion does and what a move completes with: the
+    * difference between the two is what is done around them (the revocation, the logout, the audit event), not what goes. */
+  def purge(id: UUID)(using DbTx): Unit =
+    // Throttling is keyed by subject text -- the user id or the identifier a challenge was
+    // sent to -- so the identifiers are read before the account row goes.
+    sql"""delete from challenge_throttle
+          where subject in (
+            select id::text from users where id = $id
+            union select email from users where id = $id and email is not null
+            union select phone from users where id = $id and phone is not null
+          )""".update.run()
+    // A conversation that started from this user's session is as dead as the session.
+    sql"delete from auth_conversations where user_id = $id or prior_session_user_id = $id".update.run()
+    sql"delete from authorization_codes where user_id = $id".update.run()
+    sql"delete from refresh_tokens where user_id = $id".update.run()
+    sql"delete from sso_sessions where user_id = $id".update.run()
+    sql"delete from user_agents where user_id = $id".update.run()
+    sql"delete from passkeys where user_id = $id".update.run()
+    sql"delete from user_passwords where user_id = $id".update.run()
+    // user_roles and user_consents reference users and go with the row.
+    sql"delete from users where id = $id".update.run()
+    ()
+
   def live: ZLayer[TransactorZIO, Throwable, UserRepository] =
     ZLayer.fromFunction(PostgresUserRepository(_))

@@ -60,28 +60,26 @@ enum AntifraudValueType derives JsonCodec:
 object AntifraudValueType:
   given Schema[AntifraudValueType] = JsonStringSchema.of
 
-/** A row of `af_list_entry`.
+/** An entry of central's lists as a cell copies it into `af_list_entry`. The kinds are text: one this build does not know
+  * is stored as it is and skipped when the entries are read ([[ListedValue]]), so that central may be a version ahead.
   *
   * @param tenantId   `None` applies to every tenant
   * @param expiresAt  `None` never expires
-  * @param source     who or what put it on the list (`manual`, a detection rule, an import)
+  * @param source     who or what put it on the list (`manual`, a detection rule)
   * @param shadow     matched and counted, never enforced: the rule it fires is `shadow_list:<value type>` with no weight
-  * @param hitCount   how many times it decided or scored a step; kept in memory by the instances and written in batches, so it lags
   */
-case class AntifraudListEntry(
+case class PolicyListEntry(
     id: UUID,
-    listType: AntifraudListType,
-    valueType: AntifraudValueType,
+    listType: String,
+    valueType: String,
     value: String,
-    tenantId: Option[TenantId],
+    tenantId: Option[String],
     expiresAt: Option[Instant],
     reason: Option[String],
     source: String,
     shadow: Boolean,
     createdBy: String,
     createdAt: Instant,
-    hitCount: Long,
-    lastHitAt: Option[Instant],
 ) derives JsonCodec
 
 /** What the cache needs of an entry: the key and how it applies, not the bookkeeping. */
@@ -95,11 +93,11 @@ case class ListedValue(
     shadow: Boolean,
 )
 
-/** Hits of one entry since the last flush. */
-case class ListHit(id: UUID, count: Long, lastAt: Instant)
+/** Hits of one entry: since the last flush where they are counted, all of this cell's where they are read. */
+case class ListHit(id: UUID, count: Long, lastAt: Instant) derives JsonCodec
 
-/** What a request to add an entry says; the service fills in the id and the time. `source` is never the client's: the
-  * server says `manual` for a request of the API and `detector:<kind>` for an approved proposal. */
+/** An entry central asks about before it stores it. `source` is never the client's: central says `manual` for a request of
+  * its API and `detector:<kind>` for an approved proposal. */
 case class NewListEntry(
     listType: AntifraudListType,
     valueType: AntifraudValueType,
@@ -118,45 +116,3 @@ object ListEntrySource:
 /** How many events of a window an entry would have matched; `matched` is `None` for a value the event log has no
   * column for (an address, a device, a fingerprint, a mail domain). */
 case class ListPreview(matched: Option[Long], total: Long) derives JsonCodec
-
-enum AntifraudListAction derives JsonCodec:
-  /** `update` is the same value added again: the entry is refreshed, and the record has what it was. */
-  case create, update, delete, expire
-
-/** What an entry had before an update changed it. */
-case class PreviousListValues(
-    expiresAt: Option[Instant],
-    reason: Option[String],
-    source: String,
-    shadow: Boolean,
-) derives JsonCodec
-
-/** One change of the lists. The entry is copied in because the row it describes may be gone; `previous` is only there
-  * for an `update`. */
-case class AntifraudListAudit(
-    id: UUID,
-    at: Instant,
-    action: AntifraudListAction,
-    actor: String,
-    entryId: UUID,
-    listType: AntifraudListType,
-    valueType: AntifraudValueType,
-    value: String,
-    tenantId: Option[TenantId],
-    expiresAt: Option[Instant],
-    reason: Option[String],
-    previous: Option[PreviousListValues],
-) derives JsonCodec
-
-/** @param tenantId  `None` does not filter; `Some(None)` is the global entries only
-  * @param visibleTo `Some(t)` leaves the global entries and tenant `t`'s (what a tenant admin sees, see [[AntifraudScope]])
-  */
-case class AntifraudListFilter(
-    listType: Option[AntifraudListType],
-    valueType: Option[AntifraudValueType],
-    tenantId: Option[Option[TenantId]],
-    visibleTo: Option[TenantId],
-)
-
-object AntifraudListFilter:
-  val all: AntifraudListFilter = AntifraudListFilter(listType = None, valueType = None, tenantId = None, visibleTo = None)

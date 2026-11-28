@@ -3,11 +3,12 @@ package versola.oauth.conversation
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion, ScopeToken}
-import versola.oauth.conversation.model.{ConversationStep, Error}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
 import versola.util.http.{Controller, Observability}
-import versola.util.{ClientIp, CoreConfig, Email, FormDecoder, Phone}
+import versola.util.{ClientIp, CoreConfig, Email, FormDecoder, Phone, RoutingKey}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -15,7 +16,7 @@ import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object ConversationController extends Controller:
-  type Env = Tracing & ConversationRouter & ConversationRenderService & CoreConfig & OAuthConfigurationService
+  type Env = Tracing & ConversationRouter & ConversationRenderService & CoreConfig & OAuthConfigurationService & CellHandoff
 
   def routes: Routes[Env, Throwable] = Routes(
     getFormRoute,
@@ -139,7 +140,7 @@ object ConversationController extends Controller:
 
   private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],
-  ): Route[ConversationRouter & ConversationRenderService & CoreConfig & OAuthConfigurationService, Throwable] =
+  ): Route[ConversationRouter & ConversationRenderService & CoreConfig & OAuthConfigurationService & CellHandoff, Throwable] =
     pattern -> handler { (request: Request) =>
       (for
         router <- ZIO.service[ConversationRouter]
@@ -162,7 +163,12 @@ object ConversationController extends Controller:
 
         uiLocale = UiLocales.submitted(request)
         (result, record) <- router.submit(cookie.authId, body, uiLocale, ip)
-        response <- conversationRenderService.renderSubmit(result, record, uiLocale)
+        response <- result match
+          case ConversationResult.Elsewhere(home, passkeyRequest) =>
+            sendOn(request, cookie.authId, record, home, passkeyRequest, uiLocale)
+          case ConversationResult.RegistrationElsewhere(home, registered, conversation) =>
+            sendRegistrationOn(request, cookie.authId, conversation, home, registered, uiLocale)
+          case rendered => conversationRenderService.renderSubmit(rendered, record, uiLocale)
       yield body match
         case request: CodeRequest if request.proof != ProofInput.NoScript => forScript(result, response)
         case _ => response
@@ -174,6 +180,140 @@ object ConversationController extends Controller:
           case ex: Throwable => ZIO.fail(ex)
         }
     }
+
+  /** The answer to a submission whose user another cell holds (versolauth/versola#1048): a `307`, which has the
+    * browser repeat the same POST, body and all, at the home cell, with the request sealed in the URL. Nothing of the
+    * submission is in the seal or the URL. The cookie stays: the seal is bound to it, and the home cell replaces it.
+    *
+    * The seal is made first and the conversation ended after: a request too large to travel in a URL stays where it
+    * is, on the step's "service unavailable", and of two requests that submit the same thing at once the one that did
+    * not end the conversation gets no redirect. */
+  private def sendOn(
+      request: Request,
+      authId: AuthId,
+      record: ConversationRecord,
+      home: RoutingKey.CellId,
+      passkeyRequest: Option[String],
+      uiLocale: Option[String],
+  ): ZIO[CellHandoff & ConversationRouter & ConversationRenderService, Throwable | Error, Response] =
+    for
+      cookie <- ZIO.fromOption(request.cookie(ConversationCookie.name)).orElseFail(Error.BadRequest)
+      render <- ZIO.service[ConversationRenderService]
+      response <- ZIO.serviceWithZIO[CellHandoff](_.sealSubmission(record, home, cookie.content, passkeyRequest)).foldZIO(
+        {
+          case _: CellHandoff.TooLarge =>
+            Observability.setError("handoff_too_large") *> render.renderSubmit(ConversationResult.ServiceUnavailable, record, uiLocale)
+          // The home cell has no key to seal for: the same as a directory that does not answer.
+          case _: CellHandoff.NoKey =>
+            Observability.setError("directory_unavailable") *> render.renderSubmit(ConversationResult.ServiceUnavailable, record, uiLocale)
+          case failure => ZIO.fail(failure)
+        },
+        ticket =>
+          ZIO.serviceWithZIO[ConversationRouter](_.end(authId, record)).flatMap:
+            case true =>
+              ZIO.succeed(
+                Response
+                  .redirect(UiLocales.withLocale(CellHandoff.location(ticket), uiLocale), isPermanent = false)
+                  .copy(status = Status.TemporaryRedirect)
+                  .addHeader(Header.CacheControl.NoStore),
+              )
+            case false =>
+              Observability.setError("write_conflict") *> render.renderSubmit(ConversationResult.WriteConflict, record, uiLocale),
+      )
+    yield response
+
+  /** The answer to the code that verified an address for a registration this cell does not take (versolauth/versola#1052): a `303`
+    * to the cell that does, with the verified registration sealed in the URL. A GET, and not the `307` that repeats a submission
+    * as [[sendOn]] has it, because nothing of the code form is needed there: what it proved is in the seal. The cookie stays, as
+    * there: the seal is bound to it, and the other cell replaces it.
+    *
+    * The seal is made first and the conversation ended after, as in [[sendOn]]. A cell with no key to seal for, or a request too
+    * large to travel in a URL, leaves the conversation where it is, on the step's "service unavailable". */
+  private def sendRegistrationOn(
+      request: Request,
+      authId: AuthId,
+      record: ConversationRecord,
+      home: RoutingKey.CellId,
+      registered: CellHandoff.Registered,
+      uiLocale: Option[String],
+  ): ZIO[CellHandoff & ConversationRouter & ConversationRenderService, Throwable | Error, Response] =
+    for
+      cookie <- ZIO.fromOption(request.cookie(ConversationCookie.name)).orElseFail(Error.BadRequest)
+      render <- ZIO.service[ConversationRenderService]
+      response <- ZIO.serviceWithZIO[CellHandoff](_.sealRegistration(record, registered, home, cookie.content)).foldZIO(
+        {
+          case _: CellHandoff.TooLarge =>
+            Observability.setError("handoff_too_large") *> render.renderSubmit(ConversationResult.ServiceUnavailable, record, uiLocale)
+          case _: CellHandoff.NoKey =>
+            Observability.setError("directory_unavailable") *> render.renderSubmit(ConversationResult.ServiceUnavailable, record, uiLocale)
+          case failure => ZIO.fail(failure)
+        },
+        ticket =>
+          ZIO.serviceWithZIO[ConversationRouter](_.end(authId, record)).flatMap:
+            case true =>
+              ZIO.succeed(
+                Response
+                  .seeOther(UiLocales.withLocale(CellHandoff.registrationLocation(ticket), uiLocale))
+                  .addHeader(Header.CacheControl.NoStore),
+              )
+            case false =>
+              Observability.setError("write_conflict") *> render.renderSubmit(ConversationResult.WriteConflict, record, uiLocale),
+      )
+    yield response
+
+  /** A registration another cell verified and handed to this one, for the conversation `authId` this cell has just started for it
+    * (`AuthorizeEndpointController.registeredRoute`). */
+  def registered(
+      request: Request,
+      authId: AuthId,
+      clientId: ClientId,
+      registered: CellHandoff.Registered,
+  ): ZIO[ConversationRouter & ConversationRenderService & OAuthConfigurationService, Throwable, Response] =
+    (for
+      router <- ZIO.service[ConversationRouter]
+      conversationRenderService <- ZIO.service[ConversationRenderService]
+      _ <- Observability.setAuth(authId.toString, clientId)
+      ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(clientId))
+      ip = ClientIp.fromRequest(request, ipHeader)
+      _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
+      uiLocale = UiLocales.submitted(request)
+      (result, record) <- router.submitRegistered(authId, registered, uiLocale, ip)
+      response <- conversationRenderService.renderSubmit(result, record, uiLocale)
+    yield response).catchAll:
+      case _: Error => Observability.setError("invalid_request", Some("a handed registration could not be taken")).as(Response.badRequest)
+      case failure: Throwable => ZIO.fail(failure)
+
+  /** A submission another cell handed to this one, for the conversation `authId` this cell has just started for it
+    * (`AuthorizeEndpointController.handedSubmissionRoute`). The form is the one the first cell's page posted: a login
+    * and password, or, when the seal carried an assertion request, a passkey. */
+  def handed(
+      request: Request,
+      authId: AuthId,
+      clientId: ClientId,
+      passkeyRequest: Option[String],
+  ): ZIO[ConversationRouter & ConversationRenderService & OAuthConfigurationService, Throwable, Response] =
+    (for
+      router <- ZIO.service[ConversationRouter]
+      conversationRenderService <- ZIO.service[ConversationRenderService]
+      _ <- Observability.setAuth(authId.toString, clientId)
+      ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(clientId))
+      ip = ClientIp.fromRequest(request, ipHeader)
+      _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
+      body <- (passkeyRequest match
+        case None => request.formAs[LoginPasswordSubmission]
+        case Some(_) => request.formAs[PasskeyAssertionSubmission]
+      )
+        .tapError(msg => ZIO.logWarning(s"Couldn't parse the body of a handed submission: $msg"))
+        .orElseFail(Error.BadRequest)
+      _ <- ZIO.fail(Error.BadRequest).unlessZIO(validate(clientId, body))
+      uiLocale = UiLocales.submitted(request)
+      (result, record) <- router.submitHanded(authId, body, passkeyRequest, uiLocale, ip)
+      response <- conversationRenderService.renderSubmit(result, record, uiLocale)
+    yield response).catchAll:
+      // The conversation is seconds old and its cookie is not in this request: there is no page of it to show for a form
+      // that cannot be read or a request that is gone.
+      case _: Error => Observability.setError("invalid_request", Some("a handed submission could not be taken")).as(Response.badRequest)
+      case failure: Throwable => ZIO.fail(failure)
 
   /** The answer to a script's submit: a challenge to answer, or the redirect the browser would have followed as data (a
     * cross-origin one, to the client's own redirect URI, could not be followed by `fetch`), with the cookies it sets. */

@@ -91,7 +91,7 @@ object OAuthClientSyncClient:
     private def decryptSecret(value: String): Task[Secret] =
       for
         encrypted <- ZIO.attempt(Base64.urlDecode(value))
-        decrypted <- securityService.decryptAes256(encrypted, config.central.secretKey)
+        decrypted <- securityService.decryptRsaHybrid(encrypted, config.central.privateKey)
       yield Secret(decrypted)
 
     private case class OAuthClientRecordWithEncryptedSecrets(

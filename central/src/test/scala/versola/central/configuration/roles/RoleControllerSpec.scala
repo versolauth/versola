@@ -7,6 +7,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import zio.*
@@ -91,7 +92,9 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             RoleController.routes.provideEnvironment(
               ZEnvironment[RoleService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++ ZEnvironment[ResourceService](
+                  resourceService,
+                ),
             ),
           ),
         )

@@ -4,6 +4,7 @@ import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
 import versola.audit.AuthAuditKinds
 import versola.oauth.AuthMetrics
+import versola.oauth.challenge.passkey.WebAuthnService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   AuthFactor,
@@ -17,10 +18,14 @@ import versola.oauth.client.model.{
   RegistrationStep,
 }
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
-import versola.user.UserRepository
+import versola.oauth.handoff.CellHandoff
+import versola.oauth.session.model.SupersededSession
+import versola.user.model.{UserId, UserRecord}
+import versola.user.move.{DepartureRefusal, UserDepartures}
+import versola.user.{UserDirectory, UserRepository}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
-import versola.util.{Email, Phone, SecureRandom}
+import versola.util.{CoreConfig, Email, Phone, RoutingKey, SecureRandom}
 import zio.{Task, UIO, ZIO, ZLayer}
 
 trait ConversationRouter:
@@ -38,6 +43,46 @@ trait ConversationRouter:
     */
   def startPasskeyOptions(authId: AuthId): Task[Option[String]]
 
+  /** Ends the conversation of a submission that was sealed for another cell ([[ConversationResult.Elsewhere]]): gone
+    * whatever the browser does next, the sign-in continues in the other cell or not at all. False when another request
+    * ended it already: of two that submit the same thing at once only one is sent on, so that there are never two seals
+    * for one password or one passkey assertion. */
+  def end(authId: AuthId, conversation: ConversationRecord): Task[Boolean]
+
+  /** Records, on the conversation this cell has just started for a sign-in handed to it, the session the browser had
+    * in the first cell (versolauth/versola#1048). When the sign-in finishes, that session is ended through central
+    * (`UserDirectory.sessionSuperseded`); until then it is left alone, so that a sign-in that fails or is abandoned
+    * costs the person nothing. */
+  def supersedes(authId: AuthId, session: SupersededSession): Task[Unit]
+
+  /** A submission another cell took and handed to this one, for the conversation this cell has just started for it
+    * (`CellHandoff`, versolauth/versola#1048). The CSRF token it carries is the first cell's and is not compared: the
+    * seal it came with, bound to the browser's cookie and taken once, is what says that the browser that started the
+    * sign-in sent it. It is answered here whatever it names: a submission is never handed on twice.
+    *
+    * @param passkeyRequest the assertion request a passkey submission answers, as the first cell issued it
+    */
+  def submitHanded(
+      authId: AuthId,
+      submission: ConversationRouter.HandedSubmission,
+      passkeyRequest: Option[String],
+      uiLocale: Option[String],
+      ipAddress: Option[String],
+  ): Task[(ConversationResult.Render, ConversationRecord)]
+
+  /** A registration another cell verified and handed to this one, which takes users, for the conversation this cell has just
+    * started for it (`CellHandoff.sealRegistration`, versolauth/versola#1052). The credential step is passed by the factor the first
+    * cell recorded, so no code is asked for again; the user is registered here by the ordinary path, where the tenant's rules for
+    * the address apply, and the conversation goes on with the steps of the registration flow that remain. This cell does not hand
+    * the registration on: when it too is refused, the registration cannot be made.
+    */
+  def submitRegistered(
+      authId: AuthId,
+      registered: CellHandoff.Registered,
+      uiLocale: Option[String],
+      ipAddress: Option[String],
+  ): Task[(ConversationResult.Render, ConversationRecord)]
+
   /** Advance an already-created conversation to the first factor step that still needs to be
     * completed. The conversation must already have `credential` populated (set at creation time
     * when `userId` and `targetAcr` are known). Satisfied factors (present in `amr`) are skipped
@@ -46,7 +91,12 @@ trait ConversationRouter:
   def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit]
 
 object ConversationRouter:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  /** What a cell takes in as handed to it: a login and password or a passkey that another cell sealed
+    * (`AuthorizeEndpointController.handedSubmissionRoute`), and the address a sign-in handed by `GET /challenge/handoff`
+    * starts with, which is answered here without asking central again. */
+  type HandedSubmission = LoginPasswordSubmission | PasskeyAssertionSubmission | EmailSubmission | PhoneSubmission
+
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -55,7 +105,33 @@ object ConversationRouter:
       secureRandom: SecureRandom,
       userRepository: UserRepository,
       audit: AuditEvents,
+      directory: UserDirectory,
+      handoff: CellHandoff,
+      config: CoreConfig,
+      webAuthnService: WebAuthnService,
+      departures: UserDepartures,
   ) extends ConversationRouter:
+
+    /** A user who is leaving this cell (versolauth/versola#1051) is not signed in: the step is the "service unavailable" any step
+      * has when something it needs is not there, and the conversation stays where it was. `None` when the user is served here.
+      * A user that has moved is no user of this cell either, and is refused alike (a sign-in for their address goes through
+      * the directory, which names the cell they are in). One read by user id, where the user is looked at anyway. */
+    private def refusedDeparture(userId: Option[UserId]): Task[Option[ConversationResult.Render]] =
+      userId.fold(ZIO.none: Task[Option[ConversationResult.Render]]): id =>
+        departures.refuse(id).foldZIO(
+          {
+            case _: DepartureRefusal => Observability.setError("user_leaving").as(Some(ConversationResult.ServiceUnavailable))
+            case failure: Throwable => ZIO.fail(failure)
+          },
+          _ => ZIO.none,
+        )
+
+    /** The result of a step that has identified a user, unless that user is leaving. */
+    private def unlessLeaving(result: ConversationResult.Render): Task[ConversationResult.Render] =
+      val identified = result match
+        case complete: ConversationResult.Complete => Some(complete.userAgentData.userId)
+        case _ => None
+      refusedDeparture(identified).map(_.getOrElse(result))
 
     /** Sets `auth.user_id` and `auth.user_agent_id` as soon as an already-identified conversation
       * is fetched, so every log line for the rest of this request carries them — even when this
@@ -111,16 +187,143 @@ object ConversationRouter:
               ZIO.fail(Error.BadRequest)
             else
               val updated = withUiLocale(conversation, uiLocale)
-              dispatch(authId, updated, submission, ipAddress)
+              dispatch(authId, updated, submission, ipAddress, handed = false)
+                .tap(endSuperseded(updated))
                 .tapErrorCause(cause => ZIO.logErrorCause("Couldn't submit auth step", cause))
                 .orElseSucceed(ConversationResult.ServiceUnavailable)
                 .map(_ -> updated)
+
+    override def supersedes(authId: AuthId, session: SupersededSession): Task[Unit] =
+      conversationService.find(authId).flatMap:
+        case None => ZIO.unit
+        case Some(conversation) =>
+          conversationRepository
+            .overwrite(
+              authId,
+              conversation.copy(supersededSessionId = Some(session.sessionId), supersededSessionUserId = Some(session.userId)),
+            )
+            .flatMap(written => ZIO.logWarning("The session a handed sign-in replaces was not recorded; it is left to expire").unless(written))
+            .unit
+
+    /** After a sign-in that was handed here has finished: the session the browser had in the first cell is ended there.
+      * Not a reason to fail a sign-in that is done: a session that could not be ended stays until it expires, as it
+      * did before it was handed over, and that is said in the log. */
+    private def endSuperseded(conversation: ConversationRecord)(result: ConversationResult.Render): UIO[Unit] =
+      (result, conversation.supersededSession) match
+        case (_: ConversationResult.Complete, Some(session)) =>
+          directory.sessionSuperseded(session).catchAllCause: cause =>
+            ZIO.logWarningCause("Could not end the session a handed sign-in replaced; it is left to expire", cause)
+        case _ => ZIO.unit
+
+    override def end(authId: AuthId, conversation: ConversationRecord): Task[Boolean] =
+      conversationRepository.delete(authId, conversation.version)
+
+    override def submitHanded(
+        authId: AuthId,
+        submission: HandedSubmission,
+        passkeyRequest: Option[String],
+        uiLocale: Option[String],
+        ipAddress: Option[String],
+    ): Task[(ConversationResult.Render, ConversationRecord)] =
+      conversationService.find(authId).orElseFail(Error.ServiceUnavailable)
+        .flatMap:
+          case None => ZIO.fail(Error.ConversationExpired)
+          case Some(conversation) =>
+            val located = withUiLocale(conversation, uiLocale)
+            withHandedPasskeyRequest(authId, located, passkeyRequest)
+              .flatMap:
+                case None =>
+                  Observability.setError("step_mismatch", Some("a passkey was handed to a request that takes none")).as(ConversationResult.BadRequest)
+                case Some(prepared) => dispatch(authId, prepared, submission, ipAddress, handed = true).tap(endSuperseded(prepared))
+              .tapErrorCause(cause => ZIO.logErrorCause("Couldn't submit a handed auth step", cause))
+              .orElseSucceed(ConversationResult.ServiceUnavailable)
+              .map(_ -> located)
+
+    override def submitRegistered(
+        authId: AuthId,
+        registered: CellHandoff.Registered,
+        uiLocale: Option[String],
+        ipAddress: Option[String],
+    ): Task[(ConversationResult.Render, ConversationRecord)] =
+      conversationService.find(authId).orElseFail(Error.ServiceUnavailable)
+        .flatMap:
+          case None => ZIO.fail(Error.ConversationExpired)
+          case Some(conversation) =>
+            val located = withUiLocale(conversation, uiLocale)
+            startVerifiedRegistration(authId, located, registered)
+              .tap(endSuperseded(located))
+              .tapErrorCause(cause => ZIO.logErrorCause("Couldn't take a registration handed to this cell", cause))
+              .orElseSucceed(ConversationResult.ServiceUnavailable)
+              .map(_ -> located)
+
+    /** The registration flow of the tenant for the address, entered after its code step, as if the code had been typed here. Refused
+      * (access denied) when the request is for another tenant than the one that verified, when the tenant does not register this
+      * address, or when its flow has no code step (an address is registered only after it is verified). */
+    private def startVerifiedRegistration(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        registered: CellHandoff.Registered,
+    ): Task[ConversationResult.Render] =
+      def refused(reason: String): Task[ConversationResult.Render] =
+        Observability.setError("registration_refused", Some(reason)) *> conversationService.accessDenied(authId, conversation)
+      configService.get(conversation.clientId).flatMap: client =>
+        if client.tenantId != registered.tenantId then refused("the handed registration is for another tenant")
+        else
+          configService.registrationFor(conversation.clientId, registered.credential).flatMap:
+            case None => refused("this cell's tenant does not register the address")
+            case Some(flow) =>
+              flow.steps.indexOf(RegistrationStep.Otp()) match
+                case -1 => refused("this cell's registration flow has no code step")
+                case otpIndex =>
+                  val verifiedConversation = conversation.withoutIdentityState.copy(
+                    credential = Some(registered.credential),
+                    amr = Map(PassedAuthFactor.otp -> registered.verified),
+                    registrationFlow = Some(flow),
+                    registrationStep = Some(otpIndex + 1),
+                  )
+                  conversationRepository.overwrite(authId, verifiedConversation).flatMap:
+                    case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                    case true =>
+                      val current = verifiedConversation.copy(version = verifiedConversation.version + 1)
+                      withVerifiedRegistrationUser(authId, current, handed = true): verified =>
+                        runRegistrationStep(authId, verified, ProofInput.NoScript)
+
+    /** The conversation as it would be had this cell issued the assertion request itself: the request the first cell
+      * sealed becomes the pending one of the credential card. `None` when the request this cell started has no card
+      * that takes a passkey with no user (its client asks for something else here). */
+    private def withHandedPasskeyRequest(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        passkeyRequest: Option[String],
+    ): Task[Option[ConversationRecord]] =
+      passkeyRequest match
+        case None => ZIO.some(conversation)
+        case Some(request) =>
+          conversation.step match
+            case card: ConversationStep.Credential if card.passkey && !card.passkeyOnly && conversation.userId.isEmpty =>
+              val pending = conversation.copy(step = card.copy(passkeyRequest = Some(request), passkeyFailed = false))
+              conversationRepository.overwrite(authId, pending).map:
+                case true => Some(pending.copy(version = pending.version + 1))
+                case false => None
+            case _ => ZIO.none
 
     private def dispatch(
         authId: AuthId,
         conversation: ConversationRecord,
         submission: Submission,
         ipAddress: Option[String],
+        handed: Boolean,
+    ): Task[ConversationResult.Render] =
+      refusedDeparture(conversation.userId).flatMap:
+        case Some(refused) => ZIO.succeed(refused)
+        case None => dispatchStep(authId, conversation, submission, ipAddress, handed)
+
+    private def dispatchStep(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        submission: Submission,
+        ipAddress: Option[String],
+        handed: Boolean,
     ): Task[ConversationResult.Render] =
       (submission, conversation) match
         // An identity is given on the credential card, and only to a conversation that has none yet: one that already knows the
@@ -135,10 +338,10 @@ object ConversationRouter:
           conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("credential"))
 
         case (submitted: EmailSubmission, _) =>
-          afterCredential(authId, conversation, Left(submitted.email), submitted.proof).tap(observeCredential)
+          afterCredential(authId, conversation, Left(submitted.email), submitted.proof, handed).tap(observeCredential)
 
         case (submitted: PhoneSubmission, _) =>
-          afterCredential(authId, conversation, Right(submitted.phone), submitted.proof).tap(observeCredential)
+          afterCredential(authId, conversation, Right(submitted.phone), submitted.proof, handed).tap(observeCredential)
 
         case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _)) =>
           conversationService.checkOtp(conversation, otp, submitted.code, authId)
@@ -174,13 +377,27 @@ object ConversationRouter:
             .as(ConversationResult.BadRequest)
 
         case (submitted: LoginPasswordSubmission, _) =>
-          conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password)
-            .tap(observeDecision("credential"))
-            .flatMap:
-              case ConversationResult.StepPassed(updated) =>
-                afterFactor(authId, updated, nextFactorIndex = 0)
-              case other: ConversationResult.Render =>
-                ZIO.succeed(other)
+          sentOn(authId, conversation, handed, passkeyRequest = None)(
+            held = userRepository.findByLogin(submitted.login).map(_.isDefined),
+            home = directory.homeOfLogin(submitted.login),
+          ).someOrElseZIO:
+            // The user is resolved and refused BEFORE the credential is looked at: a right and a wrong password answer alike while
+            // the user is leaving, and a password check is not charged to a user who is not served here (versolauth/versola#1051).
+            // (An auth that is no cell moves nobody, so it has no departure to ask about.)
+            val leaving = ZIO.when(config.cellId.isDefined)(userRepository.findByLogin(submitted.login))
+              .flatMap(found => refusedDeparture(found.flatten.map(_.id)))
+            leaving.flatMap:
+              case Some(refused) => ZIO.succeed(refused)
+              case None =>
+                conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password)
+                  .tap(observeDecision("credential"))
+                  .flatMap:
+                    case ConversationResult.StepPassed(updated) =>
+                      refusedDeparture(updated.userId).flatMap:
+                        case Some(refused) => ZIO.succeed(refused)
+                        case None => afterFactor(authId, updated, nextFactorIndex = 0)
+                    case other: ConversationResult.Render =>
+                      ZIO.succeed(other)
 
         // A passkey submitted from the code page satisfies the factor the code was for, and the conversation goes on as it would
         // after the code: a passkey that proves the user is not a reason to skip what comes after.
@@ -198,8 +415,10 @@ object ConversationRouter:
           ZIO.succeed(ConversationResult.RenderStep(otp))
 
         case (submitted: PasskeyAssertionSubmission, _) =>
-          conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
-            .tap(observePasskeyAssertion)
+          passkeyElsewhere(authId, conversation, submitted.response, handed).someOrElseZIO:
+            conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
+              .tap(observePasskeyAssertion)
+              .flatMap(unlessLeaving)
 
         case (_: PasskeyUnavailableSubmission, ConversationRecord.PasskeyOnly(_)) =>
           conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("passkey"))
@@ -318,10 +537,15 @@ object ConversationRouter:
 
     /** Resolve the account only after OTP verification, immediately before an account-bound setup
       * step or successful completion.
+      *
+      * Where the directory refuses the registration because this cell does not take users, the verified registration is handed
+      * to the cell that does (`ConversationResult.RegistrationElsewhere`, sealed by the controller); when `handed`, it was handed here
+      * already and is not handed on again.
       */
     private def withVerifiedRegistrationUser(
         authId: AuthId,
         conversation: ConversationRecord,
+        handed: Boolean,
     )(continue: ConversationRecord => Task[ConversationResult.Render]): Task[ConversationResult.Render] =
       val credentialVerified =
         conversation.amr.contains(PassedAuthFactor.otp) &&
@@ -335,9 +559,35 @@ object ConversationRouter:
           case (Some(flow), Some(credential)) =>
             conversationService.registerVerifiedUser(authId, conversation, flow, credential).flatMap:
               case RegistrationEntry.Registering(updated) => continue(updated)
+              case RegistrationEntry.NotTaking(home) => notTaking(authId, conversation, credential, home, handed)
               case ConversationResult.WriteConflict => ZIO.succeed(ConversationResult.WriteConflict)
           case _ =>
             conversationService.accessDenied(authId, conversation)
+
+    /** The registration cannot be made here. The verified registration is handed to the cell central names, unless it was handed
+      * here already, or central names this cell, or none: then it cannot be made at all, and the flow shows what it shows when
+      * access is denied. */
+    private def notTaking(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        home: Option[RoutingKey.CellId],
+        handed: Boolean,
+    ): Task[ConversationResult.Render] =
+      def cannot(code: String, reason: String): Task[ConversationResult.Render] =
+        Observability.setError(code, Some(reason)) *> conversationService.accessDenied(authId, conversation)
+      (home, conversation.amr.get(PassedAuthFactor.otp)) match
+        case (None, _) => cannot("no_cell_takes_users", "no cell takes users")
+        case (Some(_), _) if handed => cannot("cell_not_taking", "the cell the registration was handed to does not take users either")
+        case (Some(cell), _) if config.cellId.contains(cell) => cannot("cell_not_taking", "central names this cell for a registration it refused")
+        case (Some(_), None) => cannot("illegal_state", "a registration was refused after a code that was not recorded")
+        case (Some(cell), Some(verified)) =>
+          configService.get(conversation.clientId).map: client =>
+            ConversationResult.RegistrationElsewhere(
+              home = cell,
+              registered = CellHandoff.Registered(credential = credential, verified = verified, tenantId = client.tenantId),
+              conversation = conversation,
+            )
 
     /** Render the pending registration step, or finish once the flow is exhausted.
       *
@@ -360,15 +610,15 @@ object ConversationRouter:
               conversationService.accessDenied(authId, conversation)
 
         case Some(_: RegistrationStep.SetPassword) =>
-          withVerifiedRegistrationUser(authId, conversation): verified =>
+          withVerifiedRegistrationUser(authId, conversation, handed = false): verified =>
             conversationService.offerSetPassword(authId, verified)
 
         case Some(_: RegistrationStep.PasskeyEnroll) =>
-          withVerifiedRegistrationUser(authId, conversation): verified =>
+          withVerifiedRegistrationUser(authId, conversation, handed = false): verified =>
             conversationService.offerPasskeyEnroll(authId, verified)
 
         case None =>
-          withVerifiedRegistrationUser(authId, conversation): verified =>
+          withVerifiedRegistrationUser(authId, conversation, handed = false): verified =>
             conversationService.finish(authId, verified)
 
     /** Determine the first factor step after the user submits their credential,
@@ -379,31 +629,153 @@ object ConversationRouter:
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
         proof: ProofInput,
+        handed: Boolean,
     ): Task[ConversationResult.Render] =
       userRepository.findByCredential(credential).flatMap:
         case Some(user) =>
-          val identified = conversation.withoutIdentityState.copy(
-            userId = Some(user.id),
-            credential = Some(credential),
-            userEmail = user.email,
-            userPhone = user.phone,
-            userLogin = user.login,
-            userClaims = Some(user.claims),
-          )
-          afterAuthenticationCredential(authId, identified, credential, proof)
+          refusedDeparture(Some(user.id)).flatMap:
+            case Some(refused) => ZIO.succeed(refused)
+            case None => identifiedByCredential(authId, conversation, credential, proof, user)
 
-        // A new user: the tenant decides whether this address may create an account. When it may
-        // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
+        // Not a user of this cell. A cell asks the directory which cell the address goes to before it treats the address
+        // as new, and sends the sign-in there (versolauth/versola#1046, versolauth/versola#1052).
         case None =>
-          configService.registrationFor(conversation.clientId, credential).flatMap:
-            case Some(flow) =>
-              conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
-                case RegistrationEntry.Registering(updated) =>
-                  runRegistrationStep(authId, updated, proof)
-                case ConversationResult.WriteConflict =>
-                  ZIO.succeed(ConversationResult.WriteConflict)
-            case None =>
-              afterAuthenticationCredential(authId, conversation.withoutIdentityState, credential, proof)
+          homeElsewhere(credential, handed).flatMap:
+            case Left(unavailable) => ZIO.succeed(unavailable)
+            case Right(Some(home)) =>
+              handoff.seal(conversation, credential, home).foldZIO(
+                {
+                  // The home cell has no key to seal for: the same as a directory that does not answer, and the conversation stays.
+                  case _: CellHandoff.NoKey =>
+                    ZIO.logWarning(s"No key for cell '$home': the handoff is refused") *>
+                      Observability.setError("directory_unavailable").as(ConversationResult.ServiceUnavailable)
+                  case _: CellHandoff.TooLarge =>
+                    Observability.setError("handoff_too_large").as(ConversationResult.ServiceUnavailable)
+                  case failure => ZIO.fail(failure)
+                },
+                // Gone whatever the browser does next: the sign-in continues in the other cell or not at all.
+                ticket => conversationRepository.delete(authId, conversation.version).as(ConversationResult.Handoff(CellHandoff.location(ticket))),
+              )
+            case Right(None) => afterUnknownCredential(authId, conversation, credential, proof)
+
+    private def identifiedByCredential(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        proof: ProofInput,
+        user: UserRecord,
+    ): Task[ConversationResult.Render] =
+      val identified = conversation.withoutIdentityState.copy(
+        userId = Some(user.id),
+        credential = Some(credential),
+        userEmail = user.email,
+        userPhone = user.phone,
+        userLogin = user.login,
+        userClaims = Some(user.claims),
+      )
+      afterAuthenticationCredential(authId, identified, credential, proof)
+
+    /** The cell `credential` goes to, when it is another than this one: the cell that holds the user, and for an address
+      * nobody holds the cell central's keyed hash picks, so that the redirect does not say whether the address is
+      * registered (versolauth/versola#1052). An `auth` that is no cell asks nothing: it is the only place a user can
+      * be. A sign-in that was handed here is answered here whatever central would say now (the weights may have changed
+      * since): the cell that sent it has done the choosing, and a second choice could send it back and forth. Central
+      * unreachable is the step's "service unavailable": going on would send a code for an address this cell cannot say
+      * is new. */
+    private def homeElsewhere(
+        credential: Either[Email, Phone],
+        handed: Boolean,
+    ): UIO[Either[ConversationResult.Render, Option[RoutingKey.CellId]]] =
+      config.cellId match
+        case Some(own) if !handed =>
+          directory.homeOfAddress(credential).foldCauseZIO(
+            cause =>
+              ZIO.logWarningCause("Could not ask the directory which cell an address goes to; the step is refused", cause) *>
+                Observability.setError("directory_unavailable").as(Left(ConversationResult.ServiceUnavailable)),
+            found => ZIO.right(found.filterNot(_ == own)),
+          )
+        case _ => ZIO.right(None)
+
+    /** Where a submission that names its user goes when this cell does not hold that user: the cell that does
+      * (versolauth/versola#1048); `None` when it is answered here. It is answered here by an `auth` that is no cell, when
+      * it was handed to this cell already, when this cell holds the user, and when central names this cell or none.
+      * Central is asked only for what this cell does not hold, so its users sign in without it; when it is asked and
+      * does not answer, the step is the "service unavailable" an address gets.
+      *
+      * @param held whether the user named is in this cell's database
+      * @param home the cell central names for it
+      */
+    private def sentOn(authId: AuthId, conversation: ConversationRecord, handed: Boolean, passkeyRequest: Option[String])(
+        held: Task[Boolean],
+        home: Task[Option[RoutingKey.CellId]],
+    ): Task[Option[ConversationResult.Render]] =
+      config.cellId match
+        case Some(own) if !handed && takesIdentity(conversation) =>
+          held.flatMap:
+            case true => ZIO.none
+            case false =>
+              home.foldCauseZIO(
+                cause =>
+                  ZIO.logWarningCause("Could not ask central which cell a sign-in belongs to; the step is refused", cause) *>
+                    Observability.setError("directory_unavailable").as(Some(ConversationResult.ServiceUnavailable)),
+                {
+                  // The conversation is ended by the controller once the seal is made (`end`): a request too large to
+                  // seal keeps its conversation.
+                  case Some(cell) if cell != own => ZIO.some(ConversationResult.Elsewhere(cell, passkeyRequest))
+                  case _ => ZIO.none
+                },
+              )
+        case _ => ZIO.none
+
+    /** A credential card that takes a login and password or a passkey from somebody not yet known: the only place a
+      * submission names its user. Anything else is refused by the step itself, here. */
+    private def takesIdentity(conversation: ConversationRecord): Boolean =
+      conversation.userId.isEmpty && asksForCredential(conversation)
+
+    /** The same for a passkey with no address typed: the assertion names its user (the `userHandle`), and a cell that
+      * does not hold that user has no credential to verify it with. The request the assertion answers goes with it. An
+      * assertion that names nobody, or that no request is pending for, is refused here as before. */
+    private def passkeyElsewhere(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        response: String,
+        handed: Boolean,
+    ): Task[Option[ConversationResult.Render]] =
+      val pending = conversation.step match
+        case card: ConversationStep.Credential if conversation.authFlow.passkey.isDefined => card.passkeyRequest
+        case _ => None
+      pending match
+        case None => ZIO.none
+        case Some(request) =>
+          webAuthnService.userFromResponse(response).flatMap:
+            case None => ZIO.none
+            case Some(userId) =>
+              // Before the credential is looked at: a passkey of a user who is leaving is not used (and its counter not written).
+              refusedDeparture(Some(userId)).flatMap:
+                case Some(refused) => ZIO.some(refused)
+                case None =>
+                  sentOn(authId, conversation, handed, passkeyRequest = Some(request))(
+                    held = userRepository.find(userId).map(_.isDefined),
+                    home = directory.homeOfUser(userId),
+                  )
+
+    private def afterUnknownCredential(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        proof: ProofInput,
+    ): Task[ConversationResult.Render] =
+      // A new user: the tenant decides whether this address may create an account. When it may
+      // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
+      configService.registrationFor(conversation.clientId, credential).flatMap:
+        case Some(flow) =>
+          conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
+            case RegistrationEntry.Registering(updated) =>
+              runRegistrationStep(authId, updated, proof)
+            case ConversationResult.WriteConflict =>
+              ZIO.succeed(ConversationResult.WriteConflict)
+        case None =>
+          afterAuthenticationCredential(authId, conversation.withoutIdentityState, credential, proof)
 
     private def afterAuthenticationCredential(
         authId: AuthId,

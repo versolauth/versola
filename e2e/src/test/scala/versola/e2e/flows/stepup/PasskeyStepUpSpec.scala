@@ -99,7 +99,7 @@ object PasskeyStepUpSpec extends E2ESpec:
         response1 <- TestAuthenticator.get(enrolled.credential, options1, passkeyOrigin, s.userId)
         done <- auth.submitPasskeyAssertion(cookie1, response1.toJson, challenge1.csrf)
         _ <- done.assertRedirect
-        session <- ZIO.fromOption(done.sessionCookie).orElseFail(RuntimeException("no SSO_SESSION after the first step-up"))
+        session <- ZIO.fromOption(done.sessionCookie).orElseFail(RuntimeException("no __Host-SSO_SESSION after the first step-up"))
         // The browser now holds a session that has just passed a passkey. The app asks again, as it does for every loan.
         second <- auth.authorizeRaw(
           clientId = s.clientId,
@@ -122,7 +122,7 @@ object PasskeyStepUpSpec extends E2ESpec:
         response1 <- TestAuthenticator.get(enrolled.credential, options1, passkeyOrigin, s.userId)
         done <- auth.submitPasskeyAssertion(cookie1, response1.toJson, challenge1.csrf)
         _ <- done.assertRedirect
-        session <- ZIO.fromOption(done.sessionCookie).orElseFail(RuntimeException("no SSO_SESSION after the first step-up"))
+        session <- ZIO.fromOption(done.sessionCookie).orElseFail(RuntimeException("no __Host-SSO_SESSION after the first step-up"))
         silent <- auth.authorizeRaw(
           clientId = s.clientId,
           redirectUri = s.redirectUri,

@@ -9,7 +9,7 @@ import versola.central.configuration.challenges.{
   PasskeySettings,
   SubmissionLimits,
 }
-import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.edges.{EdgeGroupId, EdgeGroupKind, EdgeGroupRepository}
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
 import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.util.ReloadingCache
@@ -43,17 +43,19 @@ trait TenantService:
   def sync(): Task[Unit]
 
 object TenantService:
-  def live: ZLayer[TenantRepository & ChallengeSettingsService & JwksRepository & Scope & CentralConfig, Throwable, TenantService] =
+  def live
+      : ZLayer[TenantRepository & EdgeGroupRepository & ChallengeSettingsService & JwksRepository & Scope & CentralConfig, Throwable, TenantService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
         ReloadingCache.make[Vector[TenantRecord]](config.configurationCacheRefreshInterval),
       )
     )
-      >>> ZLayer.fromFunction(Impl(_, _, _, _, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[TenantRecord]],
       tenantRepository: TenantRepository,
+      edgeGroupRepository: EdgeGroupRepository,
       challengeSettingsService: ChallengeSettingsService,
       jwksRepository: JwksRepository,
       config: CentralConfig,
@@ -100,7 +102,8 @@ object TenantService:
             s"tenant '${request.id}' already exists with securityProfile ${current.securityProfile}, " +
               "which cannot be changed after the tenant is created",
           ))
-        _ <- tenantRepository.createTenant(request.id, request.description, request.edgeId.map(EdgeId(_)))
+        _ <- servedByOperator(request.edgeGroupId)
+        _ <- tenantRepository.createTenant(id = request.id, description = request.description, edgeGroupId = request.edgeGroupId)
         // A new tenant starts on the same key the rest of the deployment prefers. Left unset
         // it would instead fall back to auth's legacy configured key, quietly signing under
         // an algorithm nobody chose for it.
@@ -116,7 +119,19 @@ object TenantService:
     override def updateTenant(
         request: UpdateTenantRequest,
     ): Task[Unit] =
-      tenantRepository.updateTenant(request.id, request.description, request.edgeId.map(EdgeId(_)))
+      servedByOperator(request.edgeGroupId) *>
+        tenantRepository.updateTenant(id = request.id, description = request.description, edgeGroupId = request.edgeGroupId)
+
+    /** A tenant is served by one of the operator's own groups of edges (#557). A partner's group is refused: its edges
+      * read nothing of a tenant from central, so naming it would leave the tenant served by no edge while saying
+      * otherwise. */
+    private def servedByOperator(edgeGroupId: Option[EdgeGroupId]): Task[Unit] =
+      ZIO.foreachDiscard(edgeGroupId): id =>
+        edgeGroupRepository.find(id).flatMap:
+          case None => ZIO.fail(BadRequest(s"edge group '$id' does not exist"))
+          case Some(group) if group.kind != EdgeGroupKind.FirstParty =>
+            ZIO.fail(BadRequest(s"edge group '$id' is a partner's: a tenant is served by one of the operator's own groups"))
+          case Some(_) => ZIO.unit
 
     override def sync(): Task[Unit] =
       for

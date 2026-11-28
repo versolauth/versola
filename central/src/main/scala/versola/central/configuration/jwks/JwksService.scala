@@ -6,6 +6,7 @@ import zio.json.JsonCodec
 import zio.json.ast.Json
 import zio.{Scope, Task, UIO, URLayer, ZIO, ZLayer}
 
+import java.security.interfaces.RSAPublicKey
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
@@ -24,11 +25,11 @@ trait JwksService:
   def getPublicKeys: UIO[JWT.PublicKeys]
   def getRaw: UIO[Json.Obj]
 
-  /** The keys central can sign with, as `kid -> base64url(AES-GCM(PKCS#8))`, encrypted for
-    * transport under `secretKey`. Verify-only keys are absent rather than present-and-empty:
-    * a caller cannot select what is not here.
+  /** The keys central can sign with, as `kid -> base64url(hybrid RSA-OAEP + AES-GCM of the PKCS#8)`, encrypted
+    * for transport to `callerKey`, the key of the `auth` that asked (#1050), which is the only one that can read
+    * them. Verify-only keys are absent rather than present-and-empty: a caller cannot select what is not here.
     */
-  def getSigningKeys: Task[Map[String, String]]
+  def getSigningKeys(callerKey: RSAPublicKey): Task[Map[String, String]]
 
   /** Every stored key with the algorithm it is published under, for the admin console's key
     * list. Carries no private key material -- only whether one exists.
@@ -111,17 +112,17 @@ object JwksService:
     override def getRaw: UIO[Json.Obj] =
       cache.get.map(toJwks)
 
-    /** Encrypted under the transport secret on the way out rather than shipped as the database
+    /** Encrypted to the caller's key on the way out rather than shipped as the database
       * ciphertext, the same way client and resource secrets already reach auth over this
       * channel: the at-rest key stays inside central.
       */
-    override def getSigningKeys: Task[Map[String, String]] =
+    override def getSigningKeys(callerKey: RSAPublicKey): Task[Map[String, String]] =
       cache.get.flatMap { records =>
         val signable = records.collect {
           case record if record.canSign => record.kid -> record.privateKey.get
         }.toMap
         ZIO.foreach(signable) { (kid, pkcs8) =>
-          securityService.encryptAes256(pkcs8, config.secretKey).map(kid -> Base64.urlEncode(_))
+          securityService.encryptRsaHybrid(pkcs8, callerKey).map(kid -> Base64.urlEncode(_))
         }
       }
 

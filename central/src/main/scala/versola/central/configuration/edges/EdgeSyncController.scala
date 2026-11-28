@@ -8,6 +8,7 @@ import versola.central.configuration.partners.PartnerRegistry
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.{ResourceRecord, ResourceService}
 import versola.central.configuration.roles.RoleService
+import versola.central.configuration.topology.{CellRegistry, CellsSyncResponse, TopologyService}
 import versola.central.configuration.{
   AuthorizationPresetSyncResponse,
   GetAuthorizationPresetsSyncResponse,
@@ -21,7 +22,7 @@ import versola.central.configuration.{
   SignEdgeCertificateRequest,
   SignEdgeCertificateResponse,
 }
-import versola.central.{CentralConfig, authorizeEdge, authorizeRenewal}
+import versola.central.{Caller, CentralConfig, authorizeEdge, authorizeRenewal}
 import versola.util.http.{Controller, Forbidden, Unauthorized}
 import versola.util.{Base64Url, Dpop, SecurityService}
 import zio.ZIO
@@ -40,8 +41,10 @@ import java.security.cert.X509Certificate
   * token is refused ([[versola.central.refuseEdgeCallers]]).
   */
 object EdgeSyncController extends Controller:
-  type Env = Tracing & CentralConfig & EdgeService & EdgeIdentityService & SecurityService & OAuthClientService & ClientCertificateService &
-    AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService & PartnerRegistry
+  type Env =
+    Tracing & CentralConfig & EdgeService & CellRegistry & EdgeIdentityService & SecurityService & OAuthClientService & ClientCertificateService &
+      AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService & PartnerRegistry &
+      TopologyService
 
   def routes: Routes[Env, Throwable] = Routes(
     clientsEndpoint,
@@ -55,6 +58,7 @@ object EdgeSyncController extends Controller:
     rateLimitEndpoint,
     presetsEndpoint,
     serverMetadataEndpoint,
+    cellsEndpoint,
     signEdgeCertificateEndpoint,
     renewIdentityEndpoint,
   )
@@ -63,8 +67,20 @@ object EdgeSyncController extends Controller:
     Method.GET / "edge" / "sync" / "clients" -> handler { (request: Request) =>
       for
         edgeId <- authorizeEdge(request)
-        response <- ClientController.clientsSyncResponse(Some(edgeId))
+        response <- ClientController.clientsSyncResponse(Caller.Edge(edgeId))
       yield Response.json(response.toJson)
+    }
+
+  /** The cells of the deployment and the region the calling edge is in (#557), for an edge to route a call to the
+    * cell that holds its user and to look for an open cell in its own region first. Served to the operator's own
+    * edges only ([[authorizeEdge]]): a partner's edge keeps one address for the issuer and is not told the cells.
+    */
+  val cellsEndpoint =
+    Method.GET / "edge" / "sync" / "cells" -> handler { (request: Request) =>
+      for
+        edgeId <- authorizeEdge(request)
+        topology <- ZIO.serviceWithZIO[TopologyService](_.get)
+      yield Response.json(CellsSyncResponse.of(topology, region = topology.edgeRegions.get(edgeId)).toJson)
     }
 
   val resourcesEndpoint =
@@ -264,7 +280,7 @@ object EdgeSyncController extends Controller:
 
   /** The calling edge's record, for the routes that encrypt to its key or answer with its own
     * row. `authorizeEdge` has verified the token against this same record. */
-  private def callerEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeRecord] =
+  private def callerEdge(request: Request): ZIO[CentralConfig & EdgeService & CellRegistry, Unauthorized.type, EdgeRecord] =
     for
       edgeId <- authorizeEdge(request)
       edge <- ZIO.serviceWithZIO[EdgeService](_.find(edgeId)).someOrFail(Unauthorized)

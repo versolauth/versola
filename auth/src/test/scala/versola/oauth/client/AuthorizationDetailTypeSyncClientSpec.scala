@@ -12,6 +12,7 @@ import zio.test.*
 object AuthorizationDetailTypeSyncClientSpec extends ZIOSpecDefault:
   private def tokenService(client: Client): CentralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
+    override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
     override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
 
   /** Records every schema it's asked to warm, instead of actually compiling -- this spec is

@@ -3,6 +3,7 @@ package versola.central.configuration.resources
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.{
   CreateResourceRequest,
   CreateResourceResponse,
@@ -14,15 +15,15 @@ import versola.central.configuration.{
   RotateResourceSecretResponse,
   UpdateResourceRequest,
 }
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.{CentralConfig, SecretTransport, authorizeBasic, authorizeInternal}
 import versola.util.http.Observability
-import versola.util.{Base64Url, Secret, SecurityService}
+import versola.util.{Base64Url, SecurityService}
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 import zio.{RIO, Task, UIO, ZIO}
 
 object ResourceController extends AuditedController:
-  type Env = Tracing & ResourceService & CentralConfig & EdgeService & SecurityService
+  type Env = Tracing & ResourceService & CentralConfig & EdgeService & CellRegistry & SecurityService
 
   def endpoints = List(
     getAllResourcesEndpoint,
@@ -132,15 +133,6 @@ object ResourceController extends AuditedController:
         yield Response.status(Status.NoContent)
     }
 
-  /** Under the shared transport secret: only auth reads the registry. An edge is served its
-    * resources, encrypted to its own key, by `EdgeSyncController` (#554). */
-  private def transportEncryption(secret: Secret) =
-    for
-      centralConfig <- ZIO.service[CentralConfig]
-      securityService <- ZIO.service[SecurityService]
-      encrypted <- securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
-    yield encrypted
-
   /** Hard-coded resourceId of the resource that proxies the account page back to auth. */
   private val authResourceId = ResourceId("auth")
 
@@ -153,15 +145,18 @@ object ResourceController extends AuditedController:
     (Method.GET / "configuration" / "resources" / "registry").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         service <- ZIO.service[ResourceService]
-        edgeId <- authorizeInternal(request)
+        caller <- authorizeInternal(request)
+        edgeId = caller.edgeId
         resources <- service.getResourcesForSync(edgeId)
         entries = resources.map(toResourceRegistryEntry)
         authResource = resources.find(_.resourceId == authResourceId && edgeId.isEmpty)
         // Both halves of a rotation go to auth, which accepts either: edge stays on the
         // previous secret until it is removed, and the two refresh their caches at their
         // own pace (see GetResourcesRegistryResponse.authResourcePreviousSecret).
-        authResourceSecret <- ZIO.foreach(authResource.flatMap(_.secret))(transportEncryption)
-        authResourcePreviousSecret <- ZIO.foreach(authResource.flatMap(_.previousSecret))(transportEncryption)
+        // encrypted to the key of the caller that asked, which is the only one that can read it (an edge is never given them)
+        transportEncryption <- SecretTransport.to(caller)
+        authResourceSecret <- ZIO.foreach(authResource.flatMap(_.secret))(transportEncryption(_))
+        authResourcePreviousSecret <- ZIO.foreach(authResource.flatMap(_.previousSecret))(transportEncryption(_))
         response = GetResourcesRegistryResponse(entries, authResourceSecret, authResourcePreviousSecret)
       yield Response.json(response.toJson)
     }

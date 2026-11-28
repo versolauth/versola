@@ -144,6 +144,34 @@ paths:
           $ref: '#/components/responses/TokenError'
         '401':
           $ref: '#/components/responses/InvalidClient'
+        '421':
+          description: |
+            The user the code or the refresh token belongs to, or the refresh token itself, moved to another cell of the deployment (a user is moved between cells by an operator). A refresh token that moved is answered `moved` only to the client it was issued to: any other client is answered `invalid_grant`, as for a token that does not exist. The body is
+            exactly `{"error":"moved","cell":"<cell id>"}`: the request is not served here, and an edge repeats it once at the
+            cell named, which holds the user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, cell]
+                properties:
+                  error: {type: string, const: moved}
+                  cell: {type: string, description: The id of the cell that holds the user now.}
+        '503':
+          description: |
+            Temporarily unavailable. The user is on its way to another cell, and this cell serves nothing of theirs until the move is
+            done (a matter of seconds) or abandoned: repeat the request after `Retry-After` (2 seconds). Nothing was changed.
+          headers:
+            Retry-After:
+              schema: {type: integer, const: 2}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: {type: string, const: temporarily_unavailable}
+                  error_description: {type: string}
         '429':
           description: |
             This address has failed client authentication too many times (20 a minute by default, burst 10; `limits` in auth's
@@ -174,7 +202,11 @@ components:
           const: authorization_code
         code:
           type: string
-          description: Authorization code from the `/authorize` redirect. Single-use and short-lived.
+          description: |
+            Authorization code from the `/authorize` redirect. Single-use and short-lived.
+            Opaque: pass it back exactly as received. A deployment made of several cells
+            issues it with a routing prefix (`v1.<cell>.`) that names the cell holding the
+            grant; the prefix is part of the value, not something a client reads or strips.
         redirect_uri:
           type: string
           format: uri
@@ -225,6 +257,12 @@ components:
         `token.rebound`. The DPoP key of such a grant, where it has one, is still required.
         Access tokens issued before stay bound to the certificate they were issued over, and
         `GET /userinfo` honours each only over that certificate.
+
+        A refresh token that came from another cell with its user (the user was moved between cells) is replaced at
+        its first use here: it is consumed as a rotation consumes a token, and the response carries a new refresh
+        token of this cell, in the same family and with the same binding, scope and expiry. This holds for a
+        sender-constrained token too, which is otherwise returned as it is. The old value is refused afterwards as any
+        rotated token is. An `Idempotency-Key` makes a retry of that first use safe, as for any rotation.
       required: [grant_type, refresh_token]
       properties:
         grant_type:
@@ -232,6 +270,9 @@ components:
           const: refresh_token
         refresh_token:
           type: string
+          description: |
+            Opaque: pass it back exactly as received, routing prefix included when it has one
+            (see the `code` parameter of the authorization code grant).
         scope:
           type: string
           description: |
@@ -330,6 +371,16 @@ components:
             access tokens, or authenticating with a mutual-TLS certificate (an edge-fronted
             native client aside), always receives the second, and a token request that arrives
             without a certificate is refused with `invalid_client`.
+            On a deployment made of several cells its JOSE header also carries
+            the parameter `cell` (RFC 9068 §2.1 allows additional header parameters): the
+            globally unique id (`kz-1`) of the cell that issued the token and holds its
+            session, which a router in front of the cells reads, before verifying anything,
+            to send calls presenting the token there without a lookup. A header parameter
+            rather than a claim because it is processing metadata like `kid`, not a
+            statement about the subject; it is signed with the payload and is not echoed by
+            introspection or userinfo. Absent on a single-cell deployment. The security
+            event tokens that cell sends (back-channel logout and access token revocation)
+            carry the same header parameter.
         token_type:
           type: string
           enum: [Bearer, DPoP]
@@ -343,7 +394,11 @@ components:
           description: Access token lifetime in seconds.
         refresh_token:
           type: string
-          description: Present for `authorization_code` and `refresh_token` when the client is allowed to refresh.
+          description: |
+            Present for `authorization_code` and `refresh_token` when the client is allowed to
+            refresh. Opaque to the client: on a deployment made of several cells it starts with
+            a routing prefix (`v1.<cell>.`), which is part of the value and is presented back
+            with it.
         scope:
           type: string
           description: Space-delimited granted scopes. Omitted when empty.

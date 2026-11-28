@@ -14,7 +14,7 @@ enum Credentials:
   case Passkey(credential: SoftAuthenticator.Credential, sutUserId: UUID)
 
 /** How a conversation ended: the authorization code, the `state` the SUT put on the redirect
-  * that carried it, and the `SSO_SESSION` the completed conversation left behind.
+  * that carried it, and the `__Host-SSO_SESSION` the completed conversation left behind.
   *
   * `state` is `Option` because the redirect is the SUT's and this type does not get to require
   * anything of it; the caller that needs it says so. §8.4 is the caller that does -- it has

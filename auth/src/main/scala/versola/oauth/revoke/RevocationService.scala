@@ -10,7 +10,10 @@ import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
+import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, UserDepartures}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.util.http.Observability
 import versola.util.{Base64, CoreConfig, Secret, SecurityService}
 import zio.{Clock, IO, Task, ZIO, ZLayer}
 
@@ -42,10 +45,10 @@ trait RevocationService:
 
 object RevocationService:
   def live: ZLayer[
-    ClientAuthentication & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig & AuditEvents,
+    ClientAuthentication & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig & AuditEvents & UserDepartures,
     Nothing,
     RevocationService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   private class Impl(
       clientAuthentication: ClientAuthentication,
@@ -54,7 +57,13 @@ object RevocationService:
       securityService: SecurityService,
       config: CoreConfig,
       audit: AuditEvents,
+      departures: UserDepartures,
   ) extends RevocationService:
+
+    private def toRevocationError(error: Throwable | DepartureRefusal): Throwable | RevocationError = error match
+      case DepartureRefusal.Leaving => RevocationError.Unavailable
+      case DepartureRefusal.Moved(cell) => RevocationError.Moved(cell)
+      case other: Throwable => other
 
     private def audited(client: OAuthClientRecord, userId: Option[UUID], details: AuthAuditDetails.TokenRevoked): IO[Throwable, Unit] =
       audit.log(
@@ -83,34 +92,36 @@ object RevocationService:
           .when(tokenRecord.exists(_.clientId != client.id))
 
         _ <- tokenRecord match
+          // Not here: the token of a user who moved is told where they went (versolauth/versola#1051); any other is nothing to revoke.
           case None =>
-            ZIO.unit
+            departures.refuseToken(tokenMac, client.id).mapError(toRevocationError)
           case Some(record) =>
-            // No access token was presented here, and none is recorded against the chain, so the
-            // revocation names the family every token this grant issued carries. The whole family
-            // goes, retired generations included, not only the presented row: any of them could be
-            // the one in the wrong hands. The bound is the client's current `accessTokenTtl` from
-            // now: an approximation, and the only one available once the tokens themselves are not
-            // being named. The revocation is recorded in the same transaction as the expiry; the
-            // push to the client's back channel follows.
-            Clock.instant.flatMap: revokedAt =>
-              sessionRepository.deleteByFamily(record.familyId, RevocationTerms.forFamily(client, RevocationCause.Revoke)) *>
-                accessTokenRevocationService.announceFamily(
-                  client = client,
-                  family = record.familyId,
-                  subject = record.userId.toString,
-                  expiresAt = revokedAt.plus(client.accessTokenTtl),
-                ) *> audited(
-                  client,
-                  Some(record.userId),
-                  AuthAuditDetails.TokenRevoked(
-                    tokenType = "refresh_token",
-                    jti = None,
-                    refreshPrefix = Some(Base64.urlEncode(token).take(9)),
-                    cause = "rfc7009",
-                    count = None,
-                  ),
-                )
+            departures.refuse(record.userId).mapError(toRevocationError) *>
+              // No access token was presented here, and none is recorded against the chain, so the
+              // revocation names the family every token this grant issued carries. The whole family
+              // goes, retired generations included, not only the presented row: any of them could be
+              // the one in the wrong hands. The bound is the client's current `accessTokenTtl` from
+              // now: an approximation, and the only one available once the tokens themselves are not
+              // being named. The revocation is recorded in the same transaction as the expiry; the
+              // push to the client's back channel follows.
+              Clock.instant.flatMap: revokedAt =>
+                sessionRepository.deleteByFamily(record.familyId, RevocationTerms.forFamily(client, RevocationCause.Revoke)) *>
+                  accessTokenRevocationService.announceFamily(
+                    client = client,
+                    family = record.familyId,
+                    subject = record.userId.toString,
+                    expiresAt = revokedAt.plus(client.accessTokenTtl),
+                  ) *> audited(
+                    client,
+                    Some(record.userId),
+                    AuthAuditDetails.TokenRevoked(
+                      tokenType = "refresh_token",
+                      jti = None,
+                      refreshPrefix = Some(Observability.refreshTokenPrefix(RefreshToken.present(token))),
+                      cause = "rfc7009",
+                      count = None,
+                    ),
+                  )
       yield ()
 
     override def revokeAccessToken(
@@ -123,6 +134,9 @@ object RevocationService:
         // The owner is compared as a whole id, not as a substring of one.
         _ <- ZIO.fail(RevocationError.InvalidClient)
           .when(token.clientId != client.id)
+
+        // A user who is leaving, or has gone, is not served here: after the client is known to own the token.
+        _ <- ZIO.foreachDiscard(Try(UUID.fromString(token.subject)).toOption)(id => departures.refuse(UserId(id)).mapError(toRevocationError))
 
         // The token was presented and parsed, so its own `exp` is exact: recorded for exactly that
         // long, and pushed to the client's back channel.

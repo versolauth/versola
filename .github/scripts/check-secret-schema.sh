@@ -12,8 +12,11 @@
 #      optional `${?NAME}` form is a tuning knob with a default, not a secret, and is ignored.)
 #      This is the check that catches a secret written into a .conf as a literal, or one
 #      placeholdered but never generated;
-#   3. a value one entry shares between services (CENTRAL_SECRET_KEY, CLIENT_SECRETS_SECRET,
-#      and vps's POSTGRES_PASSWORD) is the identical value in each service's file. (k8s's
+#   3. a value one entry shares between services (CLIENT_SECRETS_SECRET, and vps's
+#      POSTGRES_PASSWORD) is the identical value in each service's file; and the halves of a
+#      service key (auth's and central's, versolauth/versola#1050), which sit in different
+#      services under different names, say the same thing: the public JWK one side holds
+#      carries the `kid` the other side's *_KEY_ID has, and no private member. (k8s's
 #      POSTGRES_PASSWORD is an entry per service: separate values, nothing to compare.);
 #   4. a `base64url` value decodes to the byte count the schema declares (only that type is
 #      measured: other types, e.g. opaque, have no size to check);
@@ -178,6 +181,20 @@ for target in "${TARGETS[@]}"; do
         fail "$target: secrets.schema.json contains the value of $key"
       fi
     done < "$dir/$svc.generated-secrets.env"
+  done
+  # 3b: the halves of a service key agree. The private half and its key id are in the signer's
+  # file, the public JWK in the verifier's: the JWK must carry that key id and no private member,
+  # or the verifier looks the key up under a name the signer never uses.
+  for pair in "auth:AUTH_SERVICE_KEY_ID:central:AUTH_SERVICE_PUBLIC_JWK" "central:CENTRAL_SERVICE_KEY_ID:auth:CENTRAL_SERVICE_PUBLIC_JWK"; do
+    IFS=: read -r signer kid_name verifier jwk_name <<< "$pair"
+    kid="$(env_value "$dir/$signer.generated-secrets.env" "$kid_name")"
+    jwk="$(env_value "$dir/$verifier.generated-secrets.env" "$jwk_name")"
+    if [ -z "$kid" ] || [ -z "$jwk" ]; then
+      fail "$target: $kid_name (in $signer) or $jwk_name (in $verifier) has no value"
+    else
+      grep -qF "\"kid\":\"$kid\"" <<< "$jwk" || fail "$target: $jwk_name does not carry the kid $kid_name holds"
+      grep -q '"d":' <<< "$jwk" && fail "$target: $jwk_name has a private member"
+    fi
   done
   echo "    checked $target"
 done

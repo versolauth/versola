@@ -37,6 +37,7 @@ import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.resources.{ResourceId, ResourceRecord, ResourceService}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.{GetAuthorizationPresetsSyncResponse, GetOAuthClientsSyncResponse, GetResourcesSyncResponse, ResourceUri}
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.{ActorType, AuditEvent, AuditEvents, AuditKind, AuditOutcome, AuditSeverity}
@@ -291,7 +292,7 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tracing <- tracingLayer.build
         routes = Observability.handleErrors(
           PartnerEdgeController.routes.provideEnvironment(
-            ZEnvironment[EdgeService](services.edges) ++
+            ZEnvironment[EdgeService](services.edges) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
               ZEnvironment[PartnerRegistry](services.registry) ++
               ZEnvironment[PartnerService](services.partners) ++
               ZEnvironment[PartnerClientService](services.partnerClients) ++

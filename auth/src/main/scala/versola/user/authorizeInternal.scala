@@ -4,7 +4,7 @@ import versola.audit.{AuditSupport, AuthActors}
 import versola.user.model.UserId
 import versola.util.audit.AuditContext
 import versola.util.http.{IpAddress, Observability, Unauthorized}
-import versola.util.{CoreConfig, JWT}
+import versola.util.{CoreConfig, Rs256Jwt}
 import zio.http.{Header, Request}
 import zio.json.JsonCodec
 import zio.{UIO, ZIO}
@@ -18,16 +18,25 @@ def actedBy(actorId: Option[UserId]): UIO[Unit] =
 /** The optional query parameter of a call from central that carries the address the administrator's call to central came from. */
 val AdminIpParam = "actorIp"
 
-/** Verifies the service token of a call from central. Also tells the audit log who acts: the `central` service itself, until the
-  * call names an administrator ([[actedBy]]), and from where ([[AdminIpParam]]). */
+/** Verifies the service token of a call from central (versolauth/versola#1050): signed RS256 with central's service key,
+  * issued by "central", and made for this auth, by its cell id or by "auth" when it has none. A token central made for
+  * another cell is refused here, and so is one signed by anybody else, a cell included. Also tells the audit log who
+  * acts: the `central` service itself, until the call names an administrator ([[actedBy]]), and from where
+  * ([[AdminIpParam]]). */
 def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit] =
+  def refuse(code: String): ZIO[Any, Unauthorized.type, Nothing] = Observability.setError(code) *> ZIO.fail(Unauthorized)
+
   request.header(Header.Authorization) match
     case Some(Header.Authorization.Bearer(token)) =>
       for
         config <- ZIO.service[CoreConfig]
-        _ <- JWT.deserialize[InternalAuthClaims](token.stringValue, config.central.secretKey, JWT.Type.JWT)
+        claims <- Rs256Jwt.deserialize[InternalAuthClaims](token.stringValue, config.central.publicKeyJwk)
           .tapError(err => ZIO.logError(s"Internal auth failed: $err"))
-          .orElseFail(Unauthorized)
+          .orElse(refuse("internal_token_invalid"))
+        // Whose token it is is decided by the key above; what it is for, here. The cell id is this auth's own configuration,
+        // never anything the request says.
+        audience = config.cellId.getOrElse(InternalAudience)
+        _ <- refuse("internal_token_invalid").unless(claims.iss == InternalIssuer && claims.aud.contains(audience))
         _ <- AuditContext.setActor(AuthActors.service, Some("central"))
         // The address of the administrator's call, when central passed one on; a value that is no address is not recorded. Only a
         // caller that proved to be central gets this far, so it is central's word and not the caller's.
@@ -37,7 +46,13 @@ def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit
 
     case _ =>
       ZIO.logWarning("Missing internal auth header") *>
-        ZIO.fail(Unauthorized)
+        refuse("internal_token_missing")
+
+/** The `iss` of a token central made for a call to an auth. */
+private val InternalIssuer = "central"
+
+/** The `aud` of a token made for an auth that has no cell id. */
+private val InternalAudience = "auth"
 
 case class InternalAuthClaims(
     iss: String,

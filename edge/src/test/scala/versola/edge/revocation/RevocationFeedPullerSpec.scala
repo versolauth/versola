@@ -1,9 +1,9 @@
 package versola.edge.revocation
 
 import org.scalamock.stubs.Stub
-import versola.edge.EdgeConfig
 import versola.edge.model.EdgeId
 import versola.edge.revocation.RevocationFeedClient.Page
+import versola.edge.{CellTable, CellTopology, EdgeCell, EdgeCellState, EdgeConfig}
 import versola.util.revocation.{Revocation, RevocationConfig, RevocationCursor, RevocationKey}
 import versola.util.{Secret, UnitSpecBase}
 import zio.*
@@ -44,6 +44,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
     val cursors: Stub[RevocationCursorRepository] = stub[RevocationCursorRepository]
     val client: Stub[RevocationFeedClient] = stub[RevocationFeedClient]
     val revocations: Stub[EdgeRevocationRepository] = stub[EdgeRevocationRepository]
+    val factory: Stub[RevocationFeedClient.Factory] = stub[RevocationFeedClient.Factory]
 
     /** What happened, in the order it happened, across the three stores. */
     val log: Ref[List[String]] = Unsafe.unsafe { u ?=> Ref.unsafe.make(List.empty[String])(using u) }
@@ -311,6 +312,58 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         yield assertTrue(env.cursors.seed.calls == List(native.authMutualTlsUrl.encode), env.cursors.acquire.calls.nonEmpty)
       },
     ),
+    // versolauth/versola#559: every cell keeps its own list, so the edge reads each of them.
+    suite("feeds of cells")(
+      test("reads the feed of every cell with a mutual-TLS listener beside the configured auth's, each under its own cursor") {
+        val env = new Env
+        for
+          _ <- env.cursors.seed.succeedsWith(())
+          _ <- env.cursors.acquire.succeedsWith(None)
+          _ <- env.cursors.lagSeconds.succeedsWith(None)
+          _ = env.factory.at.returns(_ => env.client)
+          _ <- start(env, configWith(feed, native = Some(native)), table(Vector(cell("kz-1", mtls = true), cell("kz-2", mtls = true))))
+          _ <- ZIO.foreachDiscard(1 to 5)(_ => TestClock.adjust(1.second) *> ZIO.yieldNow)
+          sources = Set(native.authMutualTlsUrl.encode, "https://kz-1.mtls.example.com", "https://kz-2.mtls.example.com")
+        yield assertTrue(
+          env.cursors.seed.calls.toSet == sources,
+          env.cursors.seed.calls.size == 3,
+          env.cursors.acquire.calls.map(_._1).toSet == sources,
+        )
+      },
+      test("reads the cells' feeds on an edge with no native block, and a cell without a listener is not read") {
+        val env = new Env
+        for
+          _ <- env.cursors.seed.succeedsWith(())
+          _ <- env.cursors.acquire.succeedsWith(None)
+          _ <- env.cursors.lagSeconds.succeedsWith(None)
+          _ = env.factory.at.returns(_ => env.client)
+          _ <- start(env, configWith(feed, native = None), table(Vector(cell("kz-1", mtls = true), cell("kz-2", mtls = false))))
+          _ <- ZIO.foreachDiscard(1 to 5)(_ => TestClock.adjust(1.second) *> ZIO.yieldNow)
+          unread <- ZTestLogger.logOutput.map(_.count(_.message().startsWith("Cell 'kz-2' has no mutual-TLS listener")))
+        yield assertTrue(env.cursors.seed.calls == List("https://kz-1.mtls.example.com"), unread == 1)
+      },
+      test("a cell at the configured listener is read once, and a cell registered later is read from the next poll") {
+        val env = new Env
+        for
+          _ <- env.cursors.seed.succeedsWith(())
+          _ <- env.cursors.acquire.succeedsWith(None)
+          _ <- env.cursors.lagSeconds.succeedsWith(None)
+          _ = env.factory.at.returns(_ => env.client)
+          topology <- Ref.make(CellTopology(Vector(cell("kz-1", mtls = true).copy(mtlsUrl = Some(native.authMutualTlsUrl))), None))
+          cells = new CellTable:
+            override def current = topology.get
+            override def refreshNow = ZIO.unit
+          _ <- start(env, configWith(feed, native = Some(native)), cells)
+          _ <- ZIO.foreachDiscard(1 to 3)(_ => TestClock.adjust(1.second) *> ZIO.yieldNow)
+          before = env.cursors.seed.calls
+          _ <- topology.update(t => t.copy(cells = t.cells :+ cell("kz-2", mtls = true)))
+          _ <- ZIO.foreachDiscard(1 to 3)(_ => TestClock.adjust(1.second) *> ZIO.yieldNow)
+        yield assertTrue(
+          before == List(native.authMutualTlsUrl.encode),
+          env.cursors.seed.calls == List(native.authMutualTlsUrl.encode, "https://kz-2.mtls.example.com"),
+        )
+      },
+    ),
     suite("warnings")(
       test("a feed that stays down is logged once, then at most once in five minutes") {
         val env = new Env
@@ -339,6 +392,22 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
     blobKey = Secret.Bytes32(Array.fill(32)(9.toByte)),
   )
 
+  private def cell(id: String, mtls: Boolean): EdgeCell =
+    EdgeCell(
+      id = id,
+      regionId = "almaty",
+      partitionId = "kz",
+      internalUrl = URL.decode(s"http://$id.internal:9003").toOption.get,
+      mtlsUrl = Option.when(mtls)(URL.decode(s"https://$id.mtls.example.com").toOption.get),
+      trust = None,
+      state = EdgeCellState.Open,
+      weight = 100,
+    )
+
+  private def table(cells: Vector[EdgeCell]): CellTable = new CellTable:
+    override def current = ZIO.succeed(CellTopology(cells, None))
+    override def refreshNow = ZIO.unit
+
   private def configWith(feed: EdgeConfig.RevocationFeed, native: Option[EdgeConfig.Native]): EdgeConfig =
     EdgeConfig(
       id = EdgeId("edge-1"),
@@ -357,14 +426,14 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
     )
 
   /** The layer as the edge builds it, kept alive for the rest of the test. */
-  private def start(env: Env, config: EdgeConfig): ZIO[Scope, Throwable, Unit] =
+  private def start(env: Env, config: EdgeConfig, cells: CellTable = CellTable.empty): ZIO[Scope, Throwable, Unit] =
     RevocationFeedPuller.live.build.unit.provideSomeEnvironment[Scope](
       _ ++ ZEnvironment[EdgeConfig, RevocationCursorRepository, EdgeRevocationRepository, RevocationFeedClient](
         config,
         env.cursors,
         env.revocations,
         env.client,
-      ),
+      ) ++ ZEnvironment[RevocationFeedClient.Factory, CellTable](env.factory, cells),
     )
 
   private def warnings: UIO[Int] =

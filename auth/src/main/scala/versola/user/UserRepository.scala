@@ -38,6 +38,18 @@ trait UserRepository:
       login: Option[Login],
   ): Task[Unit]
 
+  /** Changes the identifiers named and keeps the others: `None` keeps, `Patch.Deleted` removes, `Patch.Modified`
+    * replaces. Ordered by `version` like [[upsert]], so a change that arrives behind a newer one is ignored; a
+    * verified flag goes with the contact it was earned for. A no-op for an unknown id.
+    */
+  def patch(
+      id: UserId,
+      version: UUID,
+      email: Option[Patch[Email]],
+      phone: Option[Patch[Phone]],
+      login: Option[Patch[Login]],
+  ): Task[Unit]
+
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
   /** Removes the account and every row keyed by it, in one transaction: sessions and their user

@@ -549,10 +549,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(cachedClient, otherTenantClient))
 
       for
-        _ <- env.tenantRepository.getAll.succeedsWith(Vector(
-          TenantRecord(tenantId, "Tenant A", Some(edgeId)),
-          TenantRecord(otherTenantId, "Tenant B", Some(EdgeId("other-edge"))),
-        ))
+        _ <- env.tenantRepository.getServedBy.succeedsWith(Vector(tenantId))
         result <- env.service.getClientsForSync(Some(edgeId))
       yield assertTrue(result === Vector(cachedClient))
     },
@@ -567,7 +564,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.repository.getAll.succeedsWith(Vector(seeded))
         _ <- env.securityService.decryptAes256.succeedsWith(plaintext)
-        _ <- env.tenantRepository.getAll.succeedsWith(Vector(TenantRecord(tenantId, "Tenant A", Some(edgeId))))
+        _ <- env.tenantRepository.getServedBy.succeedsWith(Vector(tenantId))
         before <- env.service.getClientsForSync(Some(edgeId))
         _ <- env.service.refreshNow
         after <- env.service.getClientsForSync(Some(edgeId))
@@ -2685,7 +2682,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val globex = acme.copy(id = PartnerId("globex"), groupId = EdgeGroupId("globex"), status = PartnerStatus.Suspended)
         for
           _ <- env.partners.getAll.succeedsWith(Vector(acme, globex))
-          _ <- env.tenantRepository.getAll.succeedsWith(Vector(TenantRecord(tenantId, "Tenant A", Some(EdgeId("edge-1")))))
+          _ <- env.tenantRepository.getServedBy.succeedsWith(Vector(tenantId))
           forAuth <- env.service.getClientsForSync(None)
           forEdge <- env.service.getClientsForSync(Some(EdgeId("edge-1")))
           ofAcme <- env.service.getPartnerClients(acme.id)

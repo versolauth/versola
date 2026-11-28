@@ -47,7 +47,7 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec, AntifraudSe
       test("every method fails on its statement timeout instead of waiting for a lock") {
         for
           xa <- ZIO.service[TransactorZIO]
-          _ <- env.repository.seed(Tuning.off, "bootstrap", at)
+          _ <- env.repository.replace(Some(Tuning.off), 1, at)
           impatient = PostgresAntifraudSettingsRepository(xa, statementTimeout = 200.millis)
           // A transaction that holds the table, as a long migration or a stuck writer would.
           holder <- xa.transact:
@@ -56,11 +56,10 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec, AntifraudSe
           .fork
           _ <- Live.live(ZIO.sleep(500.millis))
           find <- Live.live(impatient.find.exit)
-          put <- Live.live(impatient.put(tuned, "alice", at, Some(1)).exit)
-          seed <- Live.live(impatient.seed(Tuning.off, "bootstrap", at).exit)
+          replace <- Live.live(impatient.replace(Some(tuned), 2, at).exit)
           _ <- holder.join
           healthy <- impatient.find
-        yield assertTrue(find.isFailure, put.isFailure, seed.isFailure, healthy.map(_.version).contains(1L))
+        yield assertTrue(find.isFailure, replace.isFailure, healthy.map(_.version).contains(1L))
       },
       test("the timeout covers the version read, which sees a table that is not locked") {
         for

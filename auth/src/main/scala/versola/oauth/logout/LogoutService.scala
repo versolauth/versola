@@ -9,6 +9,7 @@ import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, UserDepartures}
 import versola.util.CoreConfig
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import zio.*
@@ -18,11 +19,13 @@ import zio.json.ast.Json
 import java.time.Instant
 
 trait LogoutService:
+  /** Fails with a [[DepartureRefusal]] when the session is the one of a user who is leaving this cell: nothing is ended then, as
+    * a session ended after the user's rows were exported would leave the copy the other cell holds live (versolauth/versola#1051). */
   def logout(
       identifier: Either[PublicSessionId, SessionId],
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
-  ): Task[LogoutService.LogoutResult]
+  ): IO[Throwable | DepartureRefusal, LogoutService.LogoutResult]
 
   /** Admin-panel force-logout: invalidates every active session of a user and notifies,
     * via back-channel logout, every client that participated in each one. There is no
@@ -32,7 +35,7 @@ trait LogoutService:
   /** Ends one of the user's sessions (admin-panel action) the way [[logout]] would, relying
     * parties included. `false` when the session is not the user's or no longer live: knowing
     * a session id is not enough to end it, since ids travel in front-channel logout URLs. */
-  def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+  def invalidateSession(publicId: PublicSessionId, userId: UserId, cause: RevocationCause): Task[Boolean]
 
   /** Tells the relying parties of sessions that another change ended in its own transaction (the user's
     * password change, which ends their other sessions and records the revocations with it) and records
@@ -55,7 +58,7 @@ object LogoutService:
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-  val live = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       sessionService: SessionService,
@@ -63,6 +66,7 @@ object LogoutService:
       config: CoreConfig,
       outbox: BackChannelOutbox,
       audit: AuditEvents,
+      departures: UserDepartures,
   ) extends LogoutService:
 
     /** `session.ended`: who ended it is the request's context (the user of an RP's logout, the administrator behind a call from
@@ -84,8 +88,14 @@ object LogoutService:
         identifier: Either[PublicSessionId, SessionId],
         postLogoutRedirectUri: Option[URL],
         state: Option[String],
-    ): Task[LogoutResult] =
-      end("rp_logout", RevocationCause.Logout, identifier, postLogoutRedirectUri, state)
+    ): IO[Throwable | DepartureRefusal, LogoutResult] =
+      for
+        owner <- identifier match
+          case Left(publicId) => sessionService.findOwner(publicId)
+          case Right(rawId) => sessionService.find(rawId).map(_.map(_.record.userId))
+        _ <- ZIO.foreachDiscard(owner)(departures.refuse)
+        result <- end("rp_logout", RevocationCause.Logout, identifier, postLogoutRedirectUri, state)
+      yield result
 
     /** `auditCause` is what the audit log says ended the session; `revocation` is why the access
       * tokens issued under it stop being accepted, recorded with the session ending. */
@@ -123,10 +133,10 @@ object LogoutService:
       * clients costs one or two deliveries instead of ten — and the RP records one revocation
       * instead of five.
       */
-    override def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
+    override def invalidateSession(publicId: PublicSessionId, userId: UserId, cause: RevocationCause): Task[Boolean] =
       sessionService.listByUser(userId).map(_.exists(_.publicId == publicId)).flatMap:
         case false => ZIO.succeed(false)
-        case true => end("admin_revoked", RevocationCause.AdminRevoked, Left(publicId), None, None).as(true)
+        case true => end(cause.code, cause, Left(publicId), None, None).as(true)
 
     override def announceEnded(sessions: List[SessionRecord], cause: RevocationCause): Task[Unit] =
       ZIO.foreachDiscard(sessions): session =>

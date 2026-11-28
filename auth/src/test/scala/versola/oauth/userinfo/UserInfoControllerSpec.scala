@@ -13,12 +13,14 @@ import versola.oauth.clientauth.ClientAuthentication
 import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.logout.BackChannelOutbox
+import versola.oauth.model.RefreshToken
 import versola.oauth.mtls.{ClientCertificate, EdgeCertificateTrust}
 import versola.oauth.revocation.AuthRevocationRepository
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
+import versola.user.move.{DepartureRefusal, UserDepartures}
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.revocation.{
   Revocation,
@@ -29,7 +31,7 @@ import versola.util.revocation.{
   RevocationPage,
   RevocationRepository,
 }
-import versola.util.{CoreConfig, Dpop, EdgeIdentityNames, TestCertificates, UnitSpecBase}
+import versola.util.{CoreConfig, Dpop, EdgeIdentityNames, MAC, TestCertificates, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -141,6 +143,12 @@ object UserInfoControllerSpec extends UnitSpecBase:
     jwt.sign(signer)
     jwt.serialize()
 
+  /** A cell where every user is refused as `refusal` says. */
+  private def departuresOf(refusal: DepartureRefusal): UserDepartures =
+    new UserDepartures:
+      override def refuse(userId: UserId) = ZIO.fail(refusal)
+      override def refuseToken(token: MAC.Of[RefreshToken], clientId: versola.oauth.client.model.ClientId) = ZIO.fail(refusal)
+
   def userInfoTestCase(
       description: String,
       request: Request,
@@ -174,6 +182,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       // What the replica's list of revoked access tokens holds when the request arrives. The list and
       // the service over it are the real ones; only the database behind the list is a stub.
       revocations: List[Revocation] = Nil,
+      departures: UserDepartures = UserDepartures.none,
   ) =
     test(description) {
       for
@@ -205,6 +214,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
                 ZEnvironment(dpopService) ++ ZEnvironment(edgeTrust) ++
                 ZEnvironment(oAuthConfigurationService) ++ ZEnvironment(clientAuthentication) ++
                 ZEnvironment[AccessTokenRevocationService](accessTokenRevocation) ++
+                ZEnvironment[UserDepartures](departures) ++
                 tracing,
             ),
         )
@@ -221,6 +231,59 @@ object UserInfoControllerSpec extends UnitSpecBase:
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("UserInfoController")(
+    // versolauth/versola#1051: a user who is leaving is not served, and a token of one who moved is told where they went.
+    suite("a user who is leaving or has moved")(
+      userInfoTestCase(
+        description = "answers a token of a user who moved with 421 and exactly the cell, and reads nothing of the user",
+        request = Request.get(url = URL.empty / "userinfo").addHeader(
+          Header.Authorization.Bearer(createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig)),
+        ),
+        expectedStatus = Status.MisdirectedRequest,
+        departures = departuresOf(DepartureRefusal.Moved("kz-2")),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body == """{"error":"moved","cell":"kz-2"}"""),
+      ),
+      userInfoTestCase(
+        description = "answers a token of a leaving user with 503, Retry-After: 2 and temporarily_unavailable",
+        request = Request.get(url = URL.empty / "userinfo").addHeader(
+          Header.Authorization.Bearer(createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig)),
+        ),
+        expectedStatus = Status.ServiceUnavailable,
+        departures = departuresOf(DepartureRefusal.Leaving),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            response.header(Header.RetryAfter).exists(_.renderedValue == "2"),
+            body.contains(""""error":"temporarily_unavailable""""),
+          ),
+      ),
+      userInfoTestCase(
+        description = "does not tell a request with no token, or a token that does not verify, where a user is",
+        request = Request.get(url = URL.empty / "userinfo").addHeader(Header.Authorization.Bearer("not-a-token")),
+        expectedStatus = Status.Unauthorized,
+        departures = departuresOf(DepartureRefusal.Moved("kz-2")),
+        verify = response => ZIO.succeed(assertTrue(response.header(Header.WWWAuthenticate).exists(_.renderedValue.contains("invalid_token")))),
+      ),
+      userInfoTestCase(
+        description = "does not tell a bound token presented without its proof where its user is",
+        request = Request.get(url = URL.empty / "userinfo").addHeader(
+          Header.Authorization.Bearer(
+            createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig, cnfJkt = Some(boundJkt1)),
+          ),
+        ),
+        expectedStatus = Status.Unauthorized,
+        departures = departuresOf(DepartureRefusal.Moved("kz-2")),
+      ),
+      userInfoTestCase(
+        description = "serves a user who is not leaving as before, and a token the old cell issued while the user is here",
+        request = Request.get(url = URL.empty / "userinfo").addHeader(
+          Header.Authorization.Bearer(createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig)),
+        ),
+        expectedStatus = Status.Ok,
+        setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+      ),
+    ),
     suite("GET /userinfo")(
       userInfoTestCase(
         description = "successfully return user info as JSON",

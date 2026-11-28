@@ -7,7 +7,7 @@ import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.*
 import versola.util.revocation.{RevocationCursor, RevocationKey, RevocationRepository}
-import versola.util.{DatabaseSpecBase, Email, Phone}
+import versola.util.{DatabaseSpecBase, Email, Patch, Phone}
 import zio.*
 import zio.json.ast.Json
 import zio.test.*
@@ -437,6 +437,56 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           after.exists(_.login.contains(Login("someone"))),
           isVerified(after, "email_verified"),
         )
+      },
+      // versolauth/versola#1041: central keeps only the MACs of the identifiers, so a change names what changed.
+      test("patch changes the identifiers it names, removes the one deleted and keeps the rest") {
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
+        for
+          _ <- env.userRepository.upsert(userId1, older, Some(email1), Some(phone1), Some(Login("someone")))
+          _ <-
+            env.userRepository.patch(id = userId1, version = newer, email = Some(Patch.Deleted), phone = Some(Patch.Modified(phone2)), login = None)
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          after.exists(_.email.isEmpty),
+          after.exists(_.phone.contains(phone2)),
+          after.exists(_.login.contains(Login("someone"))),
+        )
+      },
+      test("patch resets the verified flag of the contact it changes and leaves the other") {
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
+        for
+          _ <- env.userRepository.upsert(userId1, older, Some(email1), Some(phone1), None)
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          _ <- env.userRepository.markVerified(userId1, Right(phone1))
+          _ <- env.userRepository.patch(id = userId1, version = newer, email = None, phone = Some(Patch.Modified(phone2)), login = None)
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          !isVerified(after, "phone_number_verified"),
+          isVerified(after, "email_verified"),
+        )
+      },
+      test("patch that names the contact the user already has keeps its verified flag") {
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
+        for
+          _ <- env.userRepository.upsert(userId1, older, Some(email1), None, None)
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          _ <- env.userRepository.patch(id = userId1, version = newer, email = Some(Patch.Modified(email1)), phone = None, login = None)
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(isVerified(after, "email_verified"))
+      },
+      test("patch that arrives behind a newer write is ignored, and one for an unknown user creates nothing") {
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
+        for
+          _ <- env.userRepository.upsert(userId1, newer, Some(email1), None, None)
+          _ <- env.userRepository.patch(id = userId1, version = older, email = Some(Patch.Modified(email2)), phone = None, login = None)
+          stale <- env.userRepository.find(userId1)
+          _ <- env.userRepository.patch(id = userId2, version = newer, email = Some(Patch.Modified(email2)), phone = None, login = None)
+          unknown <- env.userRepository.find(userId2)
+        yield assertTrue(stale.exists(_.email.contains(email1)), unknown.isEmpty)
       },
     )
 

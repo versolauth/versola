@@ -60,9 +60,12 @@ reachable from the cluster, before the first install.
 Each service reads one HOCON file, mounted at `/app/config/env.conf`, in which every secret is a
 `${VAR}` placeholder resolved from the process environment. `scripts/gen-env.scala` generates
 that file, the placeholders, and the values behind them as a single coherent set — coherent
-matters, because several values must agree across services (`CENTRAL_SECRET_KEY` and
-`CLIENT_SECRETS_SECRET` are shared between auth and central, and central holds the public half
-of edge's key).
+matters, because several values must agree across services (`CLIENT_SECRETS_SECRET` is shared
+between auth and central; central holds the public half of edge's key; and there are two more key
+pairs, auth's and central's service keys, each with its private half and `kid` at the signer and its
+public JWK at the other side: `AUTH_SERVICE_PRIVATE_KEY`/`AUTH_SERVICE_KEY_ID` in auth with
+`AUTH_SERVICE_PUBLIC_JWK` in central, `CENTRAL_SERVICE_PRIVATE_KEY`/`CENTRAL_SERVICE_KEY_ID` in central
+with `CENTRAL_SERVICE_PUBLIC_JWK` in auth).
 
 Run it and answer `k8s` at the first prompt:
 
@@ -190,18 +193,22 @@ set, and splitting it would invent a boundary the source of truth does not have.
 broader access — each Deployment pulls only the keys it needs.
 
 **Key names are not the variable names.** `versola.secretKeyFor` kebab-cases each variable, then
-prefixes it with the service name unless the result already starts with that prefix; the two
-genuinely shared values stay bare. So:
+prefixes it with the service name unless the result already starts with that prefix; the one
+genuinely shared value stays bare. So:
 
 | Variable | Service | Key |
 |---|---|---|
 | `ACCESS_TOKENS_SECRET` | auth | `auth-access-tokens-secret` |
 | `AUTH_CODES_SECRET` | auth | `auth-codes-secret` — not `auth-auth-codes-secret` |
 | `EDGE_PUBLIC_JWK` | central | `central-edge-public-jwk` — central holds edge's public half |
-| `CENTRAL_SECRET_KEY` | auth *and* central | `central-secret-key` — one key, one value |
+| `CLIENT_SECRETS_SECRET` | auth *and* central | `client-secrets-secret` — one key, one value |
+| `AUTH_SERVICE_PRIVATE_KEY`, `AUTH_SERVICE_KEY_ID` | auth | `auth-service-private-key`, `auth-service-key-id` — auth's own key pair, which signs its calls to central |
+| `AUTH_SERVICE_PUBLIC_JWK` | central | `central-auth-service-public-jwk` — central holds the public half of auth's key |
+| `CENTRAL_SERVICE_PRIVATE_KEY`, `CENTRAL_SERVICE_KEY_ID` | central | `central-service-private-key`, `central-service-key-id` — central's own key pair, which signs its calls to auth |
+| `CENTRAL_SERVICE_PUBLIC_JWK` | auth | `auth-central-service-public-jwk` — auth holds the public half of central's key |
 | `POSTGRES_PASSWORD` | each | `auth-postgres-password`, `central-postgres-password`, `edge-postgres-password` |
 
-Twenty-nine keys in total. `versola.secretEnv` fails the template if `secrets.existingSecret` is
+Thirty-five keys in total. `versola.secretEnv` fails the template if `secrets.existingSecret` is
 unset, and a missing key surfaces as an unresolved HOCON substitution at startup, so both
 mistakes fail loudly rather than silently.
 
@@ -441,6 +448,8 @@ nothing is exposed that is not listed — there is no catch-all group.
 | Group | Backend | Paths |
 |---|---|---|
 | `oidc` | auth | `/authorize` `/token` `/par` `/introspect` `/revoke` `/userinfo` `/logout` `/.well-known/` `/challenge` |
+| `pages` | edge | `/authorize` `/logout` `/challenge` — the pages of a sign-in, where the issuer's address is an edge's (see "Cells" below); in place of `oidc` on that host, never beside it |
+| `endpoints` | auth | `/token` `/par` `/introspect` `/revoke` `/userinfo` `/.well-known/` — `oidc` without the pages |
 | `login` | edge | `/login/` `/complete` `/logout/` |
 | `api` | edge | `/resources/` `/permissions/` |
 | `native` | edge | `/native/` — what a mobile app calls under FAPI 2.0 (#420); list it on any host with native clients |
@@ -459,6 +468,58 @@ requests get a bare `404` from the controller, which reads as a routing bug rath
 unclaimed resource. Annotating the class as default *afterwards* does not fix an Ingress already
 created without one either — the default is applied at admission, so the object has to be
 recreated or patched with an explicit `spec.ingressClassName`. Name the class up front instead.
+
+### Cells: the issuer's address is an edge's
+
+A deployment of several cells (several `auth`, each with its own database; see the Cells page of the
+documentation, `concepts/cells`) has one issuer address, and it is an edge's: edge serves the pages
+of a sign-in and sends each request to the cell that holds it. Four things have to agree, and none
+of them fails loudly when it does not:
+
+| What | Where | Must be |
+|---|---|---|
+| `jwt.issuer` of every `auth` | `--auth-url` of `gen-env` | the edge's public address, the same in every cell |
+| `versola-url` of the edge | `--auth-url` of `gen-env` | the same address |
+| `versola-internal-url` of the edge | `--auth-internal-url` of `gen-env` | a real address of an `auth`, never the edge's own. It defaults to `--auth-url`, so leaving it out makes the edge call itself. With cells registered the edge calls each cell at the `internalUrl` of its registration instead |
+| `cell-id` of each `auth` | `--cell-id` of `gen-env` | the cell's own id, different in every cell. Set it only once every instance runs a version that knows the `v1.<cell>.` prefix |
+| `mutual-tls.external-url` of every `auth` | `--mtls-domain` (VPS) or the generated value | the same in every cell, and what the edge has as `native.auth-mutual-tls-external-url`. It is the issuer's name for the mutual-TLS listener, not the address of one cell's: a mobile app signs it into its proof before anyone knows which cell will answer, so a cell that names its listener differently refuses the proof and the sign-in of its users fails at `/native/complete` |
+
+On the issuer's host list `pages` in place of `oidc`, so that `/authorize`, `/logout` and `/challenge`
+lead to edge:
+
+```
+--set 'ingress.hosts[0].host=id.example.com' \
+--set 'ingress.hosts[0].routes={pages,login,api,native}'
+```
+
+Edge does not serve `/token`, `/par`, `/userinfo`, `/introspect`, `/revoke` or discovery. A client that
+works through edge does not call them. A client that calls them itself needs an address of an `auth`:
+give that `auth` a host of its own with the `endpoints` group (with one cell, the same host may list
+`pages` and `endpoints` together, which is `oidc` split between edge and auth).
+
+One release of this chart runs one `auth`. A further cell is a further `auth` with its own database
+and its own `cell-id`, registered on the Cells screen of the console with the address the edge reaches
+it at; this chart does not render a second one.
+
+A cell is registered with its public key (`publicKeys`, a list of public RSA JWKs with a `kid`; a cell
+cannot be registered without one), and central knows the cell by that key: it is how it tells which
+cell calls. `gen-env` writes it, with the cell's key pair, in every run: the public JWK of this `auth`
+is the file `auth.service-public-key.jwk` next to `auth.conf` in `.local/env/<target>/` (and is printed as
+a line to register it), and the private half is `AUTH_SERVICE_PRIVATE_KEY` with `AUTH_SERVICE_KEY_ID`.
+The first cell's key is also the one central's own configuration lists as `auth.public-keys`, so central
+accepts that `auth` before any cell is registered. **Each further cell has a pair of its own**: never
+copy the secrets of one cell to another, or central cannot tell them apart and refuses the second
+registration (no two cells share a key). Make a further cell's configuration with
+
+```bash
+scala-cli run scripts/gen-env.scala -- --target=k8s --cell-id=kz-2 \
+  --central-public-jwk-file=<central.service-public-key.jwk written by the run that made central> \
+  --auth-url=<the same issuer address as the first cell> …
+```
+
+— it writes that cell's `auth.conf` and `auth.generated-secrets.env` (and the edge's, which you do not
+need) and no `central.conf`, since central already exists; the cell's own public key is in its
+`auth.service-public-key.jwk`. Register the cell with the content of that file as its `publicKeys`.
 
 There is no route group for central, but nothing needs one: `loadgen provision` reaches central
 through `auth` (a `client_credentials` token, the `oidc` group's `/token`) and then `edge`'s

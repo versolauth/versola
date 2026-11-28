@@ -34,7 +34,8 @@ object JwksServiceSpec extends ZIOSpecDefault:
   private val testJwks: Json.Obj =
     Json.Obj("keys" -> Json.Arr(testKey))
 
-  private val transportKey = TestCentralConfig.config.secretKey
+  /** The key of the `auth` that asks: what the signing keys are encrypted to. */
+  private val callerKey = TestCentralConfig.authKeyPair.publicKey
 
   private val atRestKey = SecretKeySpec(TestCentralConfig.config.clientSecretsSecret, "AES")
 
@@ -131,24 +132,27 @@ object JwksServiceSpec extends ZIOSpecDefault:
       )).provide(serviceFrom(Vector(record)))
     },
     suite("getSigningKeys")(
-      // Under the transport secret, not the at-rest one. Shipping the stored ciphertext is
+      // To the caller's key, not under the at-rest one. Shipping the stored ciphertext is
       // what auth cannot decrypt: the two secrets are separate values, so every configuration
       // sync fails on an AEAD tag mismatch as soon as one signable key exists.
-      test("carries the private half of every signable key, encrypted for transport") {
+      test("carries the private half of every signable key, encrypted to the key of the caller") {
         val (_, layer) = env(Vector.empty)
         (for
           service <- ZIO.service[JwksService]
           security <- ZIO.service[SecurityService]
           kid <- service.generateKey(JWT.Algorithm.PS256)
-          keys <- service.getSigningKeys
+          keys <- service.getSigningKeys(callerKey)
           transported = Base64.urlDecode(keys(kid))
-          pkcs8 <- security.decryptAes256(transported, transportKey)
+          pkcs8 <- security.decryptRsaHybrid(transported, TestCentralConfig.authKeyPair.privateKey)
           parsed <- ZIO.attempt(KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(pkcs8)))
           atRest <- security.decryptAes256(transported, atRestKey).exit
+          withOthersKey <- security.decryptRsaHybrid(transported, TestCentralConfig.foreignKeyPair.privateKey).exit
         yield assertTrue(
           keys.keySet == Set(kid),
           parsed.getAlgorithm == "RSA",
           atRest.isFailure,
+          // another auth's key, or another cell's, opens nothing
+          withOthersKey.isFailure,
         )).provide(layer)
       },
       // Absent rather than present-and-empty: a tenant cannot select what is not here, and
@@ -157,7 +161,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
         val record = JwksRecord("key-1", testKey.asInstanceOf[Json.Obj], None)
         (for
           service <- ZIO.service[JwksService]
-          keys <- service.getSigningKeys
+          keys <- service.getSigningKeys(callerKey)
         yield assertTrue(keys.isEmpty)).provide(serviceFrom(Vector(record)))
       },
       test("omits a key published without a usable alg") {
@@ -165,7 +169,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
         val record = JwksRecord("key-1", noAlg, Some(encryptedPrivateKey))
         (for
           service <- ZIO.service[JwksService]
-          keys <- service.getSigningKeys
+          keys <- service.getSigningKeys(callerKey)
         yield assertTrue(keys.isEmpty)).provide(serviceFrom(Vector(record)))
       },
     ),
@@ -192,7 +196,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
           // Published before anything can be moved onto it: the first of the two steps a
           // safe rotation needs.
           published <- service.getRaw
-          signing <- service.getSigningKeys
+          signing <- service.getSigningKeys(callerKey)
         yield assertTrue(
           stored.map(_.kid) == Vector(kid),
           stored.forall(_.canSign),

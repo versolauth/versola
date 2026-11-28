@@ -12,13 +12,14 @@ import versola.edge.model.{
   State,
   TokenResponse,
 }
-import versola.util.{Base64, ClientAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
+import versola.util.http.Observability
+import versola.util.{Base64, ClientAssertion, JWT, PrivateClientCertificate, RedirectUri, RequestObject, RoutingKey, Secret}
 import zio.Chunk
 import zio.http.*
 import zio.json.ast.Json
-import zio.json.{JsonCodec, jsonField}
+import zio.json.{JsonCodec, JsonDecoder, jsonField}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
-import zio.{IO, Task, UIO, URLayer, ZIO, ZLayer}
+import zio.{IO, Random, Task, UIO, URLayer, ZIO, ZLayer}
 
 trait SSOClient:
   /** Where the browser is sent to start a login.
@@ -151,6 +152,10 @@ object SSOClient:
         "for auth to read a certificate from",
     )
 
+  /** A client authenticates with a certificate and the cell it is sent to registered no mutual-TLS listener. */
+  case class CellWithoutMutualTls(clientId: ClientId, cell: String)
+    extends RuntimeException(s"client '$clientId' authenticates with a certificate, and cell '$cell' has no mutual-TLS address")
+
   /** A handshake whose far side is not authenticated is one any host that can intercept the
     * route may complete. Raised rather than presenting the certificate to it: zio-http's
     * `ClientSSLConfig.Default` is Netty's `InsecureTrustManagerFactory`, which accepts every
@@ -164,6 +169,16 @@ object SSOClient:
         "that address would not be authenticated. Set `versola-internal-trusted-certificates`",
     )
 
+  /** A cell answered `421 moved`: the user it was asked for now lives in `cell`. Replayed once at that cell, for `/token`,
+    * `/par` and `/userinfo`, and for `/revoke` of a native client; a second answer is the caller's. A moved user's tokens are
+    * honoured and revoked at the new cell, so what was asked is asked there unchanged. */
+  final case class CellMoved(cell: String) extends RuntimeException(s"the user moved to cell '$cell'")
+
+  private case class MovedResponse(error: String, cell: Option[String]) derives JsonCodec
+
+  /** The routing information of an access token's JOSE header (`cell`, versolauth/versola#558). */
+  private case class CellHeader(cell: Option[String]) derives JsonDecoder
+
   /** RFC 9126 §2.2: what `/par` hands back in place of the request. */
   private case class PushedAuthorizationResponse(
       @jsonField("request_uri") requestUri: String,
@@ -174,14 +189,15 @@ object SSOClient:
       @jsonField("error_description") errorDescription: Option[String],
   ) derives JsonCodec
 
-  val live: URLayer[Client & EdgeConfig & ClientCertificateFiles & EdgeIdentity, SSOClient] =
-    ZLayer.fromFunction(Impl(_, _, _, _))
+  val live: URLayer[Client & EdgeConfig & ClientCertificateFiles & EdgeIdentity & CellTable, SSOClient] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   class Impl(
       httpClient: Client,
       config: EdgeConfig,
       certificateFiles: ClientCertificateFiles,
       identity: EdgeIdentity,
+      cells: CellTable,
   ) extends SSOClient:
     // authorizeUrl is where the browser gets redirected -- it must stay on
     // versolaUrl (public-facing), never internalUrl. tokenUrl and
@@ -258,6 +274,55 @@ object SSOClient:
       credential match
         case ClientCredential.MutualTls(_) => certificateRoute.base / path
         case _ => config.internalUrl / path
+
+    /** The cell a call goes to (versolauth/versola#559); `None` is the `auth` the edge is configured for, which is what an
+      * installation with no registered cell always gets. */
+    private def pick(routing: CellRouting): Task[Option[EdgeCell]] =
+      for
+        topology <- cells.current
+        roll <- Random.nextDouble
+        cell <- ZIO.fromEither(CellRouting.route(topology, routing, roll))
+          .tapError(error => Observability.setError(CellRoutingError.code(error), Some(error.getMessage)))
+      yield cell
+
+    /** Runs `call` at `initial` and, when that cell answers that the user moved, once more at the cell it names: only one
+      * that this edge knows and that is another cell than the one asked. */
+    private def routed[E, A](initial: Option[EdgeCell])(call: Option[EdgeCell] => IO[E | Throwable, A]): IO[E | Throwable, A] =
+      call(initial).catchSome:
+        case SSOClient.CellMoved(to) =>
+          cells.current.flatMap: topology =>
+            topology.cells.find(_.id == to) match
+              case Some(target) if !initial.exists(_.id == target.id) => call(Some(target))
+              case _ => ZIO.fail(SSOClient.CellMoved(to))
+
+    /** `421` is auth's answer that the user is in another cell. Any other `421` (a proxy's Misdirected Request) is a
+      * failure said as such: its body is read here, so it is not handed on to be read a second time. */
+    private def refuseMoved(response: Response): Task[Unit] =
+      if response.status.code != 421 then ZIO.unit
+      else
+        response.bodyAs[SSOClient.MovedResponse].option.flatMap:
+          case Some(SSOClient.MovedResponse("moved", Some(cell))) => ZIO.fail(SSOClient.CellMoved(cell))
+          case _ => ZIO.fail(new RuntimeException("auth answered 421 without naming the cell the user moved to"))
+
+    /** The `cell` JOSE header of an access token, which a cell writes and the edge only reads to route: not verified here,
+      * the token is verified where it is presented. An opaque or malformed token names none. */
+    private def cellOf(accessToken: AccessToken): UIO[Option[String]] =
+      JWT.parseHeader[SSOClient.CellHeader](accessToken.toString).map(_.cell).orElseSucceed(None)
+
+    private def internalOf(cell: Option[EdgeCell]): URL = cell.fold(config.internalUrl)(_.internalUrl)
+
+    /** The client calls to a cell are made with: its own pins authenticate it; a cell that pins none is reached with the
+      * shared client's own trust. The configured `auth` keeps [[internalClient]]. */
+    private def clientOf(cell: Option[EdgeCell]): Client =
+      cell.fold(internalClient)(c => c.trust.fold(httpClient)(httpClient.ssl))
+
+    /** `path` where a call that presents a certificate goes for `cell`: its mutual-TLS listener, pinned by the cell's own
+      * certificates. A cell with none cannot take such a call, and the call is refused rather than sent elsewhere. */
+    private def certificateTargetOf(cell: Option[EdgeCell], clientId: ClientId, path: String): Task[(URL, Option[ClientSSLConfig])] =
+      cell match
+        case None => ZIO.succeed((certificateRoute.base / path, certificateRoute.trust))
+        case Some(c) =>
+          ZIO.fromOption(c.mtlsUrl).orElseFail(SSOClient.CellWithoutMutualTls(clientId, c.id)).map(base => (base / path, c.trust))
 
     /** What auth accepts as the `aud` of an assertion or a request object. Both take the
       * issuer identifier (`ClientAssertionService`, `RequestObjectService`), and the issuer is
@@ -343,30 +408,44 @@ object SSOClient:
       */
     private def push(params: List[(String, String)], client: OAuthClient): Task[URL] =
       for
-        pushedUrl = endpoint(client.credential, "par")
-        authenticated <- authenticate(
-          Form(params.map(FormField.simpleField(_, _))*),
-          client.id,
-          client.credential,
-          pushedUrl,
-        )
-        request = Request
-          .post(pushedUrl, Body.fromURLEncodedForm(authenticated.form))
-          .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-          .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
-        pushed <-
-          if response.status.isSuccess then response.bodyAs[SSOClient.PushedAuthorizationResponse]
-          else
-            response.bodyAs[ErrorResponse].flatMap: error =>
-              ZIO.fail(new RuntimeException(
-                s"Pushed authorization request failed: ${response.status.code} ${error.error}" +
-                  error.errorDescription.fold("")(d => s" - $d"),
-              ))
+        initial <- pick(CellRouting.Placement)
+        pushed <- routed(initial): cell =>
+          submit(cell, client.id, client.credential, "par", Form(params.map(FormField.simpleField(_, _))*)): response =>
+            if response.status.isSuccess then response.bodyAs[SSOClient.PushedAuthorizationResponse]
+            else
+              response.bodyAs[ErrorResponse].flatMap: error =>
+                ZIO.fail(new RuntimeException(
+                  s"Pushed authorization request failed: ${response.status.code} ${error.error}" +
+                    error.errorDescription.fold("")(d => s" - $d"),
+                ))
       yield authorizeUrl.addQueryParams(List(
         "client_id" -> client.id,
         "request_uri" -> pushed.requestUri,
       ))
+
+    /** One authenticated form POST to `path` of `cell`, whose answer `handle` reads. A `421 moved` answer is raised as
+      * [[SSOClient.CellMoved]] before `handle` sees it. */
+    private def submit[E, A](
+        cell: Option[EdgeCell],
+        clientId: ClientId,
+        credential: ClientCredential,
+        path: String,
+        form: Form,
+    )(handle: Response => IO[E | Throwable, A]): IO[E | Throwable, A] =
+      for
+        target <- credential match
+          case ClientCredential.MutualTls(_) => certificateTargetOf(cell, clientId, path)
+          case _ => ZIO.succeed((internalOf(cell) / path, None))
+        (url, trust) = target
+        authenticated <- authenticate(form, clientId, credential, url, trust)
+        request = Request
+          .post(url, Body.fromURLEncodedForm(authenticated.form))
+          .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+          .addHeaders(authenticated.headers)
+        response <- ZIO.scoped(authenticated.over(httpClient, clientOf(cell)).request(request))
+        _ <- refuseMoved(response)
+        result <- handle(response)
+      yield result
 
     /** A form, the headers and the connection that authenticate a call as `clientId`.
       *
@@ -381,6 +460,7 @@ object SSOClient:
         clientId: ClientId,
         credential: ClientCredential,
         endpoint: URL,
+        trust: Option[ClientSSLConfig],
     ): Task[Authenticated] =
       credential match
         case ClientCredential.ClientSecret(secret) =>
@@ -417,7 +497,7 @@ object SSOClient:
             )
 
         case ClientCredential.MutualTls(certificate) =>
-          mutualTlsConnection(clientId, certificate, endpoint).map: connection =>
+          mutualTlsConnection(clientId, certificate, endpoint, trust).map: connection =>
             // RFC 8705 §2: the certificate is the whole credential and the request carries
             // none of it. `client_id` still has to name the client -- §2.1 requires it, the
             // certificate being matched against what that client registered -- unless the
@@ -438,18 +518,19 @@ object SSOClient:
         clientId: ClientId,
         certificate: PrivateClientCertificate.Material,
         endpoint: URL,
+        trustAnchors: Option[ClientSSLConfig],
     ): Task[ClientSSLConfig] =
       for
         _ <- ZIO.fail(SSOClient.CredentialNeedsTls(clientId, endpoint))
           .unless(endpoint.scheme.contains(Scheme.HTTPS))
-        trust <- ZIO.fromOption(certificateRoute.trust)
+        trust <- ZIO.fromOption(trustAnchors)
           .orElseFail(SSOClient.CredentialNeedsTrustedServer(clientId, endpoint))
         certificateConfig <- certificateFiles.present(certificate)
       yield ClientSSLConfig.FromClientAndServerCert(trust, certificateConfig)
 
     /** The connection this edge's own certificate is presented over: [[edgeRoute]], its far side authenticated
       * by the pins configured for it. */
-    private def edgeConnection: Task[ClientSSLConfig] =
+    private def edgeConnection(edgeRoute: Option[CertificateRoute]): Task[ClientSSLConfig] =
       for
         route <- ZIO.fromOption(edgeRoute)
           .orElseFail(SSOClient.EdgeCertificateUnavailable("no `native` block names auth's mutual-TLS listener"))
@@ -468,14 +549,14 @@ object SSOClient:
       *            authenticates there rather than in the request. `None` sends the call over
       *            [[internalClient]], which authenticates auth and nothing else. */
     private case class Authenticated(form: Form, headers: Headers, ssl: Option[ClientSSLConfig]):
-      def over(client: Client): Client = ssl.fold(internalClient)(client.ssl)
+      def over(client: Client, plain: Client): Client = ssl.fold(plain)(client.ssl)
 
     override def warmUp(client: OAuthClient): Task[Unit] =
       client.credential match
         case credential: ClientCredential.MutualTls =>
           val url = endpoint(credential, "userinfo")
           for
-            connection <- mutualTlsConnection(client.id, credential.certificate, url)
+            connection <- mutualTlsConnection(client.id, credential.certificate, url, certificateRoute.trust)
             // Not `Authenticated`: no form and no `client_id` -- nothing is being asked of auth.
             // The body is read so the connection goes back to the pool open; one left unread is
             // closed with the scope, and the warm connection is the point of this. Bounded, because
@@ -502,20 +583,15 @@ object SSOClient:
       )
 
       for
-        url = endpoint(credential, "token")
-        authenticated <- authenticate(form, clientId, credential, url)
-        request = Request
-          .post(url, Body.fromURLEncodedForm(authenticated.form))
-          .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-          .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
-        tokenResponse <-
-          if response.status.isSuccess then response.bodyAs[TokenResponse]
-          else
-            response.bodyAs[ErrorResponse].flatMap: error =>
-              ZIO.fail(new RuntimeException(
-                s"Authorization code exchange failed: ${response.status.code} ${error.error}${error.errorDescription.fold("")(d => s" - $d")}",
-              ))
+        initial <- pick(CellRouting.ByValue(code))
+        tokenResponse <- routed(initial): cell =>
+          submit(cell, clientId, credential, "token", form): response =>
+            if response.status.isSuccess then response.bodyAs[TokenResponse]
+            else
+              response.bodyAs[ErrorResponse].flatMap: error =>
+                ZIO.fail(new RuntimeException(
+                  s"Authorization code exchange failed: ${response.status.code} ${error.error}${error.errorDescription.fold("")(d => s" - $d")}",
+                ))
       yield tokenResponse
 
     override def exchangeRefreshToken(
@@ -529,19 +605,15 @@ object SSOClient:
       )
 
       for
-        url = endpoint(credential, "token")
-        authenticated <- authenticate(form, clientId, credential, url)
-        request = Request
-          .post(url, Body.fromURLEncodedForm(authenticated.form))
-          .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-          .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
-        result <-
-          if response.status.isSuccess then response.bodyAs[TokenResponse]
-          else
-            response.bodyAs[ErrorResponse].flatMap: error =>
-              if error.error == "invalid_grant" then ZIO.fail(InvalidGrant)
-              else ZIO.fail(new RuntimeException(s"Token exchange failed: ${response.status.code} ${error.error}"))
+        // A refresh token naming a cell this deployment does not have is one it never issued.
+        initial <- pick(CellRouting.ByValue(refreshToken)).catchSome { case _: CellRoutingError => ZIO.fail(InvalidGrant) }
+        result <- routed(initial): cell =>
+          submit(cell, clientId, credential, "token", form): response =>
+            if response.status.isSuccess then response.bodyAs[TokenResponse]
+            else
+              response.bodyAs[ErrorResponse].flatMap: error =>
+                if error.error == "invalid_grant" then ZIO.fail(InvalidGrant)
+                else ZIO.fail(new RuntimeException(s"Token exchange failed: ${response.status.code} ${error.error}"))
       yield result
 
     override def userInfo(
@@ -549,6 +621,22 @@ object SSOClient:
         binding: SSOClient.TokenBinding,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
+        named <- cellOf(accessToken)
+        initial <- pick(CellRouting.ByHeader(named)).catchSome { case _: CellRoutingError => ZIO.fail(SSOClient.UserInfoUnauthorized) }
+        result <- routed(initial)(userInfoAt(_, accessToken, binding))
+      yield result
+
+    /** One `/userinfo` call at `cell`: the same token, and the connection the token's binding obliges, built for that cell
+      * (its listener, its pins). A `421 moved` answer is raised as [[SSOClient.CellMoved]], which [[routed]] follows once. */
+    private def userInfoAt(
+        cell: Option[EdgeCell],
+        accessToken: AccessToken,
+        binding: SSOClient.TokenBinding,
+    ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
+      for
+        // The edge's own certificate goes to the mutual-TLS listener of the cell the token names, or, with no cell, to the
+        // configured one.
+        listener = cell.fold(edgeRoute)(c => c.mtlsUrl.map(base => CertificateRoute(base, c.trust)))
         // auth enforces RFC 9449 §7 and RFC 8705 §3 on this token too, and this call has no proof
         // of either to forward: the client's key signed the proof edge already checked, and edge
         // holds neither that key nor the certificate of a caller that is not its own client.
@@ -558,24 +646,27 @@ object SSOClient:
         // accepts only from an edge it trusts (see `UserInfoController`).
         connection <- binding match
           case SSOClient.TokenBinding.Certificate(clientId, ClientCredential.MutualTls(certificate)) =>
-            mutualTlsConnection(clientId, certificate, certificateRoute.base / "userinfo").asSome
+            certificateTargetOf(cell, clientId, "userinfo").flatMap: (url, trust) =>
+              mutualTlsConnection(clientId, certificate, url, trust).asSome
           case SSOClient.TokenBinding.Certificate(clientId, _) =>
             ZIO.fail(SSOClient.TokenBoundToAbsentCertificate(clientId))
           case SSOClient.TokenBinding.Key | SSOClient.TokenBinding.CallerCertificate =>
-            edgeConnection.asSome
+            edgeConnection(listener).asSome
           case SSOClient.TokenBinding.Unbound =>
             ZIO.none
         userInfo = binding match
-          case SSOClient.TokenBinding.Certificate(_, _: ClientCredential.MutualTls) => certificateRoute.base / "userinfo"
+          case SSOClient.TokenBinding.Certificate(_, _: ClientCredential.MutualTls) =>
+            cell.flatMap(_.mtlsUrl).getOrElse(certificateRoute.base) / "userinfo"
           case SSOClient.TokenBinding.Key | SSOClient.TokenBinding.CallerCertificate =>
-            edgeRoute.fold(userInfoUrl)(_.base / "userinfo")
-          case _ => userInfoUrl
+            listener.fold(internalOf(cell) / "userinfo")(_.base / "userinfo")
+          case _ => internalOf(cell) / "userinfo"
 
         request = Request
           .get(userInfo)
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
 
-        response <- ZIO.scoped(connection.fold(internalClient)(httpClient.ssl).request(request))
+        response <- ZIO.scoped(connection.fold(clientOf(cell))(httpClient.ssl).request(request))
+        _ <- refuseMoved(response)
 
         result <-
           if response.status.isSuccess then

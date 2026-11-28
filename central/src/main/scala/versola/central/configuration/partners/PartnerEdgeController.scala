@@ -27,6 +27,7 @@ import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.resources.AudienceRateLimit
 import versola.central.configuration.resources.{ResourceController, ResourceId, ResourceRecord, ResourceService}
 import versola.central.configuration.tenants.TenantRepository
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.{
   CreateResourceEndpointRequest,
   CreateResourceRequest,
@@ -56,7 +57,7 @@ import java.time.Instant
   * the staff member's token in `Versola-Principal` besides ([[PartnerPrincipal]]), and every change writes an audit event
   * with the partner and the edge. */
 object PartnerEdgeController extends Controller:
-  type Env = Tracing & CentralConfig & EdgeService & PartnerRegistry & PartnerService & PartnerClientService & OAuthClientService &
+  type Env = Tracing & CentralConfig & EdgeService & CellRegistry & PartnerRegistry & PartnerService & PartnerClientService & OAuthClientService &
     ResourceService & AuthorizationPresetService & JwksService & ServerMetadataService & SecurityService & TenantRepository &
     EdgeCertificateRepository & EdgeEnrollmentTokenRepository & CentralAuditRepository & AuditEvents
 

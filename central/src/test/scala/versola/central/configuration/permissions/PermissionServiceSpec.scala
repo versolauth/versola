@@ -98,21 +98,18 @@ object PermissionServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("getPermissionsForSync filters permissions to tenants routed through the given edge") {
       val env = new Env(Vector(tenantPermission, otherTenantPermission))
       val edgeId = EdgeId("edge-1")
-      val routedTenant = TenantRecord(tenantId, "Tenant A", Some(edgeId))
-      val unroutedTenant = TenantRecord(otherTenantId, "Tenant B", None)
 
       for
-        _ <- env.tenantRepository.getAll.succeedsWith(Vector(routedTenant, unroutedTenant))
+        _ <- env.tenantRepository.getServedBy.succeedsWith(Vector(tenantId))
         result <- env.service.getPermissionsForSync(Some(edgeId))
       yield assertTrue(result === Vector(tenantPermission))
     },
     test("getPermissionsForSync returns empty when no tenant is routed through the given edge") {
       val env = new Env(Vector(tenantPermission, otherTenantPermission))
       val edgeId = EdgeId("edge-1")
-      val unroutedTenant = TenantRecord(tenantId, "Tenant A", None)
 
       for
-        _ <- env.tenantRepository.getAll.succeedsWith(Vector(unroutedTenant))
+        _ <- env.tenantRepository.getServedBy.succeedsWith(Vector.empty)
         result <- env.service.getPermissionsForSync(Some(edgeId))
       yield assertTrue(result.isEmpty)
     },

@@ -2,22 +2,17 @@ package versola.oauth.jwks
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.CentralSyncTokenService
-import versola.util.{Base64, CoreConfig, JWT, SecureRandom, SecurityService}
+import versola.util.{Base64, JWT, RsaKeyPair, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
-import javax.crypto.spec.SecretKeySpec
-
 object JwksSyncClientSpec extends ZIOSpecDefault:
   private case class SignedClaims(iss: String, sub: String, aud: List[String]) derives JsonDecoder
 
-  private val secretKey = SecretKeySpec(Array.fill(32)(12.toByte), "AES")
-  private val configLayer = ZLayer.succeed(
-    TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey)),
-  )
+  private val configLayer = ZLayer.succeed(TestEnvConfig.coreConfig)
 
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
     for
@@ -25,21 +20,22 @@ object JwksSyncClientSpec extends ZIOSpecDefault:
       token <- JWT.serialize(
         JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
         10.minutes,
-        JWT.Signature.Symmetric(secretKey),
+        TestEnvConfig.signedBy(TestEnvConfig.authKeyPair),
       )
     yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
+      override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
       override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
         client.request(request.addHeader(Header.Authorization.Bearer(token))),
   )
 
-  /** Central publishes the private halves encrypted under the shared sync secret, so the
+  /** Central publishes the private halves encrypted to the key of the auth that asked, so the
     * client has to be given something it can actually decrypt to be tested at all.
     */
-  private def signingKeysResponse(kid: String) =
+  private def signingKeysResponse(kid: String, to: RsaKeyPair = TestEnvConfig.authKeyPair) =
     for
       security <- ZIO.service[SecurityService]
-      encrypted <- security.encryptAes256(TestEnvConfig.privateKey.getEncoded.nn, secretKey)
+      encrypted <- security.encryptRsaHybrid(TestEnvConfig.privateKey.getEncoded.nn, to.publicKey)
     yield Json.Obj("privateKeys" -> Json.Obj(kid -> Json.Str(Base64.urlEncode(encrypted))))
 
   private def routes(seen: Ref[List[Request]], signingKeys: Json.Obj) =
@@ -66,7 +62,9 @@ object JwksSyncClientSpec extends ZIOSpecDefault:
         token <- ZIO
           .fromOption(request.header(Header.Authorization).collect { case Header.Authorization.Bearer(v) => v.stringValue })
           .orElseFail(new RuntimeException("Missing bearer token"))
-        claims <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT).mapError(e => new RuntimeException(e.toString))
+        claims <- JWT.deserialize[SignedClaims](token, TestEnvConfig.publicKeysOf(TestEnvConfig.authKeyPair), JWT.Type.JWT).mapError(e =>
+          new RuntimeException(e.toString),
+        )
       yield assertTrue(
         request.method == Method.GET,
         claims.iss == "auth",
@@ -90,6 +88,17 @@ object JwksSyncClientSpec extends ZIOSpecDefault:
         requests.exists(_.url.encode.contains("configuration/jwks/signing-keys/sync")),
         result.privateKeys.keySet == Set("test-key-id"),
         result.privateKeys("test-key-id").getEncoded.nn.sameElements(TestEnvConfig.privateKey.getEncoded.nn),
+      )
+    },
+    test("fails rather than dropping a private half encrypted to another key, and names the kid") {
+      for
+        seen <- Ref.make(List.empty[Request])
+        keys <- signingKeysResponse("test-key-id", to = TestEnvConfig.anotherCellKeyPair)
+        _ <- routes(seen, keys)
+        exit <- ZIO.serviceWithZIO[JwksSyncClient](_.getAll).exit
+      yield assertTrue(
+        exit.isFailure,
+        exit.causeOption.exists(_.squashTrace.getMessage.contains("test-key-id")),
       )
     },
     test("fails rather than dropping a private half it cannot decrypt") {

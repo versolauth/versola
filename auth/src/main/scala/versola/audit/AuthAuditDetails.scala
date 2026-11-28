@@ -111,7 +111,7 @@ object AuthAuditDetails:
     def toJson = AuditDetails.render(this)
     override def counted(count: Int): AuditDetails = copy(count = count)
 
-  /** `session.ended`: `cause` is `rp_logout`, `user_revoked`, `admin_revoked`, `user_agent_forgotten` or `user_deleted`;
+  /** `session.ended`: `cause` is `rp_logout`, `user_revoked`, `admin_revoked`, `superseded`, `user_agent_forgotten` or `user_deleted`;
     * `clients` how many relying parties took part in the session. */
   case class SessionEnded(cause: String, clients: Int) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
@@ -124,23 +124,6 @@ object AuthAuditDetails:
   case class Passkey(credentialPrefix: Option[String], deviceType: Option[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
-  /** `antifraud.list_changed`: `action` is `upsert` or `delete`. The value of the entry is not here: it can be a phone's hash or an
-    * address, and `af_list_audit` keeps it for the antifraud console. */
-  case class AntifraudListChanged(
-      action: String,
-      listType: String,
-      valueType: String,
-      tenantId: Option[String],
-      entryId: Option[String],
-      shadow: Option[Boolean],
-      expiresAt: Option[String],
-  ) extends AuditDetails derives JsonEncoder:
-    def toJson = AuditDetails.render(this)
-
-  /** `antifraud.settings_changed`: `action` is `put`, `patch` or `reset`, `version` the one the row became. */
-  case class AntifraudSettingsChanged(action: String, version: Option[Long]) extends AuditDetails derives JsonEncoder:
-    def toJson = AuditDetails.render(this)
-
   /** `antifraud.counters_reset`: `generation` is the one the reset took. */
   case class AntifraudCountersReset(scope: String, valueType: Option[String], generation: Long) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
@@ -151,6 +134,15 @@ object AuthAuditDetails:
 
   /** `account.roles_updated`: what the request asked for in one tenant. */
   case class RolesUpdated(tenantId: String, added: List[String], removed: List[String]) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `user.moved_in` and `user.arrival_discarded`: the other cell, the one the user came from. */
+  case class UserMoved(cell: String) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `user.moved_out`: the cell the user went to, and whether their rows had changed since the export that travelled (what was
+    * written in between is lost: the move is past its flip and is not undone, so it is said here). */
+  case class UserMovedOut(cell: String, changedAfterExport: Boolean) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `account.claims_updated`: the names of the claims, never their values. */

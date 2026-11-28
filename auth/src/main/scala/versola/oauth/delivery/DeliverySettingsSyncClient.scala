@@ -93,7 +93,7 @@ object DeliverySettingsSyncClient:
     private def decrypt(value: String): Task[String] =
       for
         encrypted <- ZIO.attempt(Base64.urlDecode(value))
-        decrypted <- securityService.decryptAes256(encrypted, config.central.secretKey)
+        decrypted <- securityService.decryptRsaHybrid(encrypted, config.central.privateKey)
       yield String(decrypted, StandardCharsets.UTF_8)
 
   private given JsonCodec[Email] = JsonCodec.string.transformOrFail(value => Email.from(value).left.map(_ => "not an email address"), identity)

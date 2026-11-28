@@ -10,13 +10,10 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
-import javax.crypto.spec.SecretKeySpec
-
 object OAuthClientSyncClientSpec extends ZIOSpecDefault:
   private case class SignedClaims(iss: String, sub: String, aud: List[String]) derives JsonDecoder
 
-  private val secretKey = SecretKeySpec(Array.fill(32)(6.toByte), "AES")
-  private val config = TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey))
+  private val config = TestEnvConfig.coreConfig
   private val configLayer = ZLayer.succeed(config)
 
   private case class EncodedClient(
@@ -83,23 +80,19 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       token <- JWT.serialize(
         JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
         10.minutes,
-        JWT.Signature.Symmetric(secretKey),
+        TestEnvConfig.signedBy(TestEnvConfig.authKeyPair),
       )
     yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
+      override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
       override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
         client.request(request.addHeader(Header.Authorization.Bearer(token))),
   )
 
-  private val securityLayer = ZLayer.succeed(new SecurityService:
-    override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
-    override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
-    override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
-    override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
-    override def mac(secret: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
-    override def hashPassword(password: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) = ZIO.dieMessage("Unused in test")
-    override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
-    override def generateEcKeyPair = ZIO.dieMessage("Unused in test"))
+  private val securityLayer = ZLayer.make[SecurityService](SecureRandom.live, SecurityService.live)
+
+  private def encryptedTo(pair: RsaKeyPair, secret: Secret): ZIO[SecurityService, Throwable, String] =
+    ZIO.serviceWithZIO[SecurityService](_.encryptRsaHybrid(secret, pair.publicKey)).map(Base64.urlEncode)
 
   def spec = suite("OAuthClientsClient")(
     // The payload carries every client in one document, `serviceClient` among them: a
@@ -109,6 +102,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       val currentSecret = Secret.fromString("current-secret")
       val previousSecret = Secret.fromString("previous-secret")
       for
+        encryptedCurrent <- encryptedTo(TestEnvConfig.authKeyPair, currentSecret)
+        encryptedPrevious <- encryptedTo(TestEnvConfig.authKeyPair, previousSecret)
         seen <- Ref.make(Option.empty[Request])
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request] { request =>
@@ -122,8 +117,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       Map("en" -> "Web App", "de" -> "Web-Anwendung"),
                       Set("https://example.com/callback"),
                       Set(ScopeToken.OpenId, ScopeToken("profile")),
-                      Some(Base64Url.encode(currentSecret)),
-                      Some(Base64Url.encode(previousSecret)),
+                      Some(encryptedCurrent),
+                      Some(encryptedPrevious),
                       300.seconds,
                       7776000.seconds,
                       "default",
@@ -167,7 +162,9 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(new RuntimeException("No request captured"))
         token <- ZIO.fromOption(request.header(Header.Authorization).collect { case Header.Authorization.Bearer(v) => v.stringValue })
           .orElseFail(new RuntimeException("Missing bearer token"))
-        claims <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT).mapError(e => new RuntimeException(e.toString))
+        claims <- JWT.deserialize[SignedClaims](token, TestEnvConfig.publicKeysOf(TestEnvConfig.authKeyPair), JWT.Type.JWT).mapError(e =>
+          new RuntimeException(e.toString),
+        )
         client = result(ClientId("web-app"))
       yield assertTrue(
         request.method == Method.GET,
@@ -206,6 +203,15 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         client.mtlsAuth.isEmpty,
         !client.bindsAccessTokens,
       )
+    },
+    test("fails the sync for a secret encrypted to another key, rather than serving the client without it") {
+      for
+        forSomeoneElse <- encryptedTo(TestEnvConfig.anotherCellKeyPair, Secret.fromString("current-secret"))
+        body = EncodedClientsSyncResponse(Vector(serviceClient.copy(secret = Some(forSomeoneElse)))).toJson
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        service <- ZIO.service[OAuthClientSyncClient]
+        result <- service.getAll.either
+      yield assertTrue(result.isLeft)
     },
     // The overrides are validated strictly, so a value the auth node does not know (a newer central, an old stored
     // format) fails that one record's decode; it must not take every other client with it.

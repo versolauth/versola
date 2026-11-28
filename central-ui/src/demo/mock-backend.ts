@@ -47,8 +47,18 @@ function backendPath(pathname: string): string {
   return pathname.replace(/^\/central(?=\/|$)/, '');
 }
 
+type CellDto = {
+  id: string; regionId: string; internalUrl: string; mtlsUrl?: string | null; trustedCertificates: string[]; state: 'open' | 'closed' | 'draining'; weight: number;
+  publicKeys?: Array<Record<string, unknown>>;
+  /** What the topology adds to a cell: the users the directory places in it, the carried refresh tokens it reports (0 when absent; `null`: it did not answer), a blocked drain. */
+  users?: number; tokens?: number | null; tokensUntil?: string; drainBlocked?: 'no_open_cell';
+};
+type UserMoveDto = {
+  userId: string; from: string; to: string; phase: 'leaving' | 'exported' | 'arrived' | 'flipped' | 'abandoning' | 'done' | 'failed'; reason: 'admin' | 'drain';
+  startedAt: string; updatedAt: string; attempts: number; error?: string;
+};
 type SecurityProfileDto = 'standard' | 'fapi2';
-type TenantDto = { id: string; description: string; edgeId?: string | null; securityProfile?: SecurityProfileDto; signingKeyId?: string | null };
+type TenantDto = { id: string; description: string; edgeGroupId?: string | null; securityProfile?: SecurityProfileDto; signingKeyId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
@@ -85,6 +95,7 @@ export type EdgeDto = {
   id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>;
   rateLimitPolicies?: Record<string, unknown>; policyRevisions?: Record<string, number>; tenants?: string[]; clients?: EdgeClientLinkDto[];
   // #549: the edge group and, for a partner edge, its partner and certificate. An edge seeded without a group is a first-party one of group `default`.
+  regionId?: string | null;
   groupId?: string; groupKind?: 'first_party' | 'partner'; partnerId?: string | null; partnerDisplayName?: string | null; partnerTenantId?: string | null; publicUrl?: string; certificateNotAfter?: string; lastRenewedAt?: string;
 };
 
@@ -413,7 +424,7 @@ const signingKeyOf = (state: MockConfigState, tenantId: string): string | null =
 const tenantResponse = (state: MockConfigState, tenant: TenantDto) => ({
   id: tenant.id,
   description: tenant.description,
-  edgeId: tenant.edgeId ?? null,
+  edgeGroupId: tenant.edgeGroupId ?? null,
   securityProfile: profileOf(state, tenant.id),
   signingKeyId: signingKeyOf(state, tenant.id),
 });
@@ -447,6 +458,15 @@ export type MockConfigState = {
   resources: Record<string, ResourceDto[]>;
   roles: Record<string, RoleDto[]>;
   edges: EdgeDto[];
+  /** Partitions, regions and cells (#557); the region of an edge is on the edge. */
+  partitions: Array<{ id: string }>;
+  regions: Array<{ id: string; partitionId: string }>;
+  cells: CellDto[];
+  /** The latest move of each user (`GET /users/moves`), and which cell the directory places each user in (what `POST /users/move` checks the target against). */
+  moves: UserMoveDto[];
+  userCells: Record<string, string>;
+  /** Users whose per-user writes answer `409 user_moving`. */
+  movingUsers: string[];
   /** The partners of every tenant (#549) and their approval requests. */
   partners: PartnerDto[];
   partnerApprovals: PartnerApprovalDto[];
@@ -556,8 +576,8 @@ export const defaultMyPermissions: MyPermissionsDto = {
 
 const defaultState: MockConfigState = {
   tenants: [
-    { id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: null },
-    { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
+    { id: 'tenant-alpha', description: 'Alpha Workspace', edgeGroupId: null },
+    { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null },
   ],
   myPermissions: defaultMyPermissions,
   clients: {
@@ -581,6 +601,12 @@ const defaultState: MockConfigState = {
     'tenant-bravo': [{ id: 'bravo-admin', description: { en: 'Bravo admin' }, permissions: ['bravo:read'], active: true }],
   },
   edges: [],
+  partitions: [],
+  regions: [],
+  cells: [],
+  moves: [],
+  userCells: {},
+  movingUsers: [],
   partners: [],
   partnerApprovals: [],
   authorizationPresets: {},
@@ -622,6 +648,12 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     permissions: clone({ ...defaultState.permissions, ...overrides.permissions }),
     resources: clone({ ...defaultState.resources, ...overrides.resources }),
     edges: clone(overrides.edges ?? defaultState.edges),
+    partitions: clone(overrides.partitions ?? defaultState.partitions),
+    regions: clone(overrides.regions ?? defaultState.regions),
+    cells: clone(overrides.cells ?? defaultState.cells),
+    moves: clone(overrides.moves ?? defaultState.moves),
+    userCells: clone(overrides.userCells ?? defaultState.userCells),
+    movingUsers: clone(overrides.movingUsers ?? defaultState.movingUsers),
     partners: clone(overrides.partners ?? defaultState.partners),
     partnerApprovals: clone(overrides.partnerApprovals ?? defaultState.partnerApprovals),
     overloadRejection: overrides.overloadRejection,
@@ -917,7 +949,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         tenant.description = payload.description;
-        tenant.edgeId = payload.edgeId ?? null;
+        tenant.edgeGroupId = payload.edgeGroupId ?? null;
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -1484,6 +1516,14 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
+    // The groups central knows: `default`, which every deployment has, and whichever groups the edges are in.
+    if (pathname === '/configuration/edge-groups' && method === 'GET') {
+      const groups = new Map<string, 'first_party' | 'partner'>([['default', 'first_party']]);
+      for (const edge of state.edges) groups.set(edge.groupId ?? 'default', edge.groupKind ?? 'first_party');
+      await route.fulfill(json({ groups: [...groups].map(([id, kind]) => ({ id, kind })) }));
+      return;
+    }
+
     if (pathname === '/configuration/edges') {
       if (method === 'GET') {
         await route.fulfill(json({ edges: state.edges.map(edge => {
@@ -1528,6 +1568,134 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+    }
+
+    // The topology (#557), with the rules central applies: a region needs its partition and is deleted only when empty, a cell
+    // needs its region and is deleted only when closed.
+    if (pathname === '/configuration/topology' && method === 'GET') {
+      const unfinished = (move: UserMoveDto) => move.phase !== 'done' && move.phase !== 'failed';
+      const cells = state.cells.map(({ tokens, ...cell }) => ({
+        ...cell,
+        ...(tokens === null ? {} : { tokens: tokens ?? 0 }),
+        users: cell.users ?? 0,
+        moving: state.moves.filter(move => move.from === cell.id && unfinished(move)).length,
+      }));
+      await route.fulfill(json({ partitions: state.partitions, regions: state.regions, cells }));
+      return;
+    }
+
+    if (pathname === '/configuration/partitions' && method === 'POST') {
+      const payload = body as { id: string };
+      if (state.partitions.some(partition => partition.id === payload.id)) {
+        await route.fulfill({ status: 409, contentType: 'text/plain', body: `partition '${payload.id}' already exists` });
+        return;
+      }
+      state.partitions = [...state.partitions, { id: payload.id }];
+      await route.fulfill({ status: 201, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/regions') {
+      if (method === 'POST') {
+        const payload = body as { id: string; partitionId: string };
+        if (!state.partitions.some(partition => partition.id === payload.partitionId)) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: `partition '${payload.partitionId}' does not exist` });
+          return;
+        }
+        if (state.regions.some(region => region.id === payload.id)) {
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `region '${payload.id}' already exists` });
+          return;
+        }
+        state.regions = [...state.regions, { id: payload.id, partitionId: payload.partitionId }];
+        await route.fulfill({ status: 201, body: '' });
+        return;
+      }
+      if (method === 'DELETE') {
+        const regionId = url.searchParams.get('regionId');
+        const cells = state.cells.filter(cell => cell.regionId === regionId).map(cell => cell.id);
+        const edges = state.edges.filter(edge => edge.regionId === regionId).map(edge => edge.id);
+        if (cells.length || edges.length) {
+          const what = cells.length ? `cells in it: ${cells.join(', ')}` : `edges in it: ${edges.join(', ')}`;
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `region '${regionId}' still has ${what}` });
+          return;
+        }
+        state.regions = state.regions.filter(region => region.id !== regionId);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/cells') {
+      if (method === 'POST' || method === 'PUT') {
+        const payload = body as CellDto;
+        const existing = state.cells.find(cell => cell.id === payload.id);
+        const keys = payload.publicKeys ?? [];
+        if (keys.length < 1 || keys.length > 2) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'publicKeys must hold one or two keys' });
+          return;
+        }
+        if (keys.some(key => key.kty !== 'RSA' || !key.kid || ['d', 'p', 'q', 'dp', 'dq', 'qi'].some(member => member in key))) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'publicKeys[0] is not a public RSA JWK with a kid' });
+          return;
+        }
+        if (payload.weight < 0) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'weight must not be negative' });
+          return;
+        }
+        if (method === 'POST' && existing) {
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `cell '${payload.id}' already exists` });
+          return;
+        }
+        if (method === 'PUT' && !existing) {
+          await route.fulfill({ status: 404, contentType: 'text/plain', body: `cell '${payload.id}' does not exist` });
+          return;
+        }
+        state.cells = method === 'POST' ? [...state.cells, payload] : state.cells.map(cell => cell.id === payload.id ? { ...cell, ...payload, regionId: cell.regionId } : cell);
+        await route.fulfill({ status: method === 'POST' ? 201 : 204, body: '' });
+        return;
+      }
+      if (method === 'DELETE') {
+        const cellId = url.searchParams.get('cellId');
+        const cell = state.cells.find(candidate => candidate.id === cellId);
+        if (cell && cell.state !== 'closed') {
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `cell '${cellId}' is ${cell.state}: only a closed cell is deleted` });
+          return;
+        }
+        // The refusals of central, in the order it applies them: users it still holds, a move not finished, refresh tokens it still answers for.
+        const lost = url.searchParams.get('lost') === 'true';
+        const force = url.searchParams.get('force') === 'true';
+        const refuse = (text: string) => route.fulfill({ status: 409, contentType: 'text/plain', body: text });
+        if (cell && !lost && (cell.users ?? 0) > 0) {
+          await refuse(`cell '${cellId}' still holds ${cell.users} user(s) in the directory: they are moved out first`);
+          return;
+        }
+        if (cell && !lost && state.moves.some(move => (move.from === cellId || move.to === cellId) && move.phase !== 'done' && move.phase !== 'failed')) {
+          await refuse(`cell '${cellId}' is part of a move of a user that is not finished: wait for it`);
+          return;
+        }
+        if (cell && !lost && !force && cell.tokens === null) {
+          await refuse(`cell '${cellId}' did not say whether it still answers for refresh tokens of moved users: try again, or force=true`);
+          return;
+        }
+        if (cell && !lost && !force && (cell.tokens ?? 0) > 0) {
+          await refuse(`cell '${cellId}' still answers for ${cell.tokens} refresh token(s) of users moved out of it: force=true deletes it and makes them invalid`);
+          return;
+        }
+        state.cells = state.cells.filter(candidate => candidate.id !== cellId);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/edges/region' && method === 'PUT') {
+      const edge = state.edges.find(candidate => candidate.id === url.searchParams.get('edgeId'));
+      if (!edge) {
+        await route.fulfill({ status: 404, contentType: 'text/plain', body: 'No edge is registered under that id' });
+        return;
+      }
+      edge.regionId = (body as { regionId?: string | null }).regionId ?? null;
+      await route.fulfill({ status: 204, body: '' });
+      return;
     }
 
     if (pathname === '/configuration/edges/dpop' && method === 'PUT') {
@@ -2210,13 +2378,22 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       body,
     });
 
-    const userToRecord = (user: UserDto) => ({
-      id: user.id,
-      ...(user.email !== undefined ? { email: user.email } : {}),
-      ...(user.phone !== undefined ? { phone: user.phone } : {}),
-      ...(user.login !== undefined ? { login: user.login } : {}),
-      claims: user.claims ?? {},
-    });
+    // The record as central answers it: the cell the directory places the user in (the new one from the flip on), the latest move,
+    // and no identifiers or claims while the old cell is not answering for the user.
+    const userToRecord = (user: UserDto) => {
+      const move = state.moves.find(candidate => candidate.userId === user.id) ?? null;
+      const cell = move && (move.phase === 'flipped' || move.phase === 'done') ? move.to : state.userCells[user.id] ?? null;
+      const leaving = move !== null && (move.phase === 'leaving' || move.phase === 'exported' || move.phase === 'arrived');
+      return {
+        id: user.id,
+        ...(!leaving && user.email !== undefined ? { email: user.email } : {}),
+        ...(!leaving && user.phone !== undefined ? { phone: user.phone } : {}),
+        ...(!leaving && user.login !== undefined ? { login: user.login } : {}),
+        claims: leaving ? {} : user.claims ?? {},
+        cell,
+        move,
+      };
+    };
 
     if (pathname === '/users/audit' && method === 'GET') {
       const audit = state.userAudit[url.searchParams.get('id') ?? ''] ?? { events: [] };
@@ -2255,6 +2432,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         ...(audit.truncated ? { truncated: true } : {}),
       }));
       return;
+    }
+
+    // Per-user writes while the user has a move that is not finished (`409 user_moving`).
+    if (['/users', '/users/claims', '/users/roles'].includes(pathname) && method === 'PATCH') {
+      const userId = (body as { id?: string; userId?: string } | null)?.id ?? (body as { userId?: string } | null)?.userId;
+      if (userId && state.movingUsers.includes(userId)) {
+        await route.fulfill({ status: 409, contentType: 'text/plain', body: 'the user is being moved to another cell, try again when the move is over' });
+        return;
+      }
     }
 
     if (pathname === '/users') {
@@ -2335,6 +2521,37 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 202, body: '' });
         return;
       }
+    }
+
+    if (pathname === '/users/move' && method === 'POST') {
+      const payload = body as { userId: string; cell: string };
+      const refuse = (status: number, text: string) => route.fulfill({ status, contentType: 'text/plain', body: text });
+      if (!state.users.some(candidate => candidate.id === payload.userId)) return refuse(404, 'there is no such user');
+      if (state.moves.some(move => move.userId === payload.userId && move.phase !== 'done' && move.phase !== 'failed')) return refuse(409, 'a move of the user is in progress');
+      const from = state.userCells[payload.userId];
+      if (!from) return refuse(400, 'the user is in no cell');
+      const target = state.cells.find(cell => cell.id === payload.cell);
+      if (!target) return refuse(400, 'the target cell is not registered');
+      if (target.id === from) return refuse(400, 'the target cell is the cell the user is in');
+      const regionOf = (cellId: string) => state.regions.find(region => region.id === state.cells.find(cell => cell.id === cellId)?.regionId);
+      if (regionOf(from)?.partitionId !== regionOf(target.id)?.partitionId) return refuse(400, 'the target cell is in another partition');
+      if (target.state === 'draining') return refuse(400, 'the target cell is being drained');
+      const now = new Date().toISOString();
+      state.moves = [{ userId: payload.userId, from, to: target.id, phase: 'leaving', reason: 'admin', startedAt: now, updatedAt: now, attempts: 0 },
+        ...state.moves.filter(move => move.userId !== payload.userId)];
+      await route.fulfill({ status: 202, body: '' });
+      return;
+    }
+
+    if (pathname === '/users/moves' && method === 'GET') {
+      const cell = url.searchParams.get('cell');
+      const phase = url.searchParams.get('phase');
+      const limit = Number(url.searchParams.get('limit') ?? 100);
+      const moves = state.moves
+        .filter(move => (!cell || move.from === cell || move.to === cell) && (!phase || move.phase === phase))
+        .slice(0, limit);
+      await route.fulfill(json({ moves }));
+      return;
     }
 
     if (pathname === '/users/claims' && method === 'PATCH') {

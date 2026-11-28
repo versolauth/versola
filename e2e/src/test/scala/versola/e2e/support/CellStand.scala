@@ -1,0 +1,318 @@
+package versola.e2e.support
+
+import zio.*
+import zio.http.{Client, Request, Status, URL}
+import zio.json.ast.Json
+
+import java.nio.file.{Files, Path}
+import java.sql.DriverManager
+import java.util.concurrent.TimeUnit
+
+/** A second cell beside the staged `auth` (versolauth/versola#604): another `auth` of the same build, with its own
+  * database and its own `cell-id`, and both cells registered in central so that the staged edge routes by them.
+  *
+  * What a cell is, is a database of its own and a key of its own: the second `auth` is started on the running one's
+  * `env.conf` with the database, the cell id and its key pair (`central.key-id`, `central.private-key`; generated here,
+  * versolauth/versola#1050) replaced, and it migrates the database it is given. Both cells are registered with their
+  * public keys, which is how central tells which of them calls it. Central, the signing keys and the clients are the
+  * ones of the stack, so a token of either cell verifies everywhere.
+  *
+  * The registration changes how the staged edge reaches `auth` for every spec, so it lasts for the scope only: the
+  * cells are removed and the edge is told again when it closes. Cell 2 is registered closed: nothing is placed in it
+  * by the edge, and a spec reaches it by its own address or by a value that names it. The suite runs its specs one
+  * after another (`build.sbt`), which is what makes this safe.
+  *
+  * @param first the staged `auth`, as cell [[E2EConfig.authCellId]]
+  * @param second the cell this stand started
+  * @param setups email-registration clients registered before the second cell started, so that it knows them from its
+  *   first read of the configuration; each has an address nobody registered
+  * @param passwordClient a client of the same tenant whose sign-in is an email and then a password, registered before
+  *   the second cell started too: for a user who registered through one of `setups` and was given a password
+  * @param loginClient a client of the same tenant whose sign-in is a login and password, or a passkey with no address
+  *   typed, registered before the second cell started as well: the two ways to sign in that name the user only when
+  *   they are submitted (versolauth/versola#1048)
+  */
+final case class CellStand(
+    first: CellStand.Cell,
+    second: CellStand.Cell,
+    passwordClient: CellStand.RegisteredClient,
+    loginClient: CellStand.RegisteredClient,
+    private val setups: Ref[List[Flows.Setup]],
+    private val states: (String, String) => Task[Unit],
+    private val secondClosedAtFullWeight: Task[Unit],
+):
+  private def takingUsers(first: Boolean, second: Boolean): Task[Unit] =
+    states(if first then "open" else "closed", if second then "open" else "closed")
+
+  /** Runs `effect` with cell 2 `draining` and cell 1 open, and puts the stand back whatever happens: while it runs, central
+    * moves the users of cell 2 to cell 1 (versolauth/versola#1051). */
+  def whileSecondDrains[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    (states("open", "draining") *> effect).ensuring(takingUsers(true, false).orDie)
+
+  /** Runs `effect` with cell 2 open and as heavy as cell 1, and closes it again whatever happens: while it runs, a new
+    * sign-in through the edge is placed in either cell, and an address nobody holds may belong to either
+    * (versolauth/versola#1052). The specs run one after another, so nothing else sees it. */
+  def whileSecondTakesUsers[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    (takingUsers(true, true) *> effect).ensuring(takingUsers(true, false).orDie)
+
+  /** Runs `effect` with cell 2 the only cell that takes users, and puts the stand back whatever happens. This is how a
+    * spec makes a user of cell 2: an address nobody holds is registered in the cell central names for it, whichever
+    * cell it was typed in, and with one taking cell that cell is named for every address. */
+  def whileOnlySecondTakesUsers[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    (takingUsers(false, true) *> effect).ensuring(takingUsers(true, false).orDie)
+
+  /** Runs `effect` with cell 2 `closed` but still carrying the weight of an open cell, and cell 1 open, and puts the stand back
+    * whatever happens: a cell closed without its weight being taken away. No cell places anything in cell 2, but an address
+    * nobody holds is sent there as often as to cell 1 (versolauth/versola#1052: the answer does not depend on the cells' states),
+    * which is what makes a spec able to find one within a few tries. */
+  def whileSecondClosedAtFullWeight[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    (secondClosedAtFullWeight *> effect).ensuring(takingUsers(true, false).orDie)
+
+  /** A registration client and an address nobody has used. */
+  def nextRegistration: Task[Flows.Setup] =
+    setups.modify:
+      case head :: tail => (ZIO.succeed(head), tail)
+      case Nil => (ZIO.fail(RuntimeException("CellStand ran out of registration setups; raise CellStand.Setups")), Nil)
+    .flatten
+
+object CellStand:
+  val SecondCellId = "local-2"
+
+  /** How many registration setups are made up front. */
+  val Setups = 24
+
+  /** A client as a spec uses it at `/authorize` and `/token`. */
+  final case class RegisteredClient(clientId: String, clientSecret: String, redirectUri: String)
+
+  /** An email address and then a password, no code: the first factor a handed-over sign-in lands on is not always a code. */
+  private val emailPasswordAuthFlow: Json = Json.Obj(
+    "primary" -> Json.Obj(
+      "credentials" -> Json.Arr(Json.Str("email")),
+      "inlinePassword" -> Json.Bool(false),
+      "factors" -> Json.Arr(Json.Obj("type" -> Json.Str("password"), "required" -> Json.Bool(true))),
+    ),
+    "passkey" -> Json.Null,
+    "equivalents" -> Json.Obj(),
+    "otpType" -> Json.Str("email"),
+  )
+
+  private val RedirectUri = "http://localhost:3000"
+
+  /** @param auth the cell reached by its own address, as nothing in front of it would route */
+  final case class Cell(id: String, auth: OAuthClient, url: String, mutualTlsUrl: String)
+
+  private val Port = 9051
+  private val DiagnosticsPort = 9052
+  private val AdditionalPort = 9057
+  private val MutualTlsPort = 9058
+
+  private val StartTimeout = 4.minutes
+
+  private val Partition = "e2e-stand"
+  private val Region = "e2e-stand-region"
+
+  /** `postgres { url, user, password }` of the running auth's `env.conf`: the server the second cell's database is made on. */
+  private case class Database(url: String, user: String, password: String):
+    /** The same server and options, another database. */
+    def named(database: String): String =
+      val (base, query) = url.span(_ != '?')
+      base.take(base.lastIndexOf('/') + 1) + database + query
+
+    def name: String = url.takeWhile(_ != '?').drop(url.takeWhile(_ != '?').lastIndexOf('/') + 1)
+
+  private def databaseOf(envConf: String): Task[Database] =
+    ZIO.attemptBlocking(Files.readString(Path.of(envConf))).flatMap: text =>
+      val block = text.drop(text.indexOf("\npostgres {"))
+      def value(key: String) = s"""(?m)^\\s*$key\\s*=\\s*"([^"]*)"""".r.findFirstMatchIn(block).map(_.group(1))
+      ZIO.fromOption(for url <- value("url"); user <- value("user"); password <- value("password") yield Database(url, user, password))
+        .orElseFail(RuntimeException(s"no postgres block with url, user and password in $envConf"))
+
+  /** A database of the second cell's own, empty: the cell migrates it when it starts. Dropped first, so that a run
+    * starts from nothing whatever an earlier one left. */
+  private def freshDatabase(server: Database, name: String): Task[Unit] =
+    ZIO.attemptBlocking:
+      val connection = DriverManager.getConnection(server.url, server.user, server.password).nn
+      try
+        val statement = connection.createStatement().nn
+        try
+          statement.execute(s"DROP DATABASE IF EXISTS $name WITH (FORCE)")
+          statement.execute(s"CREATE DATABASE $name")
+        finally statement.close()
+      finally connection.close()
+    .unit
+
+  private def launch(config: E2EConfig, database: String, key: CellIdentity.ServiceKey): ZIO[Scope, Throwable, (Process, Path)] =
+    ZIO.acquireRelease(
+      ZIO.attemptBlocking:
+        val conf = Files.createTempFile("e2e-cell-", ".conf").nn
+        val log = Files.createTempFile("e2e-cell-", ".log").nn
+        // Appended, so each replaces what the running auth's file says: a later definition of a key wins.
+        // `mutual-tls.external-url` is NOT replaced: it is the issuer's name for the listener, the same in every cell,
+        // like `jwt.issuer`. A device signs the `htu` of its proof before anyone knows which cell will answer (a
+        // sign-in may be handed on), so a cell that named its own listener differently would refuse that proof.
+        val overrides =
+          s"""
+             |cell-id = "$SecondCellId"
+             |central.key-id = "${key.keyId}"
+             |central.private-key = "${key.encoded}"
+             |postgres.url = "$database"
+             |""".stripMargin
+        Files.writeString(conf, Files.readString(Path.of(config.authEnvConf)) + overrides)
+        // From the repository root, as the staged auth is started: a service finds its migrations under the directory
+        // it runs in, and this one has a database to migrate.
+        val root = Path.of(config.authEnvConf).toAbsolutePath.nn.normalize.nn.getParent.nn.getParent.nn.getParent.nn
+        val launcher = Path.of(config.authLauncher).toAbsolutePath.nn.normalize.nn.toString
+        val builder = ProcessBuilder(launcher, s"-Denv.path=$conf").directory(root.toFile).redirectErrorStream(true).redirectOutput(log.toFile)
+        Map("PORT" -> Port, "DPORT" -> DiagnosticsPort, "APORT" -> AdditionalPort, "MPORT" -> MutualTlsPort)
+          .foreach((key, value) => builder.environment().nn.put(key, value.toString))
+        // Its database is empty: this is the one instance of the suite that migrates.
+        builder.environment().nn.put("RUN_MIGRATIONS", "true")
+        builder.environment().nn.putIfAbsent("HTTP_CLIENT_POOL_SIZE", "10")
+        (builder.start().nn, conf, log),
+    )((process, conf, log) =>
+      ZIO.attemptBlocking {
+        process.destroy()
+        if !process.waitFor(30, TimeUnit.SECONDS) then process.destroyForcibly()
+        Files.deleteIfExists(conf)
+        Files.deleteIfExists(log)
+      }.ignore,
+    ).map((process, _, log) => (process, log))
+
+  private def awaitReady(process: Process, log: Path, client: Client): Task[Unit] =
+    val ready = ZIO.scoped(client.request(Request.get(URL.decode(s"http://localhost:$DiagnosticsPort/readiness").toOption.get)))
+      .map(_.status.isSuccess).catchAll(_ => ZIO.succeed(false))
+    (ready <*> ZIO.attemptBlocking(!process.isAlive))
+      .repeat(Schedule.spaced(1.second) *> Schedule.recurUntil[(Boolean, Boolean)]((r, stopped) => r || stopped))
+      .timeout(StartTimeout)
+      .flatMap:
+        case Some((true, _)) => ZIO.unit
+        case _ =>
+          ZIO.attemptBlocking(Files.readString(log)).flatMap(out =>
+            ZIO.fail(RuntimeException(s"the second cell did not become ready:\n${out.takeRight(4000)}")),
+          )
+
+  private def cell(id: String, internalUrl: String, mutualTlsUrl: String, pin: String, state: String, weight: Int, publicKey: Json.Obj): Json.Obj =
+    Json.Obj(
+      "id" -> Json.Str(id),
+      "regionId" -> Json.Str(Region),
+      "internalUrl" -> Json.Str(internalUrl),
+      "mtlsUrl" -> Json.Str(mutualTlsUrl),
+      "trustedCertificates" -> Json.Arr(Json.Str(pin)),
+      "state" -> Json.Str(state),
+      "weight" -> Json.Num(weight),
+      "publicKeys" -> Json.Arr(publicKey),
+    )
+
+  private def accepted(what: String, result: ApiResult, also: Status*): Task[Unit] =
+    ZIO.fail(RuntimeException(s"$what refused: ${result.status} ${result.body}"))
+      .unless(result.status.isSuccess || also.contains(result.status)).unit
+
+  /** Registers both cells and tells the staged edge; removes them and tells it again when the scope closes. */
+  private def registered(central: CentralApi, edge: EdgeApi, first: Json.Obj, second: Json.Obj): ZIO[Scope, Throwable, Unit] =
+    def closed(cell: Json.Obj) = Json.Obj(cell.fields.map((key, value) => if key == "state" then key -> Json.Str("closed") else key -> value))
+    def id(cell: Json.Obj) = cell.get("id").flatMap(_.asString).getOrElse("")
+    // What an earlier run that was stopped left: the same removal as at the end, and nothing to remove is not an error.
+    val remove =
+      ZIO.foreachDiscard(List(first, second))(cell =>
+        (central.put("/configuration/cells", closed(cell)) *> central.delete("/configuration/cells", "cellId" -> id(cell), "lost" -> "true")).ignore,
+      ) *> central.delete("/configuration/regions", "regionId" -> Region).ignore *> edge.syncConfiguration.ignore
+    ZIO.acquireRelease(
+      for
+        _ <- remove
+        partition <- central.post("/configuration/partitions", Json.Obj("id" -> Json.Str(Partition)))
+        _ <- accepted("the stand's partition", partition, Status.Conflict)
+        region <- central.post("/configuration/regions", Json.Obj("id" -> Json.Str(Region), "partitionId" -> Json.Str(Partition)))
+        _ <- accepted("the stand's region", region)
+        one <- central.post("/configuration/cells", first)
+        _ <- accepted("the first cell", one)
+        two <- central.post("/configuration/cells", second)
+        _ <- accepted("the second cell", two)
+        _ <- edge.syncConfiguration
+      yield (),
+    )(_ => remove)
+
+  val layer: ZLayer[E2EConfig & Client & OAuthClient & CentralApi & EdgeApi, Throwable, CellStand] =
+    ZLayer.scoped:
+      for
+        config <- ZIO.service[E2EConfig]
+        client <- ZIO.service[Client]
+        oauth <- ZIO.service[OAuthClient]
+        central <- ZIO.service[CentralApi]
+        edge <- ZIO.service[EdgeApi]
+        // Before the second cell starts: it reads the configuration once at start-up and then on its refresh interval.
+        setups <- ZIO.foreach(List.range(0, Setups))(_ => Flows.setupEmailRegistration().provideEnvironment(ZEnvironment(oauth)))
+        passwordClientId <- CentralApi.id("cell-stand-password")
+        passwordClient <- oauth.registerClient(
+          passwordClientId,
+          "Cell stand: email and password",
+          Set(RedirectUri),
+          allowedScopes = Set("openid", "email"),
+          authFlow = Some(emailPasswordAuthFlow),
+        ).success
+        // The tenant's settings as `Flows.layer` leaves them (the exact call: it overwrites every field), which this spec
+        // does not run: a passkey is enrolled and used here, and its origin is one of those settings.
+        _ <- oauth.upsertChallengeSettings(
+          acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
+          mtlsCertificateHeader = Some(OAuthClient.mtlsCertificateHeader),
+          mtlsCertificateEncoding = Some("urlEncodedPem"),
+        )
+        loginClientId <- CentralApi.id("cell-stand-login")
+        loginClient <- oauth.registerClient(
+          loginClientId,
+          "Cell stand: login and password, or a passkey",
+          Set(RedirectUri),
+          allowedScopes = Set("openid", "offline_access"),
+          authFlow = Some(Flows.loginPasswordPasskeyAuthFlow),
+        ).success
+        // Each cell is known to central by its own key: the staged auth's, which central's configuration lists as `auth.public-keys`
+        // (the cell it is configured with is this one), and one generated for the second cell, whose kid no other key has.
+        firstKey <- CellIdentity.stagedAuth(config)
+        secondKey <- CellIdentity.generate(s"auth-$SecondCellId-e2e")
+        firstPublicKey <- firstKey.publicJwk
+        secondPublicKey <- secondKey.publicJwk
+        server <- databaseOf(config.authEnvConf)
+        database = s"${server.name}_cell2"
+        _ <- freshDatabase(server, database)
+        // The leaf of auth's own listener, which is what an edge pins a cell by; both cells present the same one.
+        pin <- ZIO.attemptBlocking(Files.readString(Path.of(config.authMutualTlsTrustedCertificates).resolveSibling("server.crt")).trim)
+        secondUrl = s"http://localhost:$Port"
+        secondMutualTlsUrl = s"https://localhost:$MutualTlsPort"
+        // Registered before the second cell starts: central knows an auth by its key, and a cell that central does not
+        // know cannot read the configuration it starts with (versolauth/versola#1050).
+        _ <- registered(
+          central,
+          edge,
+          first = cell(config.authCellId, config.authUrl, config.authMutualTlsUrl, pin, state = "open", weight = 100, publicKey = firstPublicKey),
+          second = cell(SecondCellId, secondUrl, secondMutualTlsUrl, pin, state = "closed", weight = 0, publicKey = secondPublicKey),
+        )
+        (process, log) <- launch(config, server.named(database), secondKey)
+        _ <- awaitReady(process, log, client)
+        unused <- Ref.make(setups)
+        // An open cell takes users with a weight of 100; a closed and a draining one take none, unless the spec says otherwise.
+        placed = (id: String, url: String, mutualTlsUrl: String, key: Json.Obj, state: String, weight: Int) =>
+          central
+            .put("/configuration/cells", cell(id, url, mutualTlsUrl, pin, state = state, weight = weight, publicKey = key))
+            .flatMap(accepted(s"the state of cell $id", _))
+      yield CellStand(
+        first = Cell(config.authCellId, oauth, config.authUrl, config.authMutualTlsUrl),
+        second = Cell(
+          SecondCellId,
+          OAuthClient(
+            client,
+            config.copy(authUrl = secondUrl, authAdditionalUrl = s"http://localhost:$AdditionalPort", authCellId = SecondCellId),
+          ),
+          secondUrl,
+          secondMutualTlsUrl,
+        ),
+        passwordClient = RegisteredClient(passwordClientId, passwordClient.secret, RedirectUri),
+        loginClient = RegisteredClient(loginClientId, loginClient.secret, RedirectUri),
+        states = (firstState, secondState) =>
+          placed(config.authCellId, config.authUrl, config.authMutualTlsUrl, firstPublicKey, firstState, if firstState == "open" then 100 else 0) *>
+            placed(SecondCellId, secondUrl, secondMutualTlsUrl, secondPublicKey, secondState, if secondState == "open" then 100 else 0) *>
+            edge.syncConfiguration.unit,
+        secondClosedAtFullWeight =
+          placed(config.authCellId, config.authUrl, config.authMutualTlsUrl, firstPublicKey, "open", 100) *>
+            placed(SecondCellId, secondUrl, secondMutualTlsUrl, secondPublicKey, "closed", 100) *>
+            edge.syncConfiguration.unit,
+        setups = unused,
+      )

@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
-import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission, ProofInput}
+import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission, ProofInput}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionService
@@ -17,7 +17,7 @@ import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.http.Observability
-import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
+import versola.util.{AuthPropertyGenerator, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import zio.json.ast.Json
 import zio.json.{JsonDecoder, ast}
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -28,6 +28,12 @@ import java.util.UUID
 trait AuthorizeEndpointService:
 
   def authorize(request: AuthorizeRequest): Task[AuthorizeResponse]
+
+  /** A request that another cell handed to this one (`GET /challenge/handoff`, versolauth/versola#1052): it starts as at
+    * [[authorize]], and its login hint is answered in this cell, held or not, without asking central where the address
+    * goes: the cell that sent it has chosen already, and a second choice could differ (the weights may have changed
+    * between the two) and send the sign-in back. */
+  def authorizeHanded(request: AuthorizeRequest): Task[AuthorizeResponse]
 
 object AuthorizeEndpointService:
   private case class HintClaims(sub: UserId, aud: Option[Json], iss: Option[String]) derives JsonDecoder
@@ -63,9 +69,13 @@ object AuthorizeEndpointService:
       consentService: ConsentService,
   ) extends AuthorizeEndpointService:
 
-    override def authorize(
-        request: AuthorizeRequest,
-    ): Task[AuthorizeResponse] =
+    override def authorize(request: AuthorizeRequest): Task[AuthorizeResponse] =
+      start(request, handed = false)
+
+    override def authorizeHanded(request: AuthorizeRequest): Task[AuthorizeResponse] =
+      start(request, handed = true)
+
+    private def start(request: AuthorizeRequest, handed: Boolean): Task[AuthorizeResponse] =
       for
         // Generated upfront so every log line for this request carries auth.id, and so the same
         // id is used throughout (conversation record, cookie) rather than one being minted later
@@ -140,12 +150,13 @@ object AuthorizeEndpointService:
                   Map.empty,
                   knownUserId = Some(userId).filter(_ => leavesSomethingToVerify(flow)),
                   missingUser = MissingUserBehavior.Fallback,
+                  handed = handed,
                 )
 
           case (None, None) =>
             // ACR is voluntary (OIDC Core §3.1.2.1): without a known user we cannot verify
             // achievability, so we proceed with normal auth and omit the acr claim.
-            createConversation(authId, request, flow, registrationAvailable, uiLocales, Map.empty)
+            createConversation(authId, request, flow, registrationAvailable, uiLocales, Map.empty, handed = handed)
 
           case (Some(SessionInfo(id, session)), _) =>
             for
@@ -318,24 +329,23 @@ object AuthorizeEndpointService:
         request: AuthorizeRequest,
         uiLocales: Option[List[String]],
         csrfToken: String,
+        handed: Boolean,
     )(response: AuthorizeResponse): Task[AuthorizeResponse] =
+      // The hint is submitted as the address typed on the card would be. Where it belongs to a user of another cell the
+      // router has sealed the request and ended this conversation: the answer is then the redirect to that cell, not
+      // the first step of a conversation that is gone.
+      def hinted(submitted: Task[(ConversationResult.Render, ConversationRecord)]): Task[AuthorizeResponse] =
+        submitted.map:
+          case (ConversationResult.Handoff(location), _) => AuthorizeResponse.HandedOff(location)
+          case _ => response
+      def submit(authId: AuthId, submission: EmailSubmission | PhoneSubmission) =
+        if handed then conversationRouter.submitHanded(authId, submission, None, uiLocales.flatMap(_.headOption), None)
+        else conversationRouter.submit(authId, submission, uiLocales.flatMap(_.headOption), None)
       response match
         case AuthorizeResponse.Initialize(authId) =>
           request.loginHint match
-            case Some(Left(email)) =>
-              conversationRouter.submit(
-                authId,
-                EmailSubmission(email, ProofInput.NoScript, csrfToken),
-                uiLocales.flatMap(_.headOption),
-                None,
-              ).as(response)
-            case Some(Right(phone)) =>
-              conversationRouter.submit(
-                authId,
-                PhoneSubmission(phone, ProofInput.NoScript, csrfToken),
-                uiLocales.flatMap(_.headOption),
-                None,
-              ).as(response)
+            case Some(Left(email)) => hinted(submit(authId, EmailSubmission(email, ProofInput.NoScript, csrfToken)))
+            case Some(Right(phone)) => hinted(submit(authId, PhoneSubmission(phone, ProofInput.NoScript, csrfToken)))
             case None => ZIO.succeed(response)
         case _ => ZIO.succeed(response)
 
@@ -347,6 +357,7 @@ object AuthorizeEndpointService:
         uiLocales: Option[List[String]],
         amr: Map[PassedAuthFactor, PassedFactorRecord],
         applyHint: Boolean = true,
+        handed: Boolean = false,
         knownUserId: Option[UserId] = None,
         targetAcr: Option[Acr] = None,
         missingUser: MissingUserBehavior = MissingUserBehavior.Ignore,
@@ -435,7 +446,7 @@ object AuthorizeEndpointService:
           // step entirely and advance straight to the required challenges.
           if effectiveUserId.isDefined then
             conversationRouter.advance(authId, conversation).as(r)
-          else if applyHint then applyLoginHint(request, uiLocales, csrfToken)(r)
+          else if applyHint then applyLoginHint(request, uiLocales, csrfToken, handed)(r)
           else ZIO.succeed(r)
       yield result
 
@@ -516,7 +527,7 @@ object AuthorizeEndpointService:
         // key's algorithm -- so the key has to be resolved before the hash, not alongside it.
         client <- configurationService.get(request.clientId)
         signingKey <- jwksService.signingKey(client.tenantId)
-        cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
+        cHash = JWT.leftHalfHash(AuthorizationCode.present(code), signingKey.algorithm)
         // FAPI 1.0 Advanced §5.2.2-4: `s_hash` binds the id_token to the `state` it was
         // issued for, the same way `c_hash` binds it to the code. Absent when the request
         // carried no state, since there is then nothing to bind to.

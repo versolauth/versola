@@ -138,7 +138,7 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
     for
       central <- ZIO.service[CentralApi]
       until <- Clock.instant.map(_.plusSeconds(3600))
-      _ <- AntifraudFixture.seedThroughApi(
+      _ <- AntifraudFixture.seed(
         central,
         // An hour is as long as these cases need, and an entry that expires is not left on the lists of the stack.
         entries.toList.map(_.copy(expiresAt = Some(until))) :+ ListEntry(

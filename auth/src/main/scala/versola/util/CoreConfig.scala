@@ -1,11 +1,15 @@
 package versola.util
 
+import com.nimbusds.jose.jwk.{JWK, JWKSet, RSAKey}
+import org.apache.commons.codec.digest.Blake3
 import versola.util.revocation.RevocationConfig
 import zio.Duration
 import zio.http.{Method, URL}
 
+import java.nio.charset.StandardCharsets
 import java.security.PrivateKey
-import javax.crypto.SecretKey
+import java.security.interfaces.RSAPrivateKey
+import scala.util.Try
 
 case class CoreConfig(
     security: CoreConfig.Security,
@@ -24,6 +28,13 @@ case class CoreConfig(
     limits: Option[versola.oauth.clientauth.ClientAuthThrottle.Settings] = None,
     // The in-memory list of revoked access tokens (#729); absent, the defaults of [[RevocationConfig]] apply.
     revocation: Option[RevocationConfig] = None,
+    /** The cell this deployment is, when it is one of several (versolauth/versola#547 §6.2):
+      * written at the front of the opaque values it issues and as the `cell` JOSE header of
+      * the tokens and security event tokens it signs, so a router can find their home cell
+      * without a lookup. Absent, nothing is prefixed or claimed, and values issued before
+      * a cell id was configured are accepted either way.
+      */
+    cellId: Option[RoutingKey.CellId] = None,
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
@@ -71,10 +82,48 @@ object CoreConfig:
       subject: String,
       startTls: Boolean,
   )
+
+  /** How this `auth` and `central` know each other (versolauth/versola#1050): each has a key pair of its own, and
+    * neither holds a secret the other could use to pass for it.
+    *
+    * @param keyId the `kid` of this auth's key, in the header of the tokens it signs and of the handoffs it seals; it is
+    *   the `kid` of the public JWK central (and the cells) know it by
+    * @param privateKey this auth's RSA key, as base64 PKCS#8 like an edge's `private-key`. It signs for central and for
+    *   a cell, decrypts what central and the cells encrypt to it, and keys the stored configuration snapshot
+    * @param publicKeyJwk central's service key, the public RSA JWK (with a `kid`) its calls to this auth are verified with
+    */
   case class CentralSyncConfig(
       url: URL,
-      secretKey: SecretKey,
-  )
+      keyId: String,
+      privateKey: RSAPrivateKey,
+      publicKeyJwk: JWT.PublicKeys,
+  ):
+    /** The key the stored configuration snapshot is authenticated with: local to this auth, derived from its own private
+      * key, so that a snapshot another auth wrote is not one this one would serve. */
+    def snapshotKey: Array[Byte] =
+      val derived = Array.ofDim[Byte](32)
+      Blake3.initKeyDerivationFunction(CentralSyncConfig.SnapshotContext).update(privateKey.getEncoded).doFinalize(derived)
+      derived
+
+  object CentralSyncConfig:
+    /** Never to change: it separates the snapshot key from every other use of the private key. */
+    private val SnapshotContext = "versola auth config snapshot v1".getBytes(StandardCharsets.UTF_8)
+
+    /** An RSA private key, as an edge reads its own: base64 PKCS#8, in either alphabet. */
+    def decodePrivateKey(raw: String): Either[String, RSAPrivateKey] =
+      SecretConfig.rsaPrivateKey(raw).left.map(_.getMessage).flatMap:
+        case key: RSAPrivateKey => Right(key)
+        case _ => Left("not an RSA private key")
+
+    /** Central's public JWK as JSON text: an RSA key of at least 2048 bits, with a `kid` and nothing private in it. A
+      * token is verified by the key its `kid` names, so a key without one verifies nothing. */
+    def decodePublicKey(raw: String): Either[String, JWT.PublicKeys] =
+      Try(JWK.parse(raw)).toEither.left.map(_ => "not a JWK").flatMap:
+        case key: RSAKey if key.isPrivate => Left("holds private members: only the public half belongs here")
+        case key: RSAKey if Option(key.getKeyID).forall(_.isEmpty) => Left("has no kid")
+        case key: RSAKey if key.size < 2048 => Left("is an RSA key of fewer than 2048 bits")
+        case key: RSAKey => Right(JWT.PublicKeys(JWKSet(key)))
+        case _ => Left("is not an RSA key")
 
   case class OtpProvider(
       method: Method,

@@ -22,7 +22,7 @@ import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.*
-import versola.user.{UserRepository, UserService}
+import versola.user.{UserDirectory, UserRepository, UserService}
 import versola.util.*
 import versola.util.audit.AuditOutcome
 import zio.*
@@ -394,6 +394,39 @@ object ConversationServiceSpec extends UnitSpecBase:
           ),
           env.userService.register.calls.map(_._3) == List(roleIds),
         )
+      },
+      test(
+        "reports the cell that takes the address when the directory refuses a registration made in a cell that takes no users, and writes nothing",
+      ) {
+        val env = Env()
+        val pending = registrationConversation.copy(credential = Some(Left(email)), registrationStep = Some(1))
+        val taking = RoutingKey.CellId.parse("kz-2").toOption.get
+        for
+          _ <- env.configService.get.succeedsWith(registrationClient)
+          _ <- env.userService.register.failsWith(UserDirectory.CellNotTaking(taking))
+          result <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email))
+        yield assertTrue(result == RegistrationEntry.NotTaking(Some(taking)), env.conversationRepository.overwrite.calls.isEmpty)
+      },
+      test("reports that no cell takes users when the directory says so, and writes nothing") {
+        val env = Env()
+        val pending = registrationConversation.copy(credential = Some(Left(email)), registrationStep = Some(1))
+        for
+          _ <- env.configService.get.succeedsWith(registrationClient)
+          _ <- env.userService.register.failsWith(UserDirectory.NoCellTakesUsers)
+          result <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email))
+        yield assertTrue(result == RegistrationEntry.NotTaking(None), env.conversationRepository.overwrite.calls.isEmpty)
+      },
+      test("does not take another failure of the registration for a refusal: an owner in another cell, or a directory that is down, fails") {
+        val env = Env()
+        val pending = registrationConversation.copy(credential = Some(Left(email)), registrationStep = Some(1))
+        val elsewhere = RoutingKey.CellId.parse("kz-2").toOption.get
+        for
+          _ <- env.configService.get.succeedsWith(registrationClient)
+          _ <- env.userService.register.failsWith(UserService.HomeCellElsewhere(elsewhere))
+          held <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email)).either
+          _ <- env.userService.register.failsWith(RuntimeException("central is down"))
+          down <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email)).either
+        yield assertTrue(held == Left(UserService.HomeCellElsewhere(elsewhere)), down.isLeft, env.conversationRepository.overwrite.calls.isEmpty)
       },
       test("reports a write conflict when the conversation moved on") {
         val env = Env()

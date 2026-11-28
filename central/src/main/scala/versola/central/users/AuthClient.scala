@@ -6,9 +6,10 @@ import versola.central.audit.{AuthAuditError, CentralAudit, UserAuditEventsQuery
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.{CellId, TopologyRepository}
 import versola.util.audit.AuditContext
-import versola.util.http.{EntityVersion, Observability}
-import versola.util.{Email, PageLimit, Patch, Phone}
+import versola.util.http.Observability
+import versola.util.{Email, Patch, Phone}
 import zio.Duration
 import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.ast.Json
@@ -29,6 +30,15 @@ trait AuthClient:
       login: Option[Login],
   ): Task[Unit]
 
+  /** Changes the identifiers named and leaves the others as `auth` has them. */
+  def patchUser(
+      id: UserId,
+      version: UUID,
+      email: Option[Patch[Email]],
+      phone: Option[Patch[Phone]],
+      login: Option[Patch[Login]],
+  ): Task[Unit]
+
   def updateUserRoles(
       userId: UserId,
       tenantId: TenantId,
@@ -37,6 +47,14 @@ trait AuthClient:
   ): Task[Unit]
 
   def deleteUser(userId: UserId): Task[Unit]
+
+  /** The deletion of a user that central's directory no longer holds (the queued one): addressed to the cell that held the
+    * user, which `cell` names, because there is nobody left to look the cell up for. A cell that is not registered any
+    * more, or `None`, is the configured `auth`, as [[deleteUser]] is for a user of no cell. */
+  def deleteUserOf(cell: Option[CellId], userId: UserId): Task[Unit]
+
+  /** The user as `auth` holds it: its identifiers, which central keeps only the MACs of, and its claims. */
+  def getUser(id: UserId): Task[Option[AuthClient.UserDto]]
 
   def getUserClaims(id: UserId): Task[Option[Json.Obj]]
 
@@ -57,6 +75,11 @@ trait AuthClient:
 
   /** Ends one session of the user. `false` when auth does not know it as this user's. */
   def endSession(userId: UserId, sessionId: String): Task[Boolean]
+
+  /** Ends one session of the user because a sign-in that finished in another cell took its place: ended as
+    * [[endSession]] ends it, and recorded as superseded, not as an administrator's action. `false` when auth does not
+    * know it as this user's. */
+  def supersedeSession(userId: UserId, sessionId: String): Task[Boolean]
 
   /** Revokes the offline access `clientId` holds for the user: its live refresh tokens. */
   def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit]
@@ -99,48 +122,91 @@ trait AuthClient:
     * adds to it and does not read into it. */
   def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj]
 
-  /** The antifraud lists live in auth, which validates the entries: its refusals are [[AntifraudListError]]s, not
-    * failures of the call. `userId` is the admin who asked, recorded by auth as who made the change. `caller` is whose scope
-    * the call is made in; auth enforces it, and it is sent as the call's own fields (`scope` and `callerTenantId`), never taken
-    * from what the request says. */
-  def createAntifraudListEntry(request: NewListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, ListEntryResponse]
+  /** Central stores the antifraud lists and settings, and auth says whether an entry or the settings are valid before
+    * they are stored: the rules of what is valid belong to the engine that enforces them, and auth has the key a phone is
+    * hashed with. Its refusals are [[AntifraudListError]]s, not failures of the call.
+    *
+    * One `auth` answers a check, and every cell a preview, a count of hits and a reset: what an entry matched, how often
+    * it fired and the counters are each cell's own. */
+  def checkAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry]
 
-  def previewAntifraudListEntry(request: NewListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, PreviewResponse]
+  /** The check, with what the entry would have matched of the last 24 hours of events, summed over every cell. One cell
+    * that cannot answer fails the call: a sum without it would understate what the entry does. */
+  def previewAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry]
 
-  def listAntifraudListEntries(query: ListEntriesQuery, caller: AntifraudCaller): IO[AntifraudListError | Throwable, List[ListEntryResponse]]
+  /** How often each of `ids` matched, summed over the cells. A cell that cannot answer is left out and logged: the
+    * counters are for reading, and a listing must not fail on one cell. */
+  def antifraudListHits(ids: List[UUID]): Task[List[ListHits]]
 
-  def deleteAntifraudListEntry(request: DeleteListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, Unit]
+  /** The settings a change would make, validated: `check.patch` applied to `check.settings`. */
+  def checkAntifraudSettings(check: SettingsCheck): IO[AntifraudListError | Throwable, AntifraudSettings]
 
-  def antifraudListAudit(
-      entryId: Option[UUID],
-      limit: Option[PageLimit],
-      caller: AntifraudCaller,
-  ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]]
-
-  /** The antifraud settings live in auth too, which validates them: its refusals are [[AntifraudListError]]s as well. A change
-    * made on a version the settings have left is [[AntifraudListError.StaleVersion]]. */
-  def getAntifraudSettings: IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
-
-  /** `request.version` is the version the change is made on, when the caller named one; without it the settings are replaced. */
-  def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
-
-  /** A typed patch of the settings (see [[PatchAntifraudSettingsRequest]]); auth applies it, validates and answers all of them. */
-  def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
-
-  /** Puts everything off; on `expectedVersion` if the caller named one. */
-  def deleteAntifraudSettings(request: DeleteAntifraudSettingsRequest, expectedVersion: Option[Long]): IO[AntifraudListError | Throwable, Unit]
-
-  /** Clears counters; auth owns them and answers 202 with the generation of the reset. */
+  /** Clears counters in every cell; each answers 202 with the generation of its reset, and the highest is answered. */
   def resetAntifraudCounters(request: ResetCountersRequest): IO[AntifraudListError | Throwable, ResetCountersResponse]
+
+  /** The calls of moving a user between cells (versolauth/versola#1051), each addressed to the cell `cell` and not routed by the
+    * user: the directory names one cell for the user while the move is under way and the move talks to both. A cell that is not
+    * registered fails the call with [[AuthClient.CellNotRegistered]], an answer that is not a success with
+    * [[AuthClient.CellRefused]]. All are idempotent.
+    *
+    * The user is leaving `cell` for `to` from the commit on: the cell refuses everything that reads or changes the user. `moveId`
+    * names the move at both cells. A repeat with the same id is a success; another id for a user who is leaving is `409`. */
+  def depart(cell: CellId, userId: UserId, to: CellId, moveId: UUID): Task[Unit]
+
+  /** The user's rows, sealed by `cell` for the cell the departure names: the envelope, which central cannot read, and the digest of
+    * the rows in it, which is the same for two exports of rows that did not change and differs when one did. */
+  def exportDeparture(cell: CellId, userId: UserId): Task[AuthClient.DepartureExport]
+
+  /** `cell` opens `envelope` (sealed by `from`, for it) and takes the user in, as the arrival of the move `moveId`. A repeat of the
+    * same move while the arrival is pending replaces what it holds: that is how the rows are delivered again after the source
+    * changed. */
+  def arrive(cell: CellId, userId: UserId, from: CellId, moveId: UUID, envelope: String): Task[Unit]
+
+  /** `cell` keeps the arrival of the move `moveId`: the directory names it now, and the arrival is no longer to be discarded. */
+  def keepArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit]
+
+  /** `cell` drops what it holds of the user, the departure being over. `digest` is the digest of what the target was given: the
+    * cell says (audit, counter) when what it drops is not that. */
+  def completeDeparture(cell: CellId, userId: UserId, moveId: UUID, digest: String): Task[Unit]
+
+  /** `cell` serves the user again: the move was abandoned. Nothing to cancel is not a failure. */
+  def cancelDeparture(cell: CellId, userId: UserId): Task[Unit]
+
+  /** `cell` removes what the move `moveId` left of the user, if it is still pending there. Nothing there is not a failure. */
+  def discardArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit]
+
+  /** How many departures `cell` is part of and how many refresh tokens of moved users it still answers `moved` for. */
+  def departuresSummary(cell: CellId): Task[AuthClient.DeparturesSummary]
 
   /** The catalogue of rule names, and what one auth instance says of its antifraud. */
   def antifraudRules: IO[AntifraudListError | Throwable, AntifraudRulesResponse]
 
-  def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudStatusResponse]
+  def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudInstanceStatus]
+
+  /** What an instance of each registered cell says of its antifraud; a cell that does not answer is listed with why. None
+    * where there is no cell. */
+  def antifraudStatusOfCells: Task[List[AntifraudCellStatus]]
 
 object AuthClient:
-  val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
-    AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
+  /** The `auth` central is configured with, and no other. */
+  val live: ZLayer[Client & CentralConfig, Throwable, AuthClient] =
+    (AuthTokenService.live ++ ZLayer.environment[Client & CentralConfig]) >>> ZLayer.fromFunction(
+      (client: Client, config: CentralConfig, tokens: AuthTokenService) =>
+        Impl(client, config.auth.url, tokens, AuthTokenService.audienceOfConfigured(config)),
+    )
+
+  /** Every call about a user goes to the cell that holds the user ([[CellAuthClient]]). Each `auth` is sent a token made for
+    * it alone (#1050): the configured one for its `auth.cell-id` (`auth` when it has none), a cell for its id. */
+  val routed: ZLayer[Client & CentralConfig & UserRepository & TopologyRepository, Throwable, AuthClient] =
+    (AuthTokenService.live ++ ZLayer.environment[Client & CentralConfig & UserRepository & TopologyRepository]) >>> ZLayer.fromFunction:
+      (client: Client, config: CentralConfig, tokens: AuthTokenService, users: UserRepository, topology: TopologyRepository) =>
+        CellAuthClient(
+          configured = Impl(client, config.auth.url, tokens, AuthTokenService.audienceOfConfigured(config)),
+          configuredCell = config.auth.cellId,
+          at = (url, cell) => Impl(client, url, tokens, cell),
+          users = users,
+          topology = topology,
+        )
 
   /** The name of the query parameter, and of the optional field of a body, that names the administrator on whose behalf central
     * calls auth: auth records it as the actor of what the call changes (an absent one is central itself). It is taken from the
@@ -157,6 +223,37 @@ object AuthClient:
 
   private[users] case object TokenExpiredError extends Exception("central→auth token expired; retrying with fresh token")
 
+  /** A cell refused a call about a user because the user is leaving it, or has left it, for another cell (`409` with the
+    * code `user_leaving` or `user_moved`): a move started between central's own check and the call. */
+  case object UserLeavingCell extends Exception("the user is being moved to another cell")
+
+  private case class Refusal(error: String) derives JsonDecoder
+
+  /** A cell answered a call of a move with a status that is not a success. `code` is the `error` of the body, when it had one: it
+    * is matched against the codes the processor knows and is never shown, logged or stored as it is. */
+  final case class CellRefused(status: Int, code: Option[String]) extends Exception(s"cell answered $status")
+
+  object CellRefused:
+    def apply(status: Int): CellRefused = CellRefused(status, None)
+
+  /** `GET /users/departures/export`: the sealed rows and their digest. */
+  case class DepartureExport(envelope: String, digest: String) derives JsonCodec
+
+  /** The cell a call of a move is addressed to is not registered, or its address is not one. */
+  final case class CellNotRegistered(cell: CellId) extends Exception(s"cell '$cell' is not registered or has no valid address")
+
+  /** `GET /users/departures/summary` of a cell: departures under way (`leaving`), finished (`moved`), and the refresh tokens that
+    * are answered `moved` still (`tokens`), the latest of which expires at `tokensUntil`. */
+  case class DeparturesSummary(leaving: Long, moved: Long, tokens: Long, tokensUntil: Option[Instant]) derives JsonCodec
+
+  private case class DepartPayload(userId: UserId, to: CellId, moveId: UUID) derives JsonCodec
+
+  private case class CompletePayload(userId: UserId, moveId: UUID, digest: String) derives JsonCodec
+
+  private case class ArrivalPayload(envelope: String, userId: UserId, from: CellId, moveId: UUID) derives JsonCodec
+
+  private case class KeepPayload(userId: UserId, moveId: UUID) derives JsonCodec
+
   private case class UpsertUserPayload(
       id: UserId,
       version: UUID,
@@ -172,7 +269,15 @@ object AuthClient:
       remove: Set[RoleId],
   ) derives JsonCodec
 
-  private case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec
+  private case class PatchUserPayload(
+      id: UserId,
+      version: UUID,
+      email: Option[Patch[Email]],
+      phone: Option[Patch[Phone]],
+      login: Option[Patch[Login]],
+  ) derives JsonCodec
+
+  case class UserDto(email: Option[Email], phone: Option[Phone], login: Option[Login], claims: Json.Obj) derives JsonCodec
 
   private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId]) derives JsonCodec
 
@@ -252,18 +357,25 @@ object AuthClient:
       actorId: Option[UserId],
   ) derives JsonCodec
 
+  private case class HitsPayload(ids: List[UUID]) derives JsonCodec
+
   private case class SetPasswordPayload(
       userId: UserId,
       password: String,
       actorId: Option[UserId],
   ) derives JsonCodec
 
+  /** @param base the `auth` the calls go to: the one central is configured with, or a cell's own address.
+    * @param audience who the token is made for, the `aud` the `auth` at `base` checks: its cell id, or `auth` where it has none. A
+    *   token is never sent to an `auth` it was not made for.
+    */
   class Impl(
       httpClient: Client,
-      config: CentralConfig,
+      base: URL,
       tokenService: AuthTokenService,
+      audience: String,
   ) extends AuthClient:
-    private val usersUrl: URL = config.auth.url / "users"
+    private val usersUrl: URL = base / "users"
     private val rolesUrl: URL = usersUrl / "roles"
     private val claimsUrl: URL = usersUrl / "claims"
     private val sessionsUrl: URL = usersUrl / "sessions"
@@ -273,12 +385,14 @@ object AuthClient:
     private val passkeysUrl: URL = usersUrl / "passkeys"
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
     private val passwordSetUrl: URL = usersUrl / "password" / "set"
-    private val antifraudListsUrl: URL = config.auth.url / "antifraud" / "lists"
-    private val antifraudSettingsUrl: URL = config.auth.url / "antifraud" / "settings"
-    private val antifraudCountersResetUrl: URL = config.auth.url / "antifraud" / "counters" / "reset"
-    private val antifraudRulesUrl: URL = config.auth.url / "antifraud" / "rules"
-    private val antifraudStatusUrl: URL = config.auth.url / "antifraud" / "status"
-    private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
+    private val antifraudListsUrl: URL = base / "antifraud" / "lists"
+    private val antifraudSettingsUrl: URL = base / "antifraud" / "settings"
+    private val antifraudCountersResetUrl: URL = base / "antifraud" / "counters" / "reset"
+    private val antifraudRulesUrl: URL = base / "antifraud" / "rules"
+    private val antifraudStatusUrl: URL = base / "antifraud" / "status"
+    private val configSyncUrl: URL = base / "service" / "configuration" / "sync"
+    private val departuresUrl: URL = usersUrl / "departures"
+    private val arrivalsUrl: URL = usersUrl / "arrivals"
     private val auditEventsUrl: URL = usersUrl / "audit-events"
     private val auditSummaryUrl: URL = usersUrl / "audit-summary"
 
@@ -297,6 +411,21 @@ object AuthClient:
         ),
       )
 
+    override def patchUser(
+        id: UserId,
+        version: UUID,
+        email: Option[Patch[Email]],
+        phone: Option[Patch[Phone]],
+        login: Option[Patch[Login]],
+    ): Task[Unit] =
+      send(
+        Request(
+          method = Method.PATCH,
+          url = usersUrl,
+          body = Body.from(PatchUserPayload(id = id, version = version, email = email, phone = phone, login = login)),
+        ),
+      )
+
     override def updateUserRoles(
         userId: UserId,
         tenantId: TenantId,
@@ -311,10 +440,11 @@ object AuthClient:
         ),
       )
 
+    override def getUser(id: UserId): Task[Option[UserDto]] =
+      sendReceiveOptional[UserDto](Request.get(claimsUrl.addQueryParam("id", id.toString)))
+
     override def getUserClaims(id: UserId): Task[Option[Json.Obj]] =
-      sendReceiveOptional[UserClaimsResponse](
-        Request.get(claimsUrl.addQueryParam("id", id.toString)),
-      ).map(_.map(_.claims))
+      getUser(id).map(_.map(_.claims))
 
     override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       admin.flatMap: actorId =>
@@ -364,13 +494,13 @@ object AuthClient:
       )
 
     override def endSession(userId: UserId, sessionId: String): Task[Boolean] =
-      execute(
-        Request(
-          method = Method.DELETE,
-          url = sessionsUrl.addQueryParam("userId", userId.toString).addQueryParam("sessionId", sessionId),
-          body = Body.empty,
-        ),
-      ): response =>
+      endOne(sessionsUrl.addQueryParam("userId", userId.toString).addQueryParam("sessionId", sessionId))
+
+    override def supersedeSession(userId: UserId, sessionId: String): Task[Boolean] =
+      endOne(sessionsUrl.addQueryParam("userId", userId.toString).addQueryParam("sessionId", sessionId).addQueryParam("cause", "superseded"))
+
+    private def endOne(url: URL): Task[Boolean] =
+      execute(Request(method = Method.DELETE, url = url, body = Body.empty)): response =>
         response.status match
           case Status.NotFound => ZIO.succeed(false)
           case status if status.isSuccess => ZIO.succeed(true)
@@ -453,78 +583,18 @@ object AuthClient:
           ),
         )
 
-    /** The call's own scope fields: what auth enforces, from the route central served. */
-    private def scopeParams(caller: AntifraudCaller): List[(String, String)] = caller match
-      case AntifraudCaller.Tenant(tenantId) => List("scope" -> "tenant", "callerTenantId" -> tenantId.toString)
-      case AntifraudCaller.Operator => List("scope" -> "operator")
+    override def checkAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry] =
+      antifraud[CheckedListEntry](Request(method = Method.POST, url = antifraudListsUrl / "check", body = Body.from(entry.copy(preview = false))))
 
-    /** The entry as the admin sent it, with the scope fields set to the caller's: the request's own `callerTenantId` (what
-      * edge put there, or a client's, on a route that does not take it) is replaced, so that nothing but the route decides. */
-    private def scopedBody(request: NewListEntryRequest, caller: AntifraudCaller): Body =
-      val fields = request.toJsonAST match
-        case Right(obj: Json.Obj) => obj.fields.filterNot((name, _) => name == "callerTenantId")
-        case _ => Chunk.empty
-      Body.fromString(Json.Obj(fields ++ scopeParams(caller).map((name, value) => name -> Json.Str(value))).toJson)
+    override def previewAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry] =
+      antifraud[CheckedListEntry](Request(method = Method.POST, url = antifraudListsUrl / "check", body = Body.from(entry.copy(preview = true))))
 
-    override def createAntifraudListEntry(
-        request: NewListEntryRequest,
-        caller: AntifraudCaller,
-    ): IO[AntifraudListError | Throwable, ListEntryResponse] =
-      antifraud[ListEntryResponse](Request(method = Method.POST, url = antifraudListsUrl, body = scopedBody(request, caller)))
+    override def antifraudListHits(ids: List[UUID]): Task[List[ListHits]] =
+      if ids.isEmpty then ZIO.succeed(Nil)
+      else sendReceive[List[ListHits]](Request(method = Method.POST, url = antifraudListsUrl / "hits", body = Body.from(AuthClient.HitsPayload(ids))))
 
-    override def previewAntifraudListEntry(
-        request: NewListEntryRequest,
-        caller: AntifraudCaller,
-    ): IO[AntifraudListError | Throwable, PreviewResponse] =
-      antifraud[PreviewResponse](Request(method = Method.POST, url = antifraudListsUrl / "preview", body = scopedBody(request, caller)))
-
-    override def listAntifraudListEntries(
-        query: ListEntriesQuery,
-        caller: AntifraudCaller,
-    ): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
-      val params = List(
-        query.listType.map("listType" -> _.toString),
-        query.valueType.map("valueType" -> _.toString),
-        query.tenantId.map("tenantId" -> _.toString),
-        query.global.map("global" -> _.toString),
-        query.limit.map("limit" -> _.toString),
-        query.offset.map("offset" -> _.toString),
-      ).flatten
-      antifraud[List[ListEntryResponse]](Request.get(antifraudListsUrl.addQueryParams(params ++ scopeParams(caller))))
-
-    override def deleteAntifraudListEntry(request: DeleteListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, Unit] =
-      antifraudUnit(
-        Request(
-          method = Method.DELETE,
-          url = antifraudListsUrl.addQueryParams(List("id" -> request.id.toString, "userId" -> request.userId.toString) ++ scopeParams(caller)),
-          body = Body.empty,
-        ),
-      )
-
-    override def antifraudListAudit(
-        entryId: Option[UUID],
-        limit: Option[PageLimit],
-        caller: AntifraudCaller,
-    ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]] =
-      val params = List(entryId.map("entryId" -> _.toString), limit.map("limit" -> _.toString)).flatten
-      antifraud[List[AuditRecordResponse]](Request.get((antifraudListsUrl / "audit").addQueryParams(params ++ scopeParams(caller))))
-
-    override def getAntifraudSettings: IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-      antifraud[VersionedAntifraudSettings](Request.get(antifraudSettingsUrl))
-
-    override def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-      antifraud[VersionedAntifraudSettings](Request(method = Method.PUT, url = antifraudSettingsUrl, body = Body.from(request)))
-
-    override def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-      antifraud[VersionedAntifraudSettings](Request(method = Method.PATCH, url = antifraudSettingsUrl, body = Body.from(request)))
-
-    override def deleteAntifraudSettings(
-        request: DeleteAntifraudSettingsRequest,
-        expectedVersion: Option[Long],
-    ): IO[AntifraudListError | Throwable, Unit] =
-      val delete =
-        Request(method = Method.DELETE, url = antifraudSettingsUrl.addQueryParams(List("userId" -> request.userId.toString)), body = Body.empty)
-      antifraudUnit(expectedVersion.fold(delete)(version => delete.addHeader(Header.Custom("If-Match", EntityVersion.etag(version)))))
+    override def checkAntifraudSettings(check: SettingsCheck): IO[AntifraudListError | Throwable, AntifraudSettings] =
+      antifraud[AntifraudSettings](Request(method = Method.POST, url = antifraudSettingsUrl / "check", body = Body.from(check)))
 
     override def resetAntifraudCounters(request: ResetCountersRequest): IO[AntifraudListError | Throwable, ResetCountersResponse] =
       antifraud[ResetCountersResponse](Request(method = Method.POST, url = antifraudCountersResetUrl, body = Body.from(request)))
@@ -532,31 +602,82 @@ object AuthClient:
     override def antifraudRules: IO[AntifraudListError | Throwable, AntifraudRulesResponse] =
       antifraud[AntifraudRulesResponse](Request.get(antifraudRulesUrl))
 
-    override def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudStatusResponse] =
-      antifraud[AntifraudStatusResponse](Request.get(antifraudStatusUrl))
+    override def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudInstanceStatus] =
+      antifraud[AntifraudInstanceStatus](Request.get(antifraudStatusUrl))
+
+    // One `auth` knows of no cell.
+    override def antifraudStatusOfCells: Task[List[AntifraudCellStatus]] = ZIO.succeed(Nil)
 
     private def antifraud[A: JsonDecoder](request: Request): IO[AntifraudListError | Throwable, A] =
       antifraudAnswer(request): response =>
         response.body.asString.flatMap: body =>
           ZIO.fromEither(body.fromJson[A]).mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
 
-    private def antifraudUnit(request: Request): IO[AntifraudListError | Throwable, Unit] =
-      antifraudAnswer(request)(_ => ZIO.unit)
-
-    /** Auth's 400, 403, 404 and 412 are its answers to an entry it will not take, not failures of the call. */
+    /** Auth's 400 is its answer to an entry or settings it will not take, not a failure of the call. */
     private def antifraudAnswer[A](request: Request)(success: Response => Task[A]): IO[AntifraudListError | Throwable, A] =
       execute(request): response =>
         response.status match
           case status if status.isSuccess => success(response).map(Right(_))
           case Status.BadRequest => response.body.asString.map(message => Left(AntifraudListError.Invalid(message)))
-          case Status.NotFound => ZIO.succeed(Left(AntifraudListError.NotFound))
-          case Status.Forbidden => response.body.asString.map(message => Left(AntifraudListError.Forbidden(message)))
-          case Status.PreconditionFailed =>
-            response.body.asString.map: message =>
-              val current = response.headers.get("ETag").flatMap(EntityVersion.parseIfMatch(_).toOption)
-              Left(AntifraudListError.StaleVersion(message, current))
           case _ => failResponse(response)
       .flatMap(ZIO.fromEither(_))
+
+    // One `auth` is addressed by the cell that holds it, so `cell` is not read: the cell is the `auth` at `base`.
+    override def depart(cell: CellId, userId: UserId, to: CellId, moveId: UUID): Task[Unit] =
+      moveCall(Request(method = Method.POST, url = departuresUrl, body = Body.from(DepartPayload(userId, to, moveId))))(_ => ZIO.unit)
+
+    override def exportDeparture(cell: CellId, userId: UserId): Task[DepartureExport] =
+      moveCall(Request.get((departuresUrl / "export").addQueryParam("userId", userId.toString))): response =>
+        response.body.asString.flatMap: body =>
+          ZIO.fromEither(body.fromJson[DepartureExport]).mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
+
+    override def arrive(cell: CellId, userId: UserId, from: CellId, moveId: UUID, envelope: String): Task[Unit] =
+      moveCall(
+        Request(method = Method.POST, url = arrivalsUrl, body = Body.from(ArrivalPayload(envelope, userId, from, moveId))),
+      )(_ => ZIO.unit)
+
+    override def keepArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit] =
+      moveCall(Request(method = Method.POST, url = arrivalsUrl / "keep", body = Body.from(KeepPayload(userId, moveId))))(_ => ZIO.unit)
+
+    override def completeDeparture(cell: CellId, userId: UserId, moveId: UUID, digest: String): Task[Unit] =
+      moveCall(
+        Request(method = Method.POST, url = departuresUrl / "complete", body = Body.from(CompletePayload(userId, moveId, digest))),
+      )(_ => ZIO.unit)
+
+    override def cancelDeparture(cell: CellId, userId: UserId): Task[Unit] =
+      moveCall(
+        Request(method = Method.DELETE, url = departuresUrl.addQueryParam("userId", userId.toString), body = Body.empty),
+        missingIsDone = true,
+      )(_ => ZIO.unit)
+
+    override def discardArrival(cell: CellId, userId: UserId, moveId: UUID): Task[Unit] =
+      moveCall(
+        Request(
+          method = Method.DELETE,
+          url = arrivalsUrl.addQueryParam("userId", userId.toString).addQueryParam("moveId", moveId.toString),
+          body = Body.empty,
+        ),
+        missingIsDone = true,
+      )(_ => ZIO.unit)
+
+    override def departuresSummary(cell: CellId): Task[DeparturesSummary] =
+      moveCall(Request.get(departuresUrl / "summary")): response =>
+        response.body.asString.flatMap: body =>
+          ZIO.fromEither(body.fromJson[DeparturesSummary]).mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
+
+    /** A call of a move: a status that is not a success fails with [[AuthClient.CellRefused]], which carries the status and the
+      * `error` code of the body, nothing else of it, and is not logged here (the processor of the move reports it once). */
+    private def moveCall[A](request: Request, missingIsDone: Boolean = false)(success: Response => Task[A]): Task[A] =
+      execute(request): response =>
+        response.status match
+          case Status.NotFound if missingIsDone => success(response)
+          case status if status.isSuccess => success(response)
+          case status =>
+            // a body that is not `{"error": ...}` (a proxy's page) has no code; the status is what is left
+            response.body.asString.map(_.fromJson[AuthClient.Refusal].toOption.map(_.error)).orElseSucceed(None)
+              .flatMap(code => ZIO.fail(AuthClient.CellRefused(status.code, code)))
+
+    override def deleteUserOf(cell: Option[CellId], userId: UserId): Task[Unit] = deleteUser(userId)
 
     override def deleteUser(userId: UserId): Task[Unit] =
       send(
@@ -634,10 +755,10 @@ object AuthClient:
         named =
           actor.filter(_ => carriesActorInQuery(request)).fold(request)(id => request.updateURL(_.addQueryParam(AuthClient.ActorParam, id.toString)))
         onBehalf = ip.fold(named)(address => named.updateURL(_.addQueryParam(AuthClient.ActorIpParam, address)))
-        token <- tokenService.getToken
+        token <- tokenService.getToken(audience)
         result <- attemptWithToken(onBehalf)(token).catchSome:
           case AuthClient.TokenExpiredError =>
-            tokenService.refreshToken().flatMap(attemptWithToken(onBehalf))
+            tokenService.refreshToken(audience).flatMap(attemptWithToken(onBehalf))
       yield result
 
     private def authorized(request: Request, token: String): Request =
@@ -674,8 +795,12 @@ object AuthClient:
 
     private def failResponse(response: Response): Task[Nothing] =
       response.body.asString.flatMap: body =>
-        ZIO.logError(s"Auth call failed: ${response.status.code} $body") *>
-          ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body"))
+        val leaving = response.status == Status.Conflict &&
+          body.fromJson[AuthClient.Refusal].exists(refusal => refusal.error == "user_leaving" || refusal.error == "user_moved")
+        if leaving then ZIO.fail(AuthClient.UserLeavingCell)
+        else
+          ZIO.logError(s"Auth call failed: ${response.status.code} $body") *>
+            ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body"))
 
     /** Retries on transient connection failures (stale pooled channel after auth restart). */
     private def withConnectionRetry[A](effect: Task[A]): Task[A] =

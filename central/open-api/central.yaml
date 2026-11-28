@@ -14,11 +14,29 @@ info:
     This reference covers the admin console surface. Central also exposes internal
     replication endpoints that are not part of this document:
 
-    * `/configuration/*/sync`, `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
-      and `POST /users/registrations`, which auth reads with its shared-secret token. Every
-      route outside `/edge/*` refuses a token that authenticates an edge (`403`).
+    * `/configuration/*/sync` (`GET /configuration/cells/sync` among them: the cells with their state, weight, region and public keys),
+      `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
+      and `POST /users/registrations`, `POST /users/lookup`, `POST /users/home`, `POST /users/sessions/superseded`, `GET /antifraud/policy/sync`
+      and `GET /antifraud/policy/lists/sync` (with `since`, the version of the caller's copy, it answers the changes after that version, or the whole list when
+      they do not reach back that far or `since` is ahead of central; `400` when `since` is not a whole number), which an auth reads with a token of its own: RS256, signed with the private key whose public half
+      is in `publicKeys` of its cell (or in central's `auth.public-keys` for the auth central is configured with), `kid` the key's id, `iss`
+      `auth`, `aud` `central`. Central tells who calls from the key that verifies the token, not from anything the token says of itself; HS256
+      tokens, and the shared secret they were signed with, no longer exist. What the answers of these routes carry as secrets (client and
+      resource secrets, delivery passwords, the private keys tenants sign with) is encrypted to that key, so only that auth reads it.
+      Central calls auth the same way, with RS256 under its own service key and `aud` the id of the cell it calls (`auth` for a configured auth
+      with no cell id). Every route outside `/edge/*` refuses a token that authenticates an edge (`403`); the routes only an auth calls
+      (`POST /users/lookup`, `/users/home`, `/users/sessions/superseded`, `GET /antifraud/policy/sync`, `/antifraud/policy/lists/sync`,
+      `GET /configuration/cells/sync` and `GET /configuration/delivery-settings/sync`) refuse it again in the handler (`401`), so that the
+      refusal does not rest on the group alone. A token that names an edge is accepted anywhere only as RS256 with `exp`, `iss` `edge`
+      and `aud` `central`, which is what every edge signs.
+      `POST /users/registrations` claims the identifiers of a user a cell is registering and answers the user and the cell that holds it. A
+      cell that takes no users (state other than `open`, or weight `0`) is refused when nobody holds the address: `409` with
+      `{"error":"cell_not_taking","cell":"<the cell that takes it>"}`, or `{"error":"no_cell_takes_users"}` (no `cell`) when no cell does. The
+      cell that is refused hands the verified registration to the one named. An address claimed before answers its owner, whichever cell asks, and
+      the `auth` central is configured with, which is no registered cell, is never refused. `POST /users/home` answers an address nobody holds with
+      a cell chosen among every registered cell whatever its state, so that the answer does not say whether the address is held.
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
-      `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`), `POST /edge/clients/edge-certificate/sign`
+      `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`, `cells`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener; the one
       route an edge of either kind reaches, since renewal is always on and a partner's edge is stopped by
       suspending the partner; it accepts an optional new public `signingKey` JWK together with the certificate request,
@@ -27,7 +45,7 @@ info:
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
       present a certificate that chains to the listener's trust anchors, and the certificate must carry
       the URI name `urn:versola:edge:<id>` for the edge the token names, or the call is `401`. An edge
-      is served only the tenants bound to it; the admin credential and auth's token are refused there
+      is served only the tenants of its group; the admin credential and auth's token are refused there
       (`401`). An edge of a `partner` group is refused all of `/edge/sync/*` (`401`): it is
       issued a certificate that names its group and is given no configuration.
     * `/edge/partner/*`, on the same mutual-TLS listener, the surface of a **partner's** edge (#549): an edge of a
@@ -115,8 +133,8 @@ info:
     a success, a failure with the request's error code, or a denial. The log holds the names of the fields an
     update carried, never their values. The event is handed to the audit queue after the handler has answered.
     A change that is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits and the antifraud
-    lists, settings and counters) is recorded here with its outcome too, and auth records its effect: the two rows carry
-    the same trace id.
+    counters) is recorded here with its outcome too, and auth records its effect: the two rows carry
+    the same trace id. A change to the antifraud lists or settings is made in central and recorded here alone.
     Certificates central issues are recorded as `cert.enrolled`, `cert.renewed` and `cert.revoked`, by the client,
     the edge or the system. Their `details` say which certificate it is: `operation`, the `serial` (hex), `notAfter`
     (an ISO-8601 instant) and the `subject` (RFC 4514), and `clientId` for a client's. `operation` is one of `enroll`
@@ -201,6 +219,8 @@ tags:
       Passwords are write-only.
   - name: Edges
     description: Registered edge deployments and their signing keys.
+  - name: Topology
+    description: Partitions, regions and cells, and the region of each edge site.
   - name: Partners
     description: |
       Organisations the operator lets run a Versola edge on their own infrastructure and own clients inside the
@@ -208,7 +228,12 @@ tags:
       with `partnerId` ownership, are served by the partner's own edge group and never by the operator's edges.
   - name: Antifraud lists
     description: |
-      Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
+      Values the antifraud rules block, fake, watch or allow at once. Central stores them, once for the deployment, with who
+      changed them; every auth (every cell) copies them on a poll of central and enforces its copy, so a change reaches
+      every instance within about two `antifraud.tuning.refresh-interval` (the poll, then the instance's own reload), and a cell that
+      cannot reach central goes on with the copy it has. Auth validates an entry before central stores it. How often an entry
+      matched (`hitCount`, `lastHitAt`) is counted by each cell and summed when the entries are listed; a cell that does not
+      answer is left out of the sum.
 
       **Who may change what.** There are two families of routes, and the route decides the scope, not the request.
       `/antifraud/lists/...` is for the admin of a tenant (`antifraud:read`, `antifraud:manage`): it acts in the tenant of the
@@ -220,7 +245,9 @@ tags:
   - name: Antifraud settings
     description: |
       Thresholds, rule weights, shadow rules, limits on codes sent and the proof-of-work difficulty that are tuned during an
-      attack. Stored and applied by auth, without a restart. Reading is `antifraud:read`; changing or resetting them is the
+      attack. Central stores them, once for the deployment; every auth (every cell) copies them on a poll of central and
+      applies its copy, without a restart. Auth validates a change before central stores it, and says what "everything off"
+      is, so a change, and a read where nothing is stored yet, need an auth to answer. Reading is `antifraud:read`; changing or resetting them is the
       operator's (`antifraud:operate`). The settings are versioned: a read gives `version` and the same number as the
       `ETag`, a change is made on a version (`If-Match`), and one made on a version the settings have left is `412`.
   - name: Antifraud operations
@@ -264,12 +291,16 @@ paths:
       responses:
         '201':
           description: Tenant created.
+        '400':
+          description: >-
+            `edgeGroupId` names a partner's group or a group that does not exist, or the
+            tenant already exists with another `securityProfile`.
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
       tags: [Tenants]
       summary: Update a tenant
-      description: Replaces the description and edge binding of an existing tenant.
+      description: Replaces the description and the edge group of an existing tenant.
       operationId: updateTenant
       requestBody:
         required: true
@@ -280,6 +311,9 @@ paths:
       responses:
         '204':
           description: Tenant updated.
+        '400':
+          description: >-
+            `edgeGroupId` names a partner's group or a group that does not exist.
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -1198,7 +1232,9 @@ paths:
         '404':
           description: No user with this `id`.
         '409':
-          description: One of the identifiers is already taken by another user.
+          description: >-
+            One of the identifiers is already taken by another user, or the user has a move between cells that is not
+            finished (error code `user_moving`; try again when it is over).
     delete:
       tags: [Users]
       summary: Delete a user
@@ -1228,6 +1264,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No user with this `id`.
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/claims:
     patch:
@@ -1246,6 +1284,8 @@ paths:
           description: Patch accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/roles:
     get:
@@ -1295,6 +1335,8 @@ paths:
           description: Patch accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/sessions:
     get:
@@ -1525,6 +1567,8 @@ paths:
           description: "`id` or `clientId` missing."
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/limits/reset:
     post:
@@ -1541,6 +1585,94 @@ paths:
       responses:
         '202':
           description: Reset accepted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/move:
+    post:
+      tags: [Users]
+      summary: Move a user to another cell
+      description: |
+        Moves the user from the cell that holds it to `cell`, in the background, and answers at once. The
+        move is driven by central (`phase`: `leaving`, `exported`, `arrived`, `flipped`, `done`, `failed`, and `abandoning` while an abandoned move is cleaned up; follow it with
+        `GET /users/moves`): the old cell is told the user is leaving and answers temporarily unavailable for them,
+        the rows that travel (identifiers, claims, passwords, passkeys, roles, consents and the refresh tokens that
+        have not expired) are read as one sealed envelope that central cannot open and handed to the new cell, which
+        keeps it as the arrival of this move (`moveId`, new at every start: an envelope of another move, or a replayed one,
+        is refused). Just before the directory is changed the old cell is asked again, and rows it changed meanwhile are
+        handed over again (three times at most, then the move is abandoned with `source_changed`); the directory then
+        names the new cell, the new cell is told to keep the arrival, and the old cell drops what it held. Browser sessions, conversations,
+        authorization codes, remembered devices and attempt counters end with the move; a person signed in in a
+        browser signs in again, and an app holding a refresh token keeps working (the old cell answers `moved` and the
+        edge repeats the call to the new one). The audit log, the antifraud events and counters, and the revocation
+        records stay in the old cell.
+
+        A failure before the directory is changed is retried five times with a backoff and then abandoned: the new cell
+        forgets the user, the old one serves it again, and the move is `failed` with an `error` code (`abandoning` until that
+        clean-up is done, which is retried without limit). A failure after it
+        is retried without limit and is never rolled back. While a move is unfinished the user's changes through this
+        API answer `409` (`user_moving`) and the events queued for the user wait. Requires every cell of the partition to
+        share `PASSWORDS_SECRET`, the Argon2 parameters and `REFRESH_TOKENS_SECRET`; this is not checked here.
+      operationId: moveUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveUserRequest'
+      responses:
+        '202':
+          description: The move is recorded and will be carried out.
+        '400':
+          description: >-
+            The request is not a user id and a cell id, or the move cannot be made, with the error code of the request log:
+            `user_without_cell` (the directory places the user in no cell), `source_cell_not_registered`,
+            `target_cell_not_registered`, `same_cell` (the target is the cell the user is in), `other_partition`
+            (the two cells are in different partitions), or `target_cell_draining`. A `closed` cell may be moved to.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No user with this id (`user_not_found`).
+        '409':
+          description: A move of the user is in progress (`move_in_progress`); a finished or failed one is replaced.
+
+  /users/moves:
+    get:
+      tags: [Users]
+      summary: List the moves of users between cells
+      description: >-
+        The moves, newest first, of which there is one per user: a finished or failed move is replaced by the next one of the user.
+        A move of the drain of a cell has `reason` `drain`.
+      operationId: getUserMoves
+      parameters:
+        - name: cell
+          in: query
+          required: false
+          description: Only the moves from this cell or to it.
+          schema:
+            $ref: '#/components/schemas/TopologyId'
+        - name: phase
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/UserMovePhase'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: The moves.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserMovesResponse'
+        '400':
+          description: A `phase` that is not one of the phases, or a `limit` outside 1 to 500.
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1579,6 +1711,8 @@ paths:
           description: Rename accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
     delete:
       tags: [Users]
       summary: Delete a passkey
@@ -1600,6 +1734,8 @@ paths:
           description: Deletion accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
 
   /users/password/reset:
     post:
@@ -1634,6 +1770,8 @@ paths:
           description: The password was delivered over `email` or `sms`.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
         '400':
           description: |
             `expiresInSeconds` is outside the allowed range of 3600 to 604800 seconds. Nothing is reset.
@@ -1663,6 +1801,8 @@ paths:
           description: Password set.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/UserMoving'
         '404':
           description: The deployment runs in production.
 
@@ -2824,6 +2964,207 @@ paths:
         '404':
           description: No edge is registered under that id, or the validity asked for is out of range.
 
+  /configuration/topology:
+    get:
+      tags: [Topology]
+      summary: Read the topology
+      description: |
+        The partitions, regions and cells central knows, in one piece. A partition is one
+        jurisdiction (its own issuer, keys and directory; a deployment has one), a region is one
+        metro inside it, and a cell is the capacity unit: one `auth` deployment with its own
+        database, holding a fixed set of users. An edge site and a cell are each in one region.
+        An installation that registered none of these behaves as it did before they existed. The
+        region of an edge is on the edge (`GET /configuration/edges`, `regionId`).
+      operationId: getTopology
+      responses:
+        '200':
+          description: Partitions, regions and cells.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopologyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/partitions:
+    post:
+      tags: [Topology]
+      summary: Create a partition
+      operationId: createPartition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Partition'
+      responses:
+        '201':
+          description: Partition created.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A partition with this id already exists.
+
+  /configuration/regions:
+    post:
+      tags: [Topology]
+      summary: Create a region
+      operationId: createRegion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Region'
+      responses:
+        '201':
+          description: Region created.
+        '400':
+          description: The partition does not exist.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A region with this id already exists.
+    delete:
+      tags: [Topology]
+      summary: Delete a region
+      operationId: deleteRegion
+      parameters:
+        - name: regionId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/TopologyId'
+      responses:
+        '204':
+          description: Region deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no such region.
+        '409':
+          description: The region still has a cell or an edge in it; the body names them.
+
+  /configuration/cells:
+    post:
+      tags: [Topology]
+      summary: Register a cell
+      operationId: createCell
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Cell'
+      responses:
+        '201':
+          description: Cell registered.
+        '400':
+          description: >-
+            The record is malformed: an id that is reserved (`auth`, `central`), a negative weight, an address that is not an absolute
+            `http` or `https` URL (`mtlsUrl` must be `https`), a pin that is not a PEM
+            certificate or is named twice, a region that does not exist, or `publicKeys` that is empty, has more
+            than two keys, holds a key that is not a public RSA JWK of 2048 to 8192 bits with a `kid`, names a
+            `kid` or a key twice, or holds a key or a `kid` that is already another cell's, an edge's or the
+            one central is configured with for its auth (compared by RFC 7638 thumbprint). The body says which.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A cell with this id already exists.
+    put:
+      tags: [Topology]
+      summary: Update a cell
+      description: >-
+        Replaces the addresses, the pins, the state, the weight and the keys. The id and the region are
+        not changed: a cell is where its database is. `publicKeys` is the whole set the cell has from
+        now on, not an addition: a cell's key is replaced by sending both for a while, then only the new one.
+      operationId: updateCell
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Cell'
+      responses:
+        '204':
+          description: Cell updated.
+        '400':
+          description: The record is malformed, as on creation, or names another region than the cell is in.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no such cell.
+    delete:
+      tags: [Topology]
+      summary: Delete a cell
+      operationId: deleteCell
+      parameters:
+        - name: cellId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/TopologyId'
+        - name: lost
+          in: query
+          required: false
+          description: >-
+            `true` when the cell is gone for good with the users it held (its database was lost, a
+            stand is taken down): it is deleted although the directory still places users in it.
+            Those users stay in the directory and cannot sign in until they are deleted. Not the way
+            to retire a working cell. The cell still has to be `closed`.
+          schema:
+            type: boolean
+            default: false
+        - name: force
+          in: query
+          required: false
+          description: >-
+            `true` deletes the cell although it still answers `moved` for refresh tokens of users that were moved out of it
+            (`tokens` of the cell in `GET /configuration/topology`), or did not say whether it does. The edge does not know a
+            deleted cell, so those refresh tokens stop working. Does not lift the refusal for a move that is not finished.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '204':
+          description: Cell deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no such cell.
+        '409':
+          description: >-
+            The cell is `open` or `draining`, or the user directory still places users in it, or a move from or to it
+            is not finished, or it still answers `moved` for refresh tokens of moved users (or did not answer in
+            time) and `force` is not `true`. `lost=true` skips the last three, not the state rule. Only a `closed`
+            cell that holds no user and has no move under way is deleted.
+
+  /configuration/edges/region:
+    put:
+      tags: [Topology]
+      summary: Set the region of an edge
+      description: >-
+        Where one of the operator's own edge sites is. A body without `regionId` takes the edge
+        out of any region. A partner's edge is in no region.
+      operationId: setEdgeRegion
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetEdgeRegionRequest'
+      responses:
+        '204':
+          description: Region recorded.
+        '400':
+          description: The edge is a partner's, or the region does not exist.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
   /configuration/edges/dpop:
     put:
       tags: [Edges]
@@ -3063,14 +3404,15 @@ paths:
         Adds an entry of the admin's tenant, or refreshes the expiry, reason and source of the one for the same list, kind of
         value, value and tenant (the response is then that entry, with its own `id`). The entry is the tenant's whether
         the body names the tenant or not; a body that names another tenant is `403`. A global entry is the operator's, through
-        `/antifraud/global/lists`. This instance of auth applies it at once, the others within
-        `antifraud.lists.refresh-interval`. Every change is recorded in the audit.
+        `/antifraud/global/lists`. Every auth copies it on its next poll of central. Every change is recorded in the audit.
 
         Auth refuses (`400`, with the reason as text) a value that does not fit its kind (and a device id or a JA4
         hash, which no request carries yet); an `allow` for anything but an exact subject; an entry that
         names many clients, or whose `source` is not `manual`, without `expiresAt`; an `expiresAt` in the past; and
-        an enforcing (not `shadow`) entry that would have matched more than `antifraud.lists.max-traffic-share` of the last
-        24 hours of events: add it as `shadow` first. Needs `antifraud:manage`.
+        an enforcing (not `shadow`) entry that would have matched more than 5% of the last 24 hours of events, summed over
+        every cell (judged over at least 100 events): add it as `shadow` first. An enforcing entry therefore needs every cell
+        to answer, and is not stored while one does not; a `shadow` entry needs only the auth that validates it.
+        Needs `antifraud:manage`.
       operationId: createAntifraudListEntry
       requestBody:
         required: true
@@ -3125,12 +3467,13 @@ paths:
       tags: [Antifraud lists]
       summary: Preview what an entry would match (a tenant's)
       description: |
-        How many of the last 24 hours of events the entry would have matched, with the same validation as adding it and
+        How many of the last 24 hours of events the entry would have matched, summed over every cell (each counts its own
+        event log, and one that does not answer fails the preview), with the same validation as adding it and
         nothing stored, as the admin's tenant's entry (it is previewed as the entry `POST /antifraud/lists` would make; a body
         that names another tenant is `403`). `matched` is `null` for a kind of value the event log has no column for (an
         address, a network, a mail domain): the share guard cannot judge those, so give them an expiry and add
         them as `shadow` first. For an ASN or a country it is the events of that AS or country, which the event log has once `antifraud.asn.file` or
-        `antifraud.geo.file` is set (events written before, or without the database, have none). The count is over every tenant's events until the guard is made per tenant. Needs
+        `antifraud.geo.file` is set (events written before, or without the database, have none). The count is over the events of the entry's tenant, and over every tenant's for a global entry. Needs
         `antifraud:manage`.
       operationId: previewAntifraudListEntry
       requestBody:
@@ -3330,8 +3673,7 @@ paths:
       summary: The settings
       description: |
         What applies to the whole deployment, with the `version` of the row next to the settings and the same number as the
-        `ETag`: a change may be made on it (see `PUT` and `PATCH`). Auth's bootstrap seeds the row with everything off when the service starts
-        (the migration only creates the table), so there is one once a start has finished; before that a read gives
+        `ETag`: a change may be made on it (see `PUT` and `PATCH`). Until the first change nothing is stored, and a read gives
         everything off at version `0`. Nothing in auth's configuration sets these values. Needs `antifraud:read`.
       operationId: getAntifraudSettings
       responses:
@@ -3359,8 +3701,8 @@ paths:
           overwrites**. This is the mode for service-to-service clients and tooling that hold the desired state themselves and
           reapply it. A person tuning during an attack should use `PATCH`, or name the version.
 
-        The response has the new `version` and `ETag` either way, and the version moves on every change. This instance of auth
-        applies it at once, the others within `antifraud.tuning.refresh-interval`, with no restart and no loss of the counters.
+        The response has the new `version` and `ETag` either way, and the version moves on every change. Every auth copies
+        it on its next poll of central (`antifraud.tuning.refresh-interval`) and applies it, with no restart and no loss of the counters.
         Needs `antifraud:operate`.
 
         `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
@@ -3425,9 +3767,9 @@ paths:
           `null` map empties it) and a value replaces the entry whole, so an entry of `byPrefix` names all three members of an
           `AntifraudSmsLimit`.
 
-        Everything the body does not name is left as it is. Auth applies the patch to the stored
-        settings, checks the result as a whole as `PUT` does (`400`, with the reason, and nothing is written when it is not
-        valid), and answers all the settings with their new version. Unlike a `PUT`, a patch need not carry `mode` or any other
+        Everything the body does not name is left as it is. Auth applies the patch to the settings central has stored and
+        checks the result as a whole as for a `PUT` (`400`, with the reason, and nothing is written when it is not
+        valid); central stores it and answers all the settings with their new version. Unlike a `PUT`, a patch need not carry `mode` or any other
         member: it names only what it changes. The body is `application/merge-patch+json`;
         `application/json` is taken too, and any other type is `415`.
 
@@ -3522,7 +3864,8 @@ paths:
       summary: Reset counters
       description: |
         Clears the velocity counters, the SMS budget, or both: all of them, or those of one value (a phone, an address or a
-        range of numbers). It is the support path for "my number gets no code" and for a range that was closed. Auth hashes
+        range of numbers). It is the support path for "my number gets no code" and for a range that was closed. The counters are
+        each cell's own, so the reset goes to every cell, and one that cannot be reached fails the call. Each auth hashes
         a phone, clears the memory of every instance (they pick the reset up within `antifraud.tuning.refresh-interval`) and the
         stored rows, and records who did it. `valueType` and `value` go together. Needs `antifraud:operate`.
       operationId: resetAntifraudCounters
@@ -3541,7 +3884,7 @@ paths:
                 properties:
                   generation:
                     type: integer
-                    description: The number of the reset, which every instance picks up and clears its memory for.
+                    description: The number of the reset, which every instance picks up and clears its memory for; the highest of the cells' where there are several.
                 required: [generation]
         '400':
           description: The body is not valid, or auth refused it (text body with the reason).
@@ -3717,6 +4060,12 @@ components:
   responses:
     Unauthorized:
       description: The credentials are missing, malformed or not accepted.
+    UserMoving:
+      description: >-
+        The user has a move between cells that is not finished (`POST /users/move`, or the drain of its cell), so a
+        change of it would be made to the cell it is leaving and lost. Nothing was changed. The error code of the
+        request log is `user_moving`; try again once the move is `done` or `failed` (`GET /users/moves`). Reads are
+        not refused.
 
   parameters:
     TenantIdQuery:
@@ -3782,6 +4131,10 @@ components:
       type: string
       pattern: '^[a-z][a-z0-9-]*$'
       examples: [eu-central]
+    EdgeGroupId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+      examples: [default]
     ScopeToken:
       type: string
       pattern: '^[a-z][a-z0-9_]*$'
@@ -4024,13 +4377,14 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
           description: |
-            The edge this tenant is bound to. Sync is edge-scoped: an edge only receives
-            tenants whose `edgeId` matches its own, so `null` means the tenant is not
-            assigned to any edge yet and no edge will serve it.
+            The group of edges that serves this tenant. Sync is scoped by it: an edge only
+            receives the tenants whose `edgeGroupId` is the group the edge belongs to, and every
+            edge of that group receives them, which is what lets one tenant have several edge
+            sites. `null` means no edge serves the tenant.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
         securityProfile:
           allOf:
@@ -4063,9 +4417,12 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
+          description: >-
+            One of the operator's own groups (`first_party`). A partner's group, or one that
+            does not exist, is refused with `400`.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
         securityProfile:
           oneOf:
@@ -4087,9 +4444,12 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
+          description: >-
+            One of the operator's own groups (`first_party`). A partner's group, or one that
+            does not exist, is refused with `400`.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
       required: [id, description]
 
@@ -5890,6 +6250,18 @@ components:
         claims:
           type: object
           additionalProperties: true
+        cell:
+          description: The cell the directory places the user in. Absent for a user of no cell.
+          oneOf:
+            - $ref: '#/components/schemas/TopologyId'
+            - type: 'null'
+        move:
+          description: >-
+            The latest move of the user between cells, if there was one. While it is unfinished and the user is leaving its
+            cell, the cell does not answer for the user, and `email`, `phone`, `login` and `claims` are empty.
+          oneOf:
+            - $ref: '#/components/schemas/UserMove'
+            - type: 'null'
       required: [id, claims]
     UserSearchResponse:
       type: object
@@ -7535,6 +7907,214 @@ components:
           enum: [first_party, partner]
           description: Who runs the edges of the group. Set once, by the operator, never changed.
       required: [id, kind]
+    TopologyId:
+      type: string
+      maxLength: 64
+      pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+      description: >-
+        The id of a partition, a region or a cell: lowercase letters, digits and hyphens,
+        neither starting nor ending with a hyphen. A cell's id is written in front of the opaque
+        values the cell issues, so it is never reused; nothing reads a partition or a region out
+        of it.
+      examples: [kz-1]
+    Partition:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TopologyId'
+      required: [id]
+    Region:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TopologyId'
+        partitionId:
+          $ref: '#/components/schemas/TopologyId'
+      required: [id, partitionId]
+    Cell:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TopologyId'
+        regionId:
+          $ref: '#/components/schemas/TopologyId'
+        internalUrl:
+          type: string
+          format: uri
+          description: The address an edge sends the cell's token, PAR and userinfo calls to.
+        mtlsUrl:
+          description: >-
+            The cell's mutual-TLS listener, for the calls that present a client certificate;
+            `https` only. Absent for a cell without one.
+          oneOf:
+            - type: string
+              format: uri
+            - type: 'null'
+        trustedCertificates:
+          type: array
+          items:
+            type: string
+          description: >-
+            The leaf certificates (PEM) the cell's endpoints are pinned by. Several, so that a
+            certificate can be replaced without a gap; empty when nothing is pinned.
+        state:
+          type: string
+          enum: [open, closed, draining]
+          description: >-
+            Whether new users are placed in the cell: `open` takes them by its weight, `closed`
+            takes none, `draining` takes none and is being emptied. A cell in any state still
+            serves the users it holds.
+        weight:
+          type: integer
+          minimum: 0
+          description: The cell's share of new users among the open cells of its region.
+        publicKeys:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/Jwk'
+          description: >-
+            The public RSA keys (2048 to 8192 bits, each with a `kid`) the cell's auth signs its calls to
+            central with (`central.private-key`; the `kid` is `central.key-id`). One, or two while a key is
+            being replaced. Central takes a call to be the cell's when its token verifies with a key listed
+            here, and encrypts the secrets it answers that auth to it. No private member is accepted. Required: a
+            cell with no key cannot call central.
+      required: [id, regionId, internalUrl, trustedCertificates, state, weight, publicKeys]
+    TopologyResponse:
+      type: object
+      properties:
+        partitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Partition'
+        regions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Region'
+        cells:
+          type: array
+          items:
+            $ref: '#/components/schemas/CellStatus'
+      required: [partitions, regions, cells]
+    CellStatus:
+      description: >-
+        A cell as `GET /configuration/topology` answers it: the record, and what the users and the moves add to it.
+      allOf:
+        - $ref: '#/components/schemas/Cell'
+        - type: object
+          properties:
+            users:
+              type: integer
+              format: int64
+              description: How many users the directory places in the cell.
+            moving:
+              type: integer
+              format: int64
+              description: How many moves that leave the cell are not finished.
+            tokens:
+              type: integer
+              format: int64
+              description: >-
+                How many refresh tokens of users moved out of the cell it still answers `moved` for, from the cell's own
+                report (`GET /users/departures/summary`). Absent when the cell did not answer in time: that is not an error of
+                the request.
+            tokensUntil:
+              type: string
+              format: date-time
+              description: When the last of those tokens expires. Absent with `tokens`, or when there are none.
+            drainBlocked:
+              type: string
+              enum: [no_open_cell]
+              description: >-
+                Set on a `draining` cell that cannot be emptied now, because no open cell of its partition (with a weight above
+                0) can take its users. Nothing is started until there is one.
+          required: [users, moving]
+    UserMovePhase:
+      type: string
+      enum: [leaving, exported, arrived, flipped, done, failed, abandoning]
+      description: >-
+        `leaving`: the old cell is told, and the rows are read after a settle time. `exported`: the rows are read.
+        `arrived`: the new cell holds them, and the old cell is asked again before the directory is changed. `flipped`: the
+        directory names the new cell; from here the move is never rolled back, and one that stays here is the one to alert on
+        (`central_user_moves{phase}`). `done`: the old cell dropped what it held. `abandoning`: given up before the flip, and the
+        new cell forgetting the arrival and the old one serving the user again is not finished (retried without limit; it counts
+        as unfinished). `failed`: abandoned before the flip, and cleaned up.
+    MoveUserRequest:
+      type: object
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        cell:
+          $ref: '#/components/schemas/TopologyId'
+      required: [userId, cell]
+    UserMove:
+      type: object
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        moveId:
+          type: string
+          format: uuid
+          description: Names this move at both cells; new at every start, so the next move of the user has another.
+        from:
+          $ref: '#/components/schemas/TopologyId'
+        to:
+          $ref: '#/components/schemas/TopologyId'
+        phase:
+          $ref: '#/components/schemas/UserMovePhase'
+        reason:
+          type: string
+          enum: [admin, drain]
+        startedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        attempts:
+          type: integer
+          description: Failed attempts of the step the move is at; set back to 0 when it reaches the next phase.
+        error:
+          type: string
+          enum:
+            - depart_failed
+            - source_lacks_user
+            - export_failed
+            - arrive_failed
+            - target_has_user
+            - user_gone
+            - flip_failed
+            - complete_failed
+            - cell_unavailable
+            - departure_exists
+            - arrive_rejected
+            - invalid_document
+            - source_changed
+            - keep_failed
+          description: >-
+            The code of the last failure, or why the move was abandoned (`user_gone`: the directory no longer named the
+            old cell for the user, which was deleted; `source_changed`: the user's rows at the old cell kept changing while they
+            were handed over). `departure_exists`: another move of the user is leaving the old cell. `arrive_rejected`: the new
+            cell refused the envelope; `invalid_document`: the rows do not fit the new cell's configuration (a role, client or
+            scope it does not have). `keep_failed`: after the flip, the new cell did not confirm that it keeps the arrival.
+            Absent when nothing failed.
+      required: [userId, moveId, from, to, phase, reason, startedAt, updatedAt, attempts]
+    UserMovesResponse:
+      type: object
+      properties:
+        moves:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserMove'
+      required: [moves]
+    SetEdgeRegionRequest:
+      type: object
+      properties:
+        regionId:
+          oneOf:
+            - $ref: '#/components/schemas/TopologyId'
+            - type: 'null'
     GetEdgeGroupsResponse:
       type: object
       properties:
@@ -7624,6 +8204,9 @@ components:
         publicUrl:
           type: string
           description: Where browsers reach the edge; absent where none was registered.
+        regionId:
+          $ref: '#/components/schemas/TopologyId'
+          description: The region the edge site is in; absent for an edge in none, which a partner's edge always is.
         certificateNotAfter:
           type: string
           format: date-time
@@ -8324,7 +8907,7 @@ components:
           additionalProperties: true
     AntifraudStatus:
       type: object
-      description: What one auth instance says of its antifraud.
+      description: What an instance of the auth central is configured with says of its antifraud, and one of each cell.
       properties:
         decision:
           type: object
@@ -8348,7 +8931,22 @@ components:
             ageSeconds: { type: integer, minimum: 0, description: Seconds since it last checked them against the database successfully. }
             lastRefreshError: { type: string, description: What the last refresh that failed said; absent once one has succeeded. }
           required: [available]
-      required: [decision, lists, tuning]
+        cells:
+          type: array
+          description: |
+            The same of one instance of every registered cell (empty where there is no cell). The policy is one, and each
+            cell copies and enforces it on its own: `status.tuning.version` is the version of the settings the cell has
+            copied, the same number in every cell once a change has reached them all.
+          items:
+            type: object
+            properties:
+              cell: { type: string, description: The id of the cell. }
+              status:
+                type: object
+                description: "What the instance said: `decision`, `lists` and `tuning`, as above, and `cellShare`: the share of a limit by address (`ip`, `asn`, `prefix`) the cell applies, its weight among the cells that take users, so that the limit holds for the deployment and not once per cell (a limit of 100 at a share of 0.34 fires above 34 in that cell). Absent when the cell did not answer."
+              error: { type: string, description: Why the cell did not answer; absent when it did. }
+            required: [cell]
+      required: [decision, lists, tuning, cells]
     AntifraudVelocityLimit:
       type: object
       description: The most requests a key may have in each window (0 for no limit); a rule fires above it and adds `weight` to the score.

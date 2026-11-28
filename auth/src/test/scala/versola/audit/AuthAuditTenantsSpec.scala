@@ -23,8 +23,11 @@ object AuthAuditTenantsSpec extends UnitSpecBase:
 
   private val sizing = AuditEvents.Sizing(queueCapacity = 100, batchSize = 10, flushInterval = 1.second, maintenanceInterval = 1.hour)
 
+  /** Keeps a row once however often it is offered, as the repository is specified to: the writer offers the batch it
+    * held a second time when it stops, whether or not the write it was interrupted in had finished. */
   private class Keeping(stored: Ref[List[AuditEvent]]) extends AuditEventRepository:
-    override def insertBatch(events: List[AuditEvent]): Task[Unit] = stored.update(_ ++ events)
+    override def insertBatch(events: List[AuditEvent]): Task[Unit] =
+      stored.update(known => known ++ events.filterNot(event => known.exists(_.id == event.id)))
 
     override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =
       ZIO.succeed(PartitionReport(movedFromDefault = 0L, daysLeftInDefault = Nil, created = 0, dropped = 0))

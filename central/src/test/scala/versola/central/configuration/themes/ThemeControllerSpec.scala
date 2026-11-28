@@ -6,6 +6,7 @@ import versola.central.TestCentralConfig
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth}
 import versola.util.JWT
 import versola.util.http.Observability
@@ -38,9 +39,9 @@ object ThemeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj()),
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(config.secretKey),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
@@ -65,7 +66,7 @@ object ThemeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ThemeController.routes.provideEnvironment(
               ZEnvironment[ThemeService](themeService) ++
                 ZEnvironment[ResourceService](resourceService) ++
-                ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++
                 ZEnvironment[CentralConfig](config) ++
                 tracing,
             ),

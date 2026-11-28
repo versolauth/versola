@@ -7,6 +7,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import zio.*
@@ -78,7 +79,9 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             PermissionController.routes.provideEnvironment(
               ZEnvironment[PermissionService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](TestCentralConfig.noCells) ++ ZEnvironment[ResourceService](
+                  resourceService,
+                ),
             ),
           ),
         )

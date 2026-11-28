@@ -4,6 +4,7 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.configuration.{ClaimResponse, CreateScopeRequest, GetAllScopesResponse, ScopeWithClaimsResponse, UpdateScopeRequest}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import zio.ZIO
@@ -12,7 +13,7 @@ import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 
 object ScopeController extends AuditedController:
-  type Env = Tracing & OAuthScopeService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & OAuthScopeService & ResourceService & CentralConfig & EdgeService & CellRegistry
 
   def endpoints = List(
     createScopeEndpoint,

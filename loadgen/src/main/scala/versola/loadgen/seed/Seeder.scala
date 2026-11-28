@@ -8,7 +8,7 @@ import versola.loadgen.seed.SutSchema.SchemaOwner
 import versola.loadgen.store.LoadgenMigrations
 import versola.util.EnvName
 import versola.util.postgres.PostgresHikariDataSource
-import versola.util.{Argon2Config, Dpop, SecureRandom, SecurityService}
+import versola.util.{Argon2Config, Dpop, IdentifierDirectory, SecureRandom, SecurityService}
 import zio.*
 
 import java.sql.{Connection, DriverManager}
@@ -61,7 +61,12 @@ object Seeder:
           .derive(settings.keySeed, settings.keyPoolSize, settings.algorithm.getOrElse(Dpop.Algorithm.ES256))
           .mapError(error => InvalidPopulation(error.toString))
       services = SeedServices(
-        sut = SutWriter(CopySink.OfConnection(auth), CopySink.OfConnection(central), config.population.phonePrefix),
+        sut = SutWriter(
+          CopySink.OfConnection(auth),
+          CopySink.OfConnection(central),
+          config.population.phonePrefix,
+          IdentifierDirectory.deriveKey(seedConfig.clientSecretsSecret),
+        ),
         store = CopySink.OfTransactor(store),
         hasher = BulkHasher(security, random, seedConfig.passwordsSecret, seedConfig.hashParallelism),
         minter = seedConfig.warmSessions.map: warm =>

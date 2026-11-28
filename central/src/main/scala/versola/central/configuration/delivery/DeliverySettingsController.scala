@@ -3,15 +3,16 @@ package versola.central.configuration.delivery
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.topology.CellRegistry
+import versola.central.{CentralConfig, SecretTransport, authorizeAuth, authorizeBasic}
+import versola.util.SecurityService
 import versola.util.http.{BadRequest, Observability}
-import versola.util.{Base64Url, Secret, SecurityService}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 
 object DeliverySettingsController extends AuditedController:
-  type Env = Tracing & DeliverySettingsService & CentralConfig & SecurityService & ResourceService & EdgeService
+  type Env = Tracing & DeliverySettingsService & CentralConfig & SecurityService & ResourceService & EdgeService & CellRegistry
 
   def endpoints = List(
     getDeliverySettingsEndpoint,
@@ -30,20 +31,19 @@ object DeliverySettingsController extends AuditedController:
     }
 
   /** For auth. Separate from the admin surface because this is the one answer that carries the
-    * passwords: encrypted under the shared transport secret and base64url encoded, the way client
-    * secrets already travel on this channel.
+    * passwords: encrypted to the key of the `auth` that asked and base64url encoded, the way client
+    * secrets travel on this channel ([[SecretTransport]]). Only an `auth` asks: an edge's token is refused
+    * (`authorizeAuth`), as it has no use for the passwords.
     */
   val syncDeliverySettingsEndpoint =
     (Method.GET / "configuration" / "delivery-settings" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
-        _ <- authorizeInternal(request)
+        caller <- authorizeAuth(request)
         service <- ZIO.service[DeliverySettingsService]
-        config <- ZIO.service[CentralConfig]
-        securityService <- ZIO.service[SecurityService]
         settings <- service.getSettings
-        transportEncrypt = (secret: Secret) => securityService.encryptAes256(secret, config.secretKey).map(Base64Url.encode)
-        smtpPassword <- ZIO.foreach(settings.flatMap(_.smtpPassword))(transportEncrypt)
-        otpProviderPassword <- ZIO.foreach(settings.flatMap(_.otpProviderPassword))(transportEncrypt)
+        transportEncrypt <- SecretTransport.to(caller)
+        smtpPassword <- ZIO.foreach(settings.flatMap(_.smtpPassword))(transportEncrypt(_))
+        otpProviderPassword <- ZIO.foreach(settings.flatMap(_.otpProviderPassword))(transportEncrypt(_))
       yield Response.json(
         SyncResponse(
           stored = settings.isDefined,

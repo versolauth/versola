@@ -14,7 +14,7 @@ import java.util.UUID
 /** The antifraud decision of an OTP request, over HTTP, on two auth instances sharing one database.
   *
   * The unit specs prove the rules against stubs; this proves them through the wiring: the `antifraud` config block,
-  * the velocity counters' flush and load through Postgres between instances, the lists' reload from `af_list_entry`,
+  * the velocity counters' flush and load through Postgres between instances, the copy of central's lists and settings and its reload,
   * the address read from the tenant's IP header, and whether a code goes out. Each case reads the decision and the outcome (`sent`, `faked`, `blocked`) from the
   * request's own `receive-http` line (`antifraud` key): outside production auth calls no SMS provider, so the outcome
   * is where a send is recorded, at the place it would be made.
@@ -23,9 +23,9 @@ import java.util.UUID
   * Every case has a number of its own and addresses it picked at random, so neither a rerun nor another case counts
   * against it.
   *
-  * Lists are seeded in SQL (as the repository stores them), which is quick and needs nothing but the database; two cases make
-  * theirs through central's admin API, which is how an entry reaches the lists in a deployment (`seededThroughApi`), and
-  * one changes the settings the same way, through central with `If-Match`.
+  * The lists and the settings are central's, so every case makes its entries through central's admin API, which is how an
+  * entry reaches the lists in a deployment (`seeded`), and one changes the settings the same way, through central with
+  * `If-Match`. The instances copy both from central on a poll.
   */
 object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & OAuthClient & CentralApi]:
 
@@ -81,50 +81,38 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
       ZIO.sleep(700.millis) *> attempt(instance, s, randomIp()).map(a => (n + 1, Option.when(a.refused)(a))),
     )
 
-  /** Seeds `entries` and waits until `instance` enforces them, which a deny entry of a network nobody else uses (added
-    * in the same transaction, so in the same snapshot) says: a request from it is refused by that entry. Every poll
-    * comes from another address of the network, so that the address limit does not refuse the polls before the entry
-    * is there to. A case that asks the other instance before it reloads too uses [[seededOn]] with both. */
-  private def seeded(instance: AntifraudInstance, s: Flows.Setup)(entries: ListEntry*): Task[Unit] =
+  /** Seeds `entries` through central's admin API (`POST /antifraud/global/lists`, as an operator does) and waits until
+    * `instance` enforces them: central stores them after auth validated them, and the instance copies the lists on its next
+    * poll of central and reloads. A case that asks the other instance too uses [[seededOn]] with both. */
+  private def seeded(instance: AntifraudInstance, s: Flows.Setup)(entries: ListEntry*): ZIO[CentralApi, Throwable, Unit] =
     seededOn(List(instance), s)(entries*)
 
-  /** [[seeded]] for every one of `instances`: each reloads the lists on its own clock, so the entry is enforced by one
-    * before the other has it, and a request the other answers in between meets none of them. */
-  private def seededOn(instances: List[AntifraudInstance], s: Flows.Setup)(entries: ListEntry*): Task[Unit] =
+  /** [[seeded]] for every one of `instances`: each copies and reloads the lists on its own clock, so the entry is enforced by
+    * one before the other has it, and a request the other answers in between meets none of them.
+    *
+    * A deny entry of a network nobody else uses goes last and says when: a copy that has it has every entry made before it,
+    * whereas one that falls between two of the requests would show the probe's rule with the entries after it still missing.
+    * Every poll comes from another address of the network, so that the address limit does not refuse the polls before the
+    * entry is there to. */
+  private def seededOn(instances: List[AntifraudInstance], s: Flows.Setup)(entries: ListEntry*): ZIO[CentralApi, Throwable, Unit] =
     val bits = UUID.randomUUID().getLeastSignificantBits
     val network = s"10.${(bits >>> 8) & 0xff}.${bits & 0xff}"
-    AntifraudFixture.seed(ListEntry("deny", "cidr", s"$network.0/24", expiresAt = None, shadow = false, phone = None) :: entries.toList) *>
-      ZIO.foreachDiscard(instances): instance =>
+    for
+      central <- ZIO.service[CentralApi]
+      until <- Clock.instant.map(_.plusSeconds(3600))
+      // An hour is as long as a case needs, and an entry that expires is not left on the lists of the stack; a case that
+      // names an expiry keeps its own.
+      expiring = (entry: ListEntry) => entry.copy(expiresAt = entry.expiresAt.orElse(Some(until)))
+      _ <- AntifraudFixture.seed(
+        central,
+        (entries.toList :+ ListEntry("deny", "cidr", s"$network.0/24", expiresAt = None, shadow = false, phone = None)).map(expiring),
+      )
+      _ <- ZIO.foreachDiscard(instances): instance =>
         awaited(s"${instance.name} to reload the lists", timeout = 30.seconds, every = 500.millis)(
           attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a =>
             Option.when(a.decision.rules.contains("deny_list:cidr"))(()),
           ),
         )
-
-  /** The same as [[seeded]], with the entries made through central's admin API (`POST /antifraud/global/lists`, as an operator
-    * does), so that what auth enforces is what the API accepted and stored: through central, auth's validation and Postgres,
-    * and then the reload of the instances. */
-  private def seededThroughApi(instance: AntifraudInstance, s: Flows.Setup)(entries: ListEntry*): ZIO[CentralApi, Throwable, Unit] =
-    val bits = UUID.randomUUID().getLeastSignificantBits
-    val network = s"10.${(bits >>> 8) & 0xff}.${bits & 0xff}"
-    for
-      central <- ZIO.service[CentralApi]
-      _ <- AntifraudFixture.seedThroughApi(
-        central,
-        // The probe entry goes last: a reload that sees it has every entry made before it, whereas one that falls between two
-        // of the requests would show the probe's rule with the entries after it still missing.
-        entries.toList :+ ListEntry(
-          "deny",
-          "cidr",
-          s"$network.0/24",
-          expiresAt = Some(java.time.Instant.now().plusSeconds(3600)),
-          shadow = false,
-          phone = None,
-        ),
-      )
-      _ <- awaited("the lists to be reloaded", timeout = 30.seconds, every = 500.millis)(
-        attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a => Option.when(a.decision.rules.contains("deny_list:cidr"))(())),
-      )
     yield ()
 
   private def velocitySuite = suite("velocity across instances")(
@@ -187,7 +175,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seededThroughApi(f.a, s)(ListEntry("deny", "ip", ip, expiresAt = None, shadow = false, phone = None))
+        _ <- seeded(f.a, s)(ListEntry("deny", "ip", ip, expiresAt = None, shadow = false, phone = None))
         onA <- attempt(f.a, s, ip)
         onB <- awaited("instance B to reload the lists")(attempt(f.b, s, ip).map(a => Option.when(a.refused)(a)))
       yield assertTrue(
@@ -324,8 +312,8 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
 
   /** Takes the seeded entries of `valueType` (`asn`, `country`) out and waits until both instances have reloaded the lists, so that the case that follows
     * meets none. A request the entry refuses takes no step of its number's limit, so the polls can use one number. */
-  private def removed(f: AntifraudFixture, s: Flows.Setup, valueType: String): UIO[Unit] =
-    (AntifraudFixture.unseed(valueType) *> ZIO.foreachDiscard(List(f.a, f.b))(instance =>
+  private def removed(f: AntifraudFixture, s: Flows.Setup, valueType: String): URIO[CentralApi, Unit] =
+    (ZIO.serviceWithZIO[CentralApi](AntifraudFixture.unseed(_, valueType)) *> ZIO.foreachDiscard(List(f.a, f.b))(instance =>
       awaited(s"${instance.name} to drop the $valueType entry")(attempt(instance, s, hostingIp()).map(a => Option.when(!a.refused)(()))),
     )).orDie
 

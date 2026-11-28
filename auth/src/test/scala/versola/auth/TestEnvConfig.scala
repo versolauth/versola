@@ -22,7 +22,7 @@ import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessToken
 import versola.oauth.mtls.ClientCertificate
 import versola.user.model.UserId
-import versola.util.{CoreConfig, Email, EnvName, JWT, JsonWebKeySet, Secret}
+import versola.util.{CoreConfig, Email, EnvName, JWT, JsonWebKeySet, RoutingKey, RsaKeyPair, Secret}
 import zio.durationInt
 import zio.http.{Method, URL}
 import zio.json.*
@@ -33,7 +33,6 @@ import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.{Date, UUID}
-import javax.crypto.spec.SecretKeySpec
 
 object TestEnvConfig:
 
@@ -200,6 +199,33 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
       ZIO.succeed(TestEnvConfig.signingKey)
     override def refresh: Task[Unit] = ZIO.unit
 
+  private def generateServiceKeyPair(keyId: String): RsaKeyPair =
+    val generator = KeyPairGenerator.getInstance("RSA")
+    generator.initialize(2048)
+    val pair = generator.generateKeyPair()
+    RsaKeyPair(keyId, pair.getPublic.asInstanceOf[RSAPublicKey], pair.getPrivate.asInstanceOf[RSAPrivateKey])
+
+  /** The key pair of the auth [[coreConfig]] is (`central.key-id`, `central.private-key`): what it signs for central and for
+    * a cell with, and decrypts with. */
+  val authKeyPair: RsaKeyPair = generateServiceKeyPair("test-auth-service-key")
+
+  /** Another cell's pair, different from [[authKeyPair]] (see [[otherCellConfig]]): for what a cell that is not this one
+    * signs, and for what is encrypted to somebody else. */
+  val anotherCellKeyPair: RsaKeyPair = generateServiceKeyPair("test-another-cell-key")
+
+  /** Central's service key: [[coreConfig]] verifies central's calls with the public half. */
+  val centralKeyPair: RsaKeyPair = generateServiceKeyPair("test-central-service-key")
+
+  /** Somebody who claims central's `kid` and is not central: the same key id, a key of its own. */
+  val impostorKeyPair: RsaKeyPair = generateServiceKeyPair(centralKeyPair.keyId)
+
+  /** How a service token is signed in a spec: RS256 under the pair's `kid`. */
+  def signedBy(pair: RsaKeyPair): JWT.Signature.Asymmetric =
+    JWT.Signature.Asymmetric(JWT.Algorithm.RS256, pair.keyId, pair.privateKey)
+
+  def publicKeysOf(pair: RsaKeyPair): JWT.PublicKeys =
+    CoreConfig.CentralSyncConfig.decodePublicKey(pair.toPublicJwk.toJson).toOption.get
+
   val coreConfig = CoreConfig(
     security = CoreConfig.Security(
       accessTokensSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
@@ -217,7 +243,9 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     jwt = jwtConfig,
     central = CoreConfig.CentralSyncConfig(
       url = URL.empty,
-      secretKey = SecretKeySpec(Array.fill(32)(0.toByte), "AES"),
+      keyId = authKeyPair.keyId,
+      privateKey = authKeyPair.privateKey,
+      publicKeyJwk = publicKeysOf(centralKeyPair),
     ),
     bootstrap = None,
     otpProvider = Some(
@@ -247,7 +275,19 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     // No listener of `auth`'s own: the specs that exercise RFC 8705 reach the authenticator
     // directly, and a certificate on the request is what stands in for a handshake.
     mutualTls = None,
+    cellId = None,
   )
+
+  /** The same deployment configured as one cell of several (versolauth/versola#547 §6.2). */
+  val cellId: RoutingKey.CellId = RoutingKey.CellId.parse("kz-1").toOption.get
+  val cellCoreConfig: CoreConfig = coreConfig.copy(cellId = Some(cellId))
+
+  /** `config` as another auth would hold it: its own key pair, central's public key the same. */
+  def withKeyPairOf(config: CoreConfig, pair: RsaKeyPair): CoreConfig =
+    config.copy(central = config.central.copy(keyId = pair.keyId, privateKey = pair.privateKey))
+
+  /** An auth that is another cell's, whose keys are not this one's. */
+  val otherCellConfig: CoreConfig = withKeyPairOf(coreConfig, anotherCellKeyPair)
 
   /** The address [[coreConfigWithMutualTls]]'s listener is advertised at -- deliberately a
     * different authority from [[jwtConfig]]'s issuer, since telling the two apart is the whole

@@ -16,6 +16,11 @@ trait CentralSyncTokenService:
     */
   def syncRequest(request: Request): ZIO[Scope, Throwable, Response]
 
+  /** Sends `request` to central with a sync token, whatever its method, and never through the [[ConfigSnapshot]]: for a
+    * `GET` whose answer depends on what the caller already has (a delta since a version), so that it is not recorded and
+    * not replayed in place of an answer to another question. */
+  def liveRequest(request: Request): ZIO[Scope, Throwable, Response]
+
 object CentralSyncTokenService:
 
   /** Central, or something in front of it, answered a configuration sync with a status that is not
@@ -23,10 +28,13 @@ object CentralSyncTokenService:
     * no place in a log line, and the query of a sync can name what was asked for.
     */
   final case class UnexpectedStatus(status: Status, path: String)
-      extends RuntimeException(s"central answered the sync of $path with ${status.code}")
+    extends RuntimeException(s"central answered the sync of $path with ${status.code}")
 
   private val TokenTtl = 10.minutes
   private val ReloadInterval = 9.minutes
+
+  /** The JOSE header that names the cell a token comes from (versolauth/versola#1050). */
+  val CellIdHeader = "cell_id"
 
   def live: ZLayer[Scope & CoreConfig & Client & ConfigSnapshot, Throwable, CentralSyncTokenService] =
     TokenSource >>>
@@ -37,12 +45,15 @@ object CentralSyncTokenService:
     JWT.serialize(
       claims = JWT.Claims(
         issuer = "auth",
-        subject = "auth",
+        subject = config.cellId.getOrElse("auth"),
         audience = List("central"),
         custom = Json.Obj(),
       ),
       ttl = TokenTtl,
-      signature = JWT.Signature.Symmetric(config.central.secretKey),
+      signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, config.central.keyId, config.central.privateKey),
+      // Informative only: central decides who calls from the key. It refuses a header that names another cell than the one
+      // the key belongs to.
+      headers = config.cellId.map(id => CellIdHeader -> (id: String)).toMap,
     )
 
   private val TokenSource: ZLayer[CoreConfig, Throwable, CacheSource[String]] = ZLayer:
@@ -70,6 +81,8 @@ object CentralSyncTokenService:
     private def succeeded(request: Request)(response: Response): IO[UnexpectedStatus, Response] =
       if response.status.isSuccess then ZIO.succeed(response)
       else ZIO.fail(UnexpectedStatus(response.status, request.url.path.encode))
+
+    override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = send(request)
 
     private def send(request: Request): ZIO[Scope, Throwable, Response] =
       for

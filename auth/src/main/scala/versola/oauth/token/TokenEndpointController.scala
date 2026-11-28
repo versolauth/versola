@@ -5,6 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.audit.AuditSupport.*
 import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds, ClientAuthFailures}
+import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, CertificateRelevance, ClientAuthentication}
@@ -24,10 +25,11 @@ import versola.oauth.token.model.{
 }
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
+import versola.user.move.DepartureResponses
 import versola.util.CoreConfig.JwtConfig
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.util.http.{Controller, Observability, extractCredentials}
-import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT, Secret}
+import versola.util.{Base64Url, CoreConfig, FormDecoder, JWT, RoutingKey, Secret}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -106,6 +108,18 @@ object TokenEndpointController extends Controller:
         .addHeader(Header.CacheControl.NoStore)
         .addHeader(Header.Pragma.NoCache))
         .catchAll {
+          // The user is moving, or moved (versolauth/versola#1051): not a refusal of the request, so no `token.refused` event.
+          case TokenEndpointError.Leaving =>
+            Observability.setError(
+              TokenEndpointError.Leaving.error,
+              Some("user_leaving"),
+            ).as(DepartureResponses.leaving.addHeader(Header.CacheControl.NoStore))
+
+          case TokenEndpointError.Moved(cell) =>
+            Observability.setError("moved") *> AuthMetrics.movedAnswered("token") *> ZIO.succeed(
+              DepartureResponses.moved(cell).addHeader(Header.CacheControl.NoStore),
+            )
+
           case error: TokenEndpointError =>
             (Observability.setError(error.error, error.logDescription) *> auditRefused(error)).as:
               val errorResponse = TokenErrorResponse.from(error)
@@ -231,6 +245,10 @@ object TokenEndpointController extends Controller:
         ),
         ttl = tokens.accessTokenTtl,
         signature = signingKey,
+        // The cell that holds the session and the chain behind this token, for a router in
+        // front of several cells (versolauth/versola#547 §6.2). Absent on a deployment that
+        // is not a cell, which leaves its tokens exactly as they were.
+        headers = config.cellId.map(cell => RoutingKey.JoseHeader -> (cell: String)).toMap,
       )
       idToken <- generateIdToken(tokens, config, signingKey, serializedAT)
     yield TokenResponse(
@@ -240,7 +258,7 @@ object TokenEndpointController extends Controller:
       // token a `Bearer` one, since the constraint travels on the TLS connection.
       tokenType = if tokens.cnf.exists(_.jkt.isDefined) then "DPoP" else "Bearer",
       expiresIn = tokens.accessTokenTtl.toSeconds,
-      refreshToken = tokens.refreshToken.map(Base64.urlEncode),
+      refreshToken = tokens.refreshToken.map(RefreshToken.present),
       scope = Option.when(tokens.scope.nonEmpty)(tokens.scope.mkString(" ")),
       idToken = idToken,
       authorizationDetails = authorizationDetailsClaim(tokens),
@@ -322,14 +340,14 @@ object TokenEndpointController extends Controller:
 
   val codeExchangeRequestDecoder: FormDecoder[CodeExchangeRequest] = (form: Form) =>
     for
-      code <- FormDecoder.single(form, "code", AuthorizationCode.fromBase64Url)
+      code <- FormDecoder.single(form, "code", AuthorizationCode.fromPresented)
       redirectUri <- FormDecoder.single(form, "redirect_uri", URL.decode(_).left.map(_.getMessage))
       codeVerifier <- FormDecoder.optional(form, "code_verifier", CodeVerifier.from)
     yield CodeExchangeRequest(code, redirectUri, codeVerifier)
 
   val refreshTokenRequestDecoder: FormDecoder[RefreshTokenRequest] = (form: Form) =>
     for
-      refreshToken <- FormDecoder.single(form, "refresh_token", RefreshToken.fromBase64Url)
+      refreshToken <- FormDecoder.single(form, "refresh_token", RefreshToken.fromPresented)
       scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
       resources <- resourceRequestDecoder(form)
       authorizationDetails <- authorizationDetailsRequestDecoder(form)

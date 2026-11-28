@@ -425,6 +425,25 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
       yield assertTrue(!seen.flatMap(_.header("cookie")).exists(_.contains(EdgeApi.sessionCookieName)))
         .label("EDGE_SESSION is edge's own credential; an upstream that receives it could impersonate the browser")
     },
+    test("the issuer's cookies do not leak to the upstream, where the issuer's address is the edge's") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        // What a browser sends when the issuer and the edge are one host: the issuer's cookies beside edge's own.
+        beside = "__Host-SSO_SESSION=issuer-owned; __Host-SSO_CONVERSATION=issuer-owned; __Host-SSO_USER_AGENT_ID=issuer-owned; other=keep-me"
+        auth = established.auth match
+          case EdgeAuth.Session(content) => EdgeAuth.Session(s"$content; $beside")
+          case other => other
+        _ <- edgeApi.proxy(Method.GET, f.resourceId, "/items", auth)
+        seen <- stub.lastRequest
+        cookie = seen.flatMap(_.header("cookie")).getOrElse("")
+      yield assertTrue(cookie.contains("other=keep-me")).label(s"a cookie that is nobody's in particular still reaches the upstream: '$cookie'") &&
+        assertTrue(!cookie.contains("SSO_"))
+          .label("the session at the issuer and a sign-in in progress are the issuer's; an upstream that receives them could use them there")
+    },
     test("a public resource is called with the caller's own access token") {
       for
         edgeApi <- edge

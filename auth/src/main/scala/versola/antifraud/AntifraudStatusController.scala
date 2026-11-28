@@ -15,7 +15,7 @@ import java.time.{Duration as JDuration, Instant}
   * The status is of the instance that answers: another one may be behind (the age says by how much).
   */
 object AntifraudStatusController extends Controller:
-  type Env = Tracing & CoreConfig & AntifraudLists & AntifraudTuningStore & AntifraudEvents.Settings
+  type Env = Tracing & CoreConfig & AntifraudLists & AntifraudTuningStore & AntifraudEvents.Settings & CellShare
 
   def routes: Routes[Env, Throwable] = Routes(rulesEndpoint, statusEndpoint)
 
@@ -32,6 +32,7 @@ object AntifraudStatusController extends Controller:
         settings <- ZIO.service[AntifraudEvents.Settings]
         lists <- ZIO.serviceWithZIO[AntifraudLists](_.status)
         tuning <- ZIO.serviceWithZIO[AntifraudTuningStore](_.status)
+        share <- ZIO.serviceWithZIO[CellShare](_.current)
         now <- Clock.instant
       yield Response.json(
         StatusResponse(
@@ -49,6 +50,7 @@ object AntifraudStatusController extends Controller:
             ageSeconds = age(tuning.checkedAt, now),
             lastRefreshError = tuning.lastError,
           ),
+          cellShare = share.value,
         ).toJson,
       )
     }
@@ -78,4 +80,12 @@ object AntifraudStatusController extends Controller:
       lastRefreshError: Option[String],
   ) derives JsonCodec
 
-  case class StatusResponse(decision: DecisionStatus, lists: ListsStatusResponse, tuning: TuningStatusResponse) derives JsonCodec
+  /** `cellShare` is the part of a limit by address (`ip`, `asn`, `prefix`) this cell applies, from 0 (exclusive) to 1
+    * (versolauth/versola#1052): a limit of 100 is applied as 34 where the share is 0.34 (`ceil(100 * 0.34)`; a count above it fires the rule). It is 1 where this
+    * auth is no cell or no cell is registered. */
+  case class StatusResponse(
+      decision: DecisionStatus,
+      lists: ListsStatusResponse,
+      tuning: TuningStatusResponse,
+      cellShare: Double,
+  ) derives JsonCodec

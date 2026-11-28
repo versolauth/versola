@@ -12,12 +12,15 @@ import versola.antifraud.{
   AntifraudListController,
   AntifraudListRepository,
   AntifraudLists,
+  AntifraudPolicySource,
+  AntifraudPolicySync,
   AntifraudProposalRepository,
   AntifraudSettingsController,
   AntifraudSettingsRepository,
   AntifraudStatusController,
   AntifraudTuning,
   AntifraudTuningStore,
+  CellShare,
   ChallengeVerifier,
   PostgresAntifraudCounterResetRepository,
   PostgresAntifraudEventRepository,
@@ -70,6 +73,7 @@ import versola.oauth.conversation.{
 import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
 import versola.oauth.est.{EstCentralClient, EstController, EstService}
+import versola.oauth.handoff.{CellEnvelope, CellHandoff, CellRegistry, CellSyncClient}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -81,7 +85,16 @@ import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentReposi
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
-import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
+import versola.user.move.{
+  PostgresUserDepartureRepository,
+  PostgresUserMoveRepository,
+  UserDepartureRepository,
+  UserDepartures,
+  UserMoveController,
+  UserMoveRepository,
+  UserMoves,
+}
+import versola.user.{PostgresUserRepository, UserController, UserDirectory, UserRepository, UserService}
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.audit.{AuditEventRepository, AuditEvents, AuditTenants}
@@ -96,6 +109,7 @@ import zio.http.Server.RequestStreaming
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.security.PrivateKey
+import java.security.interfaces.RSAPrivateKey
 import java.util.UUID
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
@@ -144,6 +158,15 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthorizeEndpointService &
       AuthorizationResponseService &
       ConversationRouter &
+      CellSyncClient &
+      CellRegistry &
+      CellShare &
+      CellEnvelope &
+      CellHandoff &
+      UserDepartureRepository &
+      UserMoveRepository &
+      UserDepartures &
+      UserMoves &
       ConversationService &
       AntifraudEvents &
       AntifraudCounters &
@@ -174,7 +197,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ChallengeThrottleRepository &
       LogoutService &
       SessionService &
-      UserRegistrationSyncClient &
+      UserDirectory &
       EstCentralClient &
       EstService &
       AuditEvents &
@@ -206,6 +229,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksController.routes,
       MetadataController.routes,
       UserController.routes,
+      UserMoveController.routes,
       AntifraudListController.routes,
       AntifraudCountersController.routes,
       AntifraudSettingsController.routes,
@@ -281,6 +305,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >++> (
     PostgresWalMetrics.live() >++>
       PostgresUserRepository.live >++>
+      PostgresUserDepartureRepository.live >++>
+      PostgresUserMoveRepository.live >++>
       PostgresConversationRepository.live >++>
       PostgresConsentRepository.live >++>
       PostgresAuthorizationCodeRepository.live >++>
@@ -355,14 +381,14 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         _.load(Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings]))),
       )
 
-  /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */
+  /** Keyed off this auth's own private key, see [[ConfigSnapshot]] and [[CoreConfig.CentralSyncConfig.snapshotKey]]. */
   private val configSnapshot: ZLayer[TransactorZIO & CoreConfig, Nothing, ConfigSnapshot] =
     (PostgresConfigSnapshotRepository.live("auth_config_snapshots") ++ ZLayer.service[CoreConfig]) >>>
       ZLayer.fromZIO:
         for
           repository <- ZIO.service[ConfigSnapshot.Repository]
           config <- ZIO.service[CoreConfig]
-          snapshot <- ConfigSnapshot.make(repository, config.central.secretKey.getEncoded)
+          snapshot <- ConfigSnapshot.make(repository, config.central.snapshotKey)
         yield snapshot
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
@@ -401,6 +427,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       MetadataSyncClient.live >++>
       JwksService.live >++>
       AuthPropertyGenerator.live >++>
+      // What every request about one user asks first: is the user leaving this cell, or gone from it.
+      UserDepartures.live >++>
       SessionService.live >++>
       BackChannelDispatcher.live >++>
       BackChannelOutbox.live >++>
@@ -432,17 +460,25 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutService.live >++>
       AccountSettingsService.live >++>
       AcrResolutionService.live >++>
-      UserRegistrationSyncClient.live >++>
+      UserDirectory.live >++>
       EstCentralClient.live >++>
       EstService.live >++>
       UserService.live >++>
       ConsentService.live >++>
       antifraudSettings >++>
       antifraudListSettings >++>
-      AntifraudLists.live >++>
       antifraudTuningSettings >++>
+      // Before the lists and the tuning are first read: they read this cell's copy of central's policy, which this makes current.
+      AntifraudPolicySource.live >++>
+      AntifraudPolicySync.live >++>
+      AntifraudLists.live >++>
       AntifraudTuningStore.live >++>
       VelocityCounters.live >++>
+      // The cells' keys a handoff is sealed for and opened with, and the weights a limit by address is shared out by; an
+      // auth that is no cell never reads them.
+      CellSyncClient.live >++>
+      CellRegistry.live >++>
+      CellShare.live >++>
       Antifraud.live >++>
       // The database the ASN of a request's address is looked up in: read from `antifraud.asn.file`, refreshed in the
       // background, nothing at all while the block is absent.
@@ -456,6 +492,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PowChallengeVerifier.live >++>
       CodeAlternativeService.live >++>
       ConversationService.live >++>
+      // Sealing for another cell, and opening what another cell sealed: a handoff and a moved user are both made with it.
+      CellEnvelope.live >++>
+      CellHandoff.live >++>
+      UserMoves.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
       AuthorizeEndpointService.live >++>
@@ -473,6 +513,14 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   given DeriveConfig[SecretKey] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
     .map(bytes => SecretKeySpec(bytes, "AES"))
+
+  /** `central.private-key`: read as an edge reads its `private-key`, RSA only, whereas `jwt.private-key` may be EC. */
+  given DeriveConfig[RSAPrivateKey] = DeriveConfig[String]
+    .mapOrFail(CoreConfig.CentralSyncConfig.decodePrivateKey(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
+
+  /** `central.public-key-jwk`: central's public RSA JWK, as the JSON text of the key. */
+  given DeriveConfig[JWT.PublicKeys] = DeriveConfig[String]
+    .mapOrFail(CoreConfig.CentralSyncConfig.decodePublicKey(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))

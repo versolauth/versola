@@ -20,7 +20,7 @@ case class WebLoginRequest(preset: PresetId, acrValues: Option[List[String]], ss
   *
   * ```
   * GET  {edge}/login/{presetId}          -> 303 {auth}/authorize?...   edge-login
-  * GET  {auth}/authorize?...             -> 303 /challenge, SSO_CONVERSATION   authorize
+  * GET  {auth}/authorize?...             -> 303 /challenge, __Host-SSO_CONVERSATION   authorize
   * ... §8.1 hops 2-5, via ChallengeConversation ...    -> 303 {edge}/complete?code=&state=
   * GET  {edge}/complete?code=&state=     -> 303 app, Set-Cookie EDGE_SESSION   edge-complete
   * ```
@@ -41,7 +41,7 @@ final class WebFlows(
 
   private val conversation = ChallengeConversation(auth, observer, otpCode, origin)
 
-  /** §8.4 end to end. Returns the cookie edge issued and the `SSO_SESSION` auth left behind on
+  /** §8.4 end to end. Returns the cookie edge issued and the `__Host-SSO_SESSION` auth left behind on
     * the way through -- both belong in the session's `vu_sessions` row (see
     * `DeviceSession.webCookie`), the cookie because it *is* the credential and the SSO session
     * because it is the only thing that survives the cookie.
@@ -129,7 +129,7 @@ final class WebFlows(
     * reauthorization, which is the scenario mix being misreported rather than merely a session
     * outliving its logout.
     *
-    * The `SSO_SESSION` is a parameter because auth identifies the session to end by that cookie
+    * The `__Host-SSO_SESSION` is a parameter because auth identifies the session to end by that cookie
     * alone on this path, and it is the credential [[webOtp]] returns and the row persists
     * precisely so a later logout can present it.
     *

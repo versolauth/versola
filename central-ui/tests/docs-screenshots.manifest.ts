@@ -56,8 +56,8 @@ export type DocsShot = FrameShot | CropShot | LoginShot;
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const tenant = 'tenant-alpha';
 const standardTenants = [
-  { id: tenant, description: 'Alpha Workspace', edgeId: null, securityProfile: 'standard' as const },
-  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
+  { id: tenant, description: 'Alpha Workspace', edgeGroupId: null, securityProfile: 'standard' as const },
+  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null },
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -450,12 +450,34 @@ export const realThemeCss: Act = async page => {
 // Global data
 
 const edgeTenants = [
-  { id: 'acme', description: 'Acme', edgeId: 'edge-default' },
-  { id: 'acme-fapi', description: 'Acme FAPI', edgeId: 'edge-default', securityProfile: 'fapi2' as const },
-  { id: 'default', description: 'Default', edgeId: 'edge-default' },
+  { id: 'acme', description: 'Acme', edgeGroupId: 'default' },
+  { id: 'acme-fapi', description: 'Acme FAPI', edgeGroupId: 'default', securityProfile: 'fapi2' as const },
+  { id: 'default', description: 'Default', edgeGroupId: 'default' },
 ];
 const edges = [{ id: 'edge-default', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [] }];
 const edgesState: MockState = { tenants: edgeTenants, edges };
+/** A public RSA JWK of 2048 bits that is none of a real key. */
+const exampleKey = (kid: string) => ({ kty: 'RSA', kid, n: `${'q'.repeat(342 - kid.length)}${kid}`, e: 'AQAB' });
+const cellsState: MockState = {
+  tenants: edgeTenants,
+  partitions: [{ id: 'kz' }],
+  regions: [{ id: 'almaty', partitionId: 'kz' }, { id: 'astana', partitionId: 'kz' }],
+  cells: [
+    { id: 'kz-1', regionId: 'almaty', internalUrl: 'http://auth-kz-1.internal.example.com:9003', mtlsUrl: 'https://auth-kz-1.internal.example.com:9008', trustedCertificates: [], state: 'open', weight: 100, publicKeys: [exampleKey('kz-1-2026')], users: 18240 },
+    { id: 'kz-2', regionId: 'almaty', internalUrl: 'http://auth-kz-2.internal.example.com:9003', mtlsUrl: null, trustedCertificates: [], state: 'draining', weight: 0, publicKeys: [exampleKey('kz-2-2026')], users: 340, tokens: 12, tokensUntil: '2026-12-01T10:00:00Z' },
+    { id: 'kz-3', regionId: 'astana', internalUrl: 'http://auth-kz-3.internal.example.com:9003', mtlsUrl: null, trustedCertificates: [], state: 'open', weight: 100, publicKeys: [exampleKey('kz-3-2026')], users: 9120 },
+  ],
+  moves: [
+    { userId: '0193c2e4-7b1a-7c3e-9f00-5a1d2b3c4d5e', from: 'kz-2', to: 'kz-1', phase: 'leaving', reason: 'drain', startedAt: '2026-11-20T10:00:00Z', updatedAt: '2026-11-20T10:00:05Z', attempts: 0 },
+    { userId: '0193c2e4-7b1a-7c3e-9f00-5a1d2b3c4d5f', from: 'kz-2', to: 'kz-3', phase: 'flipped', reason: 'drain', startedAt: '2026-11-20T09:00:00Z', updatedAt: '2026-11-20T09:30:00Z', attempts: 2, error: 'complete_failed' },
+    { userId: '0193c2e4-7b1a-7c3e-9f00-5a1d2b3c4d60', from: 'kz-1', to: 'kz-3', phase: 'failed', reason: 'admin', startedAt: '2026-11-19T09:00:00Z', updatedAt: '2026-11-19T09:10:00Z', attempts: 5, error: 'target_has_user' },
+    { userId: '0193c2e4-7b1a-7c3e-9f00-5a1d2b3c4d61', from: 'kz-1', to: 'kz-3', phase: 'done', reason: 'admin', startedAt: '2026-11-18T09:00:00Z', updatedAt: '2026-11-18T09:10:00Z', attempts: 0 },
+  ],
+  edges: [
+    { id: 'edge-almaty', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [], regionId: 'almaty' },
+    { id: 'edge-astana', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [], regionId: 'astana' },
+  ],
+};
 
 const deliverySettingsState: MockState = {
   deliverySettings: {
@@ -486,7 +508,7 @@ const jwksState: MockState = {
 // The keys screen also shows who signs with a key, from the tenants' own settings.
 const keysState: MockState = {
   ...jwksState,
-  tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null, securityProfile: 'fapi2' as const, signingKeyId: 'central-es256' }],
+  tenants: [{ id: tenant, description: 'Alpha Workspace', edgeGroupId: null, securityProfile: 'fapi2' as const, signingKeyId: 'central-es256' }],
 };
 
 const serverMetadata = {
@@ -598,6 +620,17 @@ const userLoaded: Act = async page => {
   await expect(page.getByRole('region', { name: 'Identifiers' })).toContainText('dana@example.com');
   await expect(page.getByRole('region', { name: 'Delete user' })).toBeVisible();
 };
+// Move to another cell: the dialog of the Security actions card, where the user record names its cell.
+const userMoveState = (): MockState => ({
+  ...userClientsState(),
+  partitions: [{ id: 'kz' }],
+  regions: [{ id: 'almaty', partitionId: 'kz' }, { id: 'astana', partitionId: 'kz' }],
+  cells: [
+    { id: 'kz-1', regionId: 'almaty', internalUrl: 'http://auth-kz-1.internal.example.com:9003', mtlsUrl: null, trustedCertificates: [], state: 'open', weight: 100, publicKeys: [exampleKey('kz-1-2026')] },
+    { id: 'kz-2', regionId: 'astana', internalUrl: 'http://auth-kz-2.internal.example.com:9003', mtlsUrl: null, trustedCertificates: [], state: 'open', weight: 100, publicKeys: [exampleKey('kz-2-2026')] },
+  ],
+  userCells: { [dana.id]: 'kz-1' },
+});
 const userDevicesPath = `${userPath}&tab=devices`;
 // Devices: signed-in devices, apps with access and passkeys.
 const userDevicesLoaded: Act = async page => {
@@ -846,6 +879,48 @@ const consoleShots: DocsShot[] = [
   { name: 'console/client-wizard-service-2-basics', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: serviceBasics },
   { name: 'console/client-wizard-service-3-signin', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: servicePermissions },
   { name: 'console/client-wizard-service-4-review', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: serviceReview },
+
+  // Cells
+  {
+    name: 'console/cells-list', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await expect(page.locator('versola-data-table').first().getByRole('columnheader')).toHaveText(['Cell', 'Region', 'State', 'Weight', 'Users', 'Moving', 'Address', 'Actions']);
+      await expect(page.getByRole('region', { name: 'Region almaty' })).toContainText('edge-almaty');
+      await expect(page.getByRole('region', { name: 'User moves' })).toContainText('Draining the cell');
+    },
+  },
+  {
+    name: 'console/cell-moves', kind: 'frame', fullPage: true, path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      const moves = page.getByRole('region', { name: 'User moves' });
+      await expect(moves.getByRole('row')).toHaveCount(5);
+      await expect(moves.getByRole('status')).toContainText('flipped but not complete');
+    },
+  },
+  {
+    name: 'console/cell-record', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open cell kz-1' }).click();
+      await expect(sidePanel(page, 'kz-1').getByRole('region', { name: 'Placement' })).toContainText('New users are placed here');
+      await expect(sidePanel(page, 'kz-1').getByRole('region', { name: 'Public keys' })).toContainText('kz-1-2026');
+    },
+  },
+  {
+    name: 'console/cell-drain', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open cell kz-2' }).click();
+      await expect(sidePanel(page, 'kz-2').getByRole('region', { name: 'Drain progress' })).toContainText('Carried refresh tokens');
+    },
+  },
+  {
+    name: 'console/cell-form', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await page.getByRole('button', { name: '+ Register Cell' }).click();
+      await expect(sidePanelDialog(page, 'Register cell')).toBeVisible();
+      await expect(sidePanel(page, 'Register cell').getByLabel('Cell ID *')).toBeVisible();
+      await expect(sidePanel(page, 'Register cell').getByLabel('Public keys *')).toBeVisible();
+    },
+  },
 
   // Edges
   {
@@ -1178,6 +1253,13 @@ const consoleShots: DocsShot[] = [
   // Users
   { name: 'console/user-detail', kind: 'frame', fullPage: true, path: userPath, state: userClientsState, before: userLoaded },
   {
+    name: 'console/user-move', kind: 'frame', path: userPath, state: userMoveState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Move to another cell…' }).click();
+      await expect(page.getByRole('dialog', { name: 'Move to another cell' }).getByLabel('Target cell')).toBeVisible();
+    },
+  },
+  {
     name: 'entities/users-search-empty', kind: 'frame', path: `/?view=users&tenant=${tenant}`, state: alpha,
     before: async page => { await expect(page.getByRole('heading', { name: 'Search for a user', exact: true })).toBeVisible(); },
   },
@@ -1363,7 +1445,7 @@ const consoleShots: DocsShot[] = [
   // Tenants
   {
     name: 'entities/tenants-list', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`,
-    state: { ...alpha, tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }, { id: 'acme-prod', description: 'Acme production', edgeId: null, securityProfile: 'standard' }] },
+    state: { ...alpha, tenants: [{ id: tenant, description: 'Alpha Workspace', edgeGroupId: null }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null }, { id: 'acme-prod', description: 'Acme production', edgeGroupId: null, securityProfile: 'standard' }] },
     before: async page => {
       await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open tenant/ })).toHaveCount(3);
     },

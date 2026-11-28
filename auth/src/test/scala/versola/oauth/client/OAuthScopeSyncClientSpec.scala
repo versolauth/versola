@@ -9,25 +9,21 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
-import javax.crypto.spec.SecretKeySpec
-
 object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
   private case class SignedClaims(iss: String, sub: String, aud: List[String]) derives JsonDecoder
 
-  private val secretKey = SecretKeySpec(Array.fill(32)(12.toByte), "AES")
-  private val configLayer = ZLayer.succeed(
-    TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey)),
-  )
+  private val configLayer = ZLayer.succeed(TestEnvConfig.coreConfig)
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
     for
       client <- ZIO.service[Client]
       token <- JWT.serialize(
         claims = JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
         ttl = 10.minutes,
-        signature = JWT.Signature.Symmetric(secretKey),
+        signature = TestEnvConfig.signedBy(TestEnvConfig.authKeyPair),
       )
     yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
+      override def liveRequest(request: Request): ZIO[Scope, Throwable, Response] = syncRequest(request)
       override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
         client.request(request.addHeader(Header.Authorization.Bearer(token))),
   )
@@ -59,7 +55,9 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(new RuntimeException("No request captured"))
         token <- ZIO.fromOption(request.header(Header.Authorization).collect { case Header.Authorization.Bearer(v) => v.stringValue })
           .orElseFail(new RuntimeException("Missing bearer token"))
-        claims <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT).mapError(e => new RuntimeException(e.toString))
+        claims <- JWT.deserialize[SignedClaims](token, TestEnvConfig.publicKeysOf(TestEnvConfig.authKeyPair), JWT.Type.JWT).mapError(e =>
+          new RuntimeException(e.toString),
+        )
       yield assertTrue(
         request.method == Method.GET,
         request.url.encode.contains("configuration/scopes/sync"),

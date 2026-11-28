@@ -12,7 +12,7 @@ import zio.{IO, ZIO}
   * compiles against in the meantime.
   */
 trait AuthClient:
-  /** `sessionCookie` is the `SSO_SESSION` from a prior [[SubmitOutcome.Redirected]] (§3.2), sent
+  /** `sessionCookie` is the `__Host-SSO_SESSION` from a prior [[SubmitOutcome.Redirected]] (§3.2), sent
     * as a cookie on this request when present. Passing it is what makes silent reauthorization
     * and an ACR step-up (§7.4: "re-run `/authorize` ... on the same SSO session") land on the
     * caller's own existing session instead of starting a fresh one.
@@ -121,7 +121,7 @@ trait AuthClient:
 
   def logout(idToken: IdToken): IO[ProtocolError, Unit]
 
-  /** `GET {auth}/logout` with the `SSO_SESSION` and no `id_token_hint`: the confirmation page a
+  /** `GET {auth}/logout` with the `__Host-SSO_SESSION` and no `id_token_hint`: the confirmation page a
     * browser lands on when it follows edge's logout redirect. Edge holds the id token and its
     * redirect carries no hint, so the web path always takes auth's `cookie` branch and always
     * gets this page -- [[logout]]'s hint-only shortcut is the mobile path's.

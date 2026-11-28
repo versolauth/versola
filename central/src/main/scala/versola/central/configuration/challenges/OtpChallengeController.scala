@@ -5,6 +5,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Patch.applyTo
 import versola.util.http.BadRequest
@@ -13,7 +14,7 @@ import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 object OtpChallengeController extends AuditedController:
-  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService & RoleRepository
+  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService & CellRegistry & RoleRepository
 
   def endpoints = List(
     getTemplatesEndpoint,

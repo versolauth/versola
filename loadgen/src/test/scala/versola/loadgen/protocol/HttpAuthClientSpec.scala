@@ -58,7 +58,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         auth <- clientFor(routes)
         _ <- auth.authorize("openid", None, None, Some(SsoSession(StubSut.ssoSession)), None)
         cookie <- recorder.headerOf("/authorize", "cookie")
-      yield assertTrue(cookie == Some("SSO_SESSION=" + StubSut.ssoSession))
+      yield assertTrue(cookie == Some("__Host-SSO_SESSION=" + StubSut.ssoSession))
     },
     test("an unprovisioned client_id is a typed configuration failure, not a thrown exception") {
       for
@@ -78,7 +78,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
       yield assertTrue(
         page.step == Some(ConversationStep.Otp),
         page.csrf == Some(Csrf(StubSut.csrf)),
-        cookie == Some("SSO_CONVERSATION=" + StubSut.conversation),
+        cookie == Some("__Host-SSO_CONVERSATION=" + StubSut.conversation),
       )
     },
     test("a submit carries the conversation cookie and the csrf token, and reports the redirect") {
@@ -95,7 +95,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
           case SubmitOutcome.Rendered(_) => (None, None)
       yield assertTrue(
         form == Some(Map("code" -> "123456", "csrf" -> StubSut.csrf)),
-        cookie == Some("SSO_CONVERSATION=" + StubSut.conversation),
+        cookie == Some("__Host-SSO_CONVERSATION=" + StubSut.conversation),
         contentType == Some("application/x-www-form-urlencoded"),
         redirected == (Some(StubSut.code), Some(SsoSession(StubSut.ssoSession))),
       )
@@ -201,7 +201,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         confirmation.postLogoutRedirectUri == Some(StubSut.postLogoutRedirect),
         confirmation.url.encode.startsWith(StubSut.authUrl + "/logout"),
         !live,
-        sent == Some("SSO_SESSION=" + StubSut.ssoSession),
+        sent == Some("__Host-SSO_SESSION=" + StubSut.ssoSession),
       )
     },
     test("a logout page auth rendered for no session carries no token, and is not submittable") {

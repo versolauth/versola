@@ -2,13 +2,17 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
+import versola.antifraud.{PostgresAntifraudListRepository, PostgresAntifraudSettingsRepository}
 import versola.audit.PostgresAuditEventRepository
 import versola.central.antifraud.{
   AntifraudCountersController,
   AntifraudCountersService,
   AntifraudListController,
+  AntifraudListRepository,
   AntifraudListService,
+  AntifraudPolicyController,
   AntifraudSettingsController,
+  AntifraudSettingsRepository,
   AntifraudSettingsService,
   AntifraudStatusController,
   AntifraudStatusService,
@@ -74,7 +78,22 @@ import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService
 import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
-import versola.central.users.{AuthClient, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
+import versola.central.configuration.topology.{CellId, CellRegistry, TopologyController, TopologyRepository, TopologyService}
+import versola.central.users.{
+  AuthClient,
+  CellDrain,
+  DirectoryKey,
+  ServiceController,
+  UserController,
+  UserMoveController,
+  UserMoveProcessor,
+  UserMoveRepository,
+  UserMoveService,
+  UserMoveSettings,
+  UserOutboxProcessor,
+  UserRepository,
+  UserService,
+}
 import versola.central.{CentralConfig, refuseEdgeCallers}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.clients.{
@@ -105,7 +124,8 @@ import versola.configuration.sync.PostgresCacheSyncRepository
 import versola.configuration.system.PostgresSystemSettingsRepository
 import versola.configuration.tenants.PostgresTenantRepository
 import versola.configuration.themes.PostgresThemeRepository
-import versola.users.PostgresUserRepository
+import versola.configuration.topology.PostgresTopologyRepository
+import versola.users.{PostgresUserMoveRepository, PostgresUserRepository}
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.audit.{AuditEventRepository, AuditEvents, AuditTenants}
@@ -121,9 +141,8 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.lang.System as JavaSystem
 import java.net.InetAddress
+import java.security.PrivateKey
 import java.util.UUID
-import javax.crypto.SecretKey
-import javax.crypto.spec.SecretKeySpec
 import scala.util.Try
 
 object PostgresCentralApp extends VersolaApp("central"):
@@ -150,6 +169,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleService &
       EdgeRepository &
       EdgeGroupRepository &
+      TopologyRepository &
       EdgeEnrollmentTokenRepository &
       EdgeCertificateRepository &
       PartnerRepository &
@@ -159,6 +179,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       PartnerService &
       EdgeService &
       EdgeGroupService &
+      CellRegistry &
+      TopologyService &
       EdgeCertificateIssuer &
       EdgeIdentityService &
       FormRepository &
@@ -180,7 +202,12 @@ object PostgresCentralApp extends VersolaApp("central"):
       CacheSyncService &
       SecurityService &
       UserRepository &
+      UserMoveRepository &
       UserService &
+      UserMoveService &
+      UserMoveSettings &
+      AntifraudListRepository &
+      AntifraudSettingsRepository &
       AntifraudListService &
       AntifraudSettingsService &
       AntifraudCountersService &
@@ -193,6 +220,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuditTenants &
       AuditReportService &
       UserOutboxProcessor &
+      UserMoveProcessor &
+      CellDrain &
       ClientCertificateIssuanceRepository &
       EdgeCertificateEnrollmentRepository &
       ClientEstRepository &
@@ -226,6 +255,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationDetailTypeController.endpoints,
       RoleController.endpoints,
       EdgeController.endpoints,
+      TopologyController.endpoints,
       PartnerController.endpoints,
       FormController.endpoints,
       LocaleController.endpoints,
@@ -234,8 +264,10 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsController.endpoints,
       DeliverySettingsController.endpoints,
       UserController.endpoints,
+      UserMoveController.endpoints,
       AntifraudListController.endpoints,
       AntifraudSettingsController.endpoints,
+      AntifraudPolicyController.endpoints,
       AntifraudCountersController.endpoints,
       AntifraudStatusController.endpoints,
       JwksController.endpoints,
@@ -296,6 +328,9 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresRoleRepository.live >++>
           PostgresEdgeRepository.live >++>
           PostgresEdgeGroupRepository.live >++>
+          PostgresTopologyRepository.live >++>
+          PostgresAntifraudListRepository.live >++>
+          PostgresAntifraudSettingsRepository.live >++>
           PostgresEdgeEnrollmentTokenRepository.live >++>
           PostgresEdgeCertificateRepository.live >++>
           PostgresPartnerRepository.live >++>
@@ -311,7 +346,8 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresJwksRepository.live >++>
           PostgresServerMetadataRepository.live >++>
           PostgresAuditEventRepository.live >++>
-          PostgresUserRepository.live
+          PostgresUserRepository.live >++>
+          PostgresUserMoveRepository.live
       )
 
   /** This process in the audit log: its host, which is what tells the instances of a deployment apart, and a part that is its own
@@ -337,7 +373,7 @@ object PostgresCentralApp extends VersolaApp("central"):
     ZLayer.succeed(AuditEvents.Settings.standard) >++> auditWriter()
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
-    parseConfig[CentralConfig] >++>
+    (parseConfig[CentralConfig] >>> CentralConfig.validated) >++>
       repositories >++>
       auditEvents >++>
       SecurityService.live >++>
@@ -366,6 +402,11 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleService.live >++>
       EdgeService.live >++>
       EdgeGroupService.live >++>
+      CellRegistry.live >++>
+      // before the topology: it asks the cells what they report of their departures
+      AuthClient.routed >++>
+      UserMoveSettings.live >++>
+      TopologyService.live >++>
       EdgeIdentityService.live >++>
       LocaleCompletenessValidator.live >++> LocaleService.live >++>
       JwksService.live >++>
@@ -375,16 +416,19 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsService.live >++>
       DeliverySettingsService.live >++>
       CacheSyncService.live >++>
-      AuthClient.live >++>
       PartnerClientService.live >++>
       PartnerService.live >++>
       AuditReportService.live >++>
+      DirectoryKey.live >++>
       UserService.live >++>
+      UserMoveService.live >++>
       AntifraudListService.live >++>
       AntifraudSettingsService.live >++>
       AntifraudCountersService.live >++>
       AntifraudStatusService.live >++>
       UserOutboxProcessor.live >++>
+      UserMoveProcessor.live >++>
+      CellDrain.live >++>
       // Renews the certificates central issued, for as long as it runs. A no-op where
       // `client-certificates` is not configured.
       ClientCertificateService.renewal >++>
@@ -398,9 +442,12 @@ object PostgresCentralApp extends VersolaApp("central"):
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
-  given DeriveConfig[SecretKey] = DeriveConfig[String]
-    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
-    .map(bytes => SecretKeySpec(bytes, "AES"))
+  /** The private key of `service-key`, read the way an edge's `private-key` is: a base64-encoded PKCS#8 RSA key. */
+  given DeriveConfig[PrivateKey] = DeriveConfig[String]
+    .mapOrFail(SecretConfig.rsaPrivateKey)
+
+  given DeriveConfig[CellId] = DeriveConfig[String]
+    .mapOrFail(CellId.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))

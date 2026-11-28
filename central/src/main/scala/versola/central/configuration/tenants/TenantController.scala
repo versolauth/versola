@@ -29,7 +29,7 @@ object TenantController extends AuditedController:
           TenantResponse(
             summary.tenant.id,
             summary.tenant.description,
-            summary.tenant.edgeId,
+            summary.tenant.edgeGroupId,
             summary.securityProfile,
             summary.signingKeyId,
           ))

@@ -1,16 +1,21 @@
 package versola.oauth.conversation
 
 import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.auth.TestEnvConfig
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AcrResolutionService
+import versola.oauth.challenge.passkey.WebAuthnService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   Acr,
+  ApplicationType,
   AuthFactor,
   AuthFactorType,
   AuthFlow,
+  AuthMethod,
   AuthMethodRef,
   ClientId,
+  OAuthClientRecord,
   OtpType,
   PassedAuthFactor,
   PassedFactorRecord,
@@ -23,21 +28,26 @@ import versola.oauth.client.model.{
   RegistrationFlow,
   RegistrationStep,
   ScopeToken,
+  TenantId,
 }
 import versola.oauth.conversation.CodeAlternativeFixtures as Alt
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State, UserAgentData}
-import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
+import versola.oauth.session.model.{PublicSessionId, SessionId, SupersededSession, UserAgentDetails, UserAgentId}
 import versola.role.model.RoleId
-import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
+import versola.user.move.{DepartureRefusal, RecordingDepartures, UserDepartures}
+import versola.user.{UserDirectory, UserRepository}
 import versola.util.audit.AuditOutcome
-import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
+import versola.util.http.Observability
+import versola.util.{CoreConfig, Email, Phone, RoutingKey, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast.Json
+import zio.logging.logContext
 import zio.prelude.NonEmptyList
 import zio.test.*
-import zio.{Exit, ZIO}
+import zio.{Exit, ZIO, durationInt}
 
 import java.time.Instant
 import java.util.UUID
@@ -194,10 +204,16 @@ object ConversationRouterSpec extends UnitSpecBase:
     registrationFlow = Some(RegistrationFlow(RegistrationCredential.phone, List(RegistrationStep.Otp(), RegistrationStep.SetPassword()), Set(roleId))),
   )
 
+  /** A conversation on the credential card that takes an email address. */
+  val emailOtpRecord = initialRecord.copy(
+    step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+    authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+  )
+
   /** What the tenant's policy gives an unknown phone number: the one-time code, then the default roles. */
   val tenantRegistrationFlow = RegistrationFlow(RegistrationCredential.phone, List(RegistrationStep.Otp()), Set(roleId))
 
-  class Env:
+  class Env(config: CoreConfig = TestEnvConfig.coreConfig, departures: UserDepartures = UserDepartures.none):
     val conversationRepository = stub[ConversationRepository]
     val otpConversationService = stub[ConversationService]
     val configService = stub[OAuthConfigurationService]
@@ -205,7 +221,12 @@ object ConversationRouterSpec extends UnitSpecBase:
     configService.registrationFor.returnsWith(ZIO.succeed(None))
     val secureRandom = stub[SecureRandom]
     val userRepository = stub[UserRepository]
+    // A login and password is resolved to its user for the departure check before the credential is checked; a case that has a user says so.
+    userRepository.findByLogin.returnsWith(ZIO.none)
     val audit = CapturingAuditEvents.shared()
+    val directory = stub[UserDirectory]
+    val handoff = stub[CellHandoff]
+    val webAuthnService = stub[WebAuthnService]
     val router = ConversationRouter.Impl(
       conversationRepository,
       otpConversationService,
@@ -213,6 +234,11 @@ object ConversationRouterSpec extends UnitSpecBase:
       secureRandom,
       userRepository,
       audit,
+      directory,
+      handoff,
+      config,
+      webAuthnService,
+      departures,
     )
 
   private val passkeyOnlyAcr = Acr("passkey-level")
@@ -228,7 +254,766 @@ object ConversationRouterSpec extends UnitSpecBase:
   private val poVocabulary = Map(passkeyOnlyAcr -> NonEmptyList(PassedAuthFactor.passkey))
   private val poDenied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
 
+  private val otherCell = RoutingKey.CellId.parse("kz-2").toOption.get
+  private val heldUser = UserRecord(testUserId, None, None, Some(login), Json.Obj(), None)
+  private val loginSubmission = LoginPasswordSubmission(login, password, "test-csrf")
+  private val assertion = PasskeyAssertionSubmission("""{"response":"x"}""", "test-csrf")
+  private val pendingRequest = """{"challenge":"c"}"""
+  private val passkeyFlow = loginFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+  private val passkeyCard = loginRecord.step.asInstanceOf[ConversationStep.Credential].copy(passkey = true)
+  private val passkeyRecord = loginRecord.copy(authFlow = passkeyFlow, step = passkeyCard.copy(passkeyRequest = Some(pendingRequest)))
+  private val checked = ConversationResult.RenderStep(loginRecord.step)
+
+  /** A sign-in that reaches a cell which may not hold its user (versolauth/versola#1048). */
+  val handedSubmissionSuite = suite("a submission that names its user")(
+    suite("a login and password")(
+      test("held by this cell is checked here without asking central") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(heldUser))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == checked,
+          env.directory.homeOfLogin.calls.isEmpty,
+          env.otpConversationService.checkLoginPassword.calls.size == 1,
+        )
+      },
+      test(
+        "not held, with central naming another cell, is sent there: the password is not checked, and the conversation is left to be ended once it is sealed",
+      ) {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.succeedsWith(Some(otherCell))
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == ConversationResult.Elsewhere(otherCell, None),
+          env.directory.homeOfLogin.calls == List(login),
+          // ended by the controller, once the seal is made
+          env.conversationRepository.delete.calls.isEmpty,
+          env.otpConversationService.checkLoginPassword.calls.isEmpty,
+        )
+      },
+      test("end deletes the conversation at the version it was read at, and says whether this request was the one that ended it") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          first <- env.router.end(authId, loginRecord)
+          _ <- env.conversationRepository.delete.succeedsWith(false)
+          second <- env.router.end(authId, loginRecord)
+        yield assertTrue(
+          first,
+          !second,
+          env.conversationRepository.delete.calls == List((authId, loginRecord.version), (authId, loginRecord.version)),
+        )
+      },
+      test("not held, with central naming this cell, is checked here") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.succeedsWith(Some(TestEnvConfig.cellId))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == checked,
+          env.otpConversationService.checkLoginPassword.calls.size == 1,
+          env.conversationRepository.delete.calls.isEmpty,
+        )
+      },
+      test("not held, with central naming no cell, is checked here") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.succeedsWith(None)
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == checked, env.otpConversationService.checkLoginPassword.calls.size == 1)
+      },
+      test("not held, with central not answering, is refused as service unavailable and the password is not checked") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == ConversationResult.ServiceUnavailable,
+          env.otpConversationService.checkLoginPassword.calls.isEmpty,
+          env.conversationRepository.delete.calls.isEmpty,
+        )
+      },
+      test("is checked here by an auth that is not a cell, which asks nobody") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == checked,
+          env.userRepository.findByLogin.calls.isEmpty,
+          env.directory.homeOfLogin.calls.isEmpty,
+        )
+      },
+    ),
+    suite("a passkey with no address typed")(
+      test("of a user this cell does not hold, with central naming another cell, is sent there with the request it answers") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.userRepository.find.succeedsWith(None)
+          _ <- env.directory.homeOfUser.succeedsWith(Some(otherCell))
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.Elsewhere(otherCell, Some(pendingRequest)),
+          env.directory.homeOfUser.calls == List(testUserId),
+          env.conversationRepository.delete.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.isEmpty,
+        )
+      },
+      test("of a user this cell holds is finished here without asking central") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.userRepository.find.succeedsWith(Some(heldUser))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.directory.homeOfUser.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.size == 1,
+        )
+      },
+      test("of a user central names this cell for, or no cell for, is finished here") {
+        def run(home: Option[RoutingKey.CellId]) =
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+            _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+            _ <- env.userRepository.find.succeedsWith(None)
+            _ <- env.directory.homeOfUser.succeedsWith(home)
+            _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+            (result, _) <- env.router.submit(authId, assertion, None, None)
+          yield (result, env.otpConversationService.finishPasskeyAssertion.times)
+        for
+          own <- run(Some(TestEnvConfig.cellId))
+          none <- run(None)
+        yield assertTrue(own == (ConversationResult.BadRequest, 1), none == (ConversationResult.BadRequest, 1))
+      },
+      test("of a user not held, with central not answering, is refused as service unavailable") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.userRepository.find.succeedsWith(None)
+          _ <- env.directory.homeOfUser.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(result == ConversationResult.ServiceUnavailable, env.otpConversationService.finishPasskeyAssertion.calls.isEmpty)
+      },
+      test("that names no user is finished here") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(None)
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.userRepository.find.calls.isEmpty,
+          env.directory.homeOfUser.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.size == 1,
+        )
+      },
+      test("with no request pending is finished here and names nobody to central") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val noRequest = passkeyRecord.copy(step = passkeyCard.copy(passkeyRequest = None))
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(noRequest))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.webAuthnService.userFromResponse.calls.isEmpty,
+          env.directory.homeOfUser.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.size == 1,
+        )
+      },
+      test("is finished here by an auth that is not a cell, which asks nobody") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.userRepository.find.calls.isEmpty,
+          env.directory.homeOfUser.calls.isEmpty,
+        )
+      },
+    ),
+    suite("submitHanded")(
+      test("fail with ConversationExpired when the conversation does not exist") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(None)
+          exit <- env.router.submitHanded(authId, loginSubmission, None, None, None).exit
+        yield assertTrue(exit == Exit.fail(Error.ConversationExpired))
+      },
+      test("dispatch a login and password without comparing the CSRF token, and never send it on") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submitHanded(authId, LoginPasswordSubmission(login, password, "the-first-cells-csrf"), None, None, None)
+        yield assertTrue(
+          result == checked,
+          env.otpConversationService.checkLoginPassword.calls.size == 1,
+          // the one read is the departure check (the user is resolved before the password is checked), not a question of who holds the
+          // user: a handed sign-in is answered here whatever central would say, so central is not asked
+          env.userRepository.findByLogin.calls == List(login),
+          env.directory.homeOfLogin.calls.isEmpty,
+        )
+      },
+      test("write the handed passkey request into the card before the assertion is finished here") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val fresh = loginRecord.copy(authFlow = passkeyFlow, step = passkeyCard, version = 4)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(fresh))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submitHanded(authId, assertion, Some(pendingRequest), None, None)
+          finished = env.otpConversationService.finishPasskeyAssertion.calls.map(_._2)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          finished.map(_.step) == List(passkeyCard.copy(passkeyRequest = Some(pendingRequest))),
+          finished.map(_.version) == List(5L),
+          env.conversationRepository.overwrite.calls.size == 1,
+          env.directory.homeOfUser.calls.isEmpty,
+          env.userRepository.find.calls.isEmpty,
+        )
+      },
+      test("answer BadRequest to a passkey request handed to a card that takes no passkey") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          (result, _) <- env.router.submitHanded(authId, assertion, Some(pendingRequest), None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.conversationRepository.overwrite.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.isEmpty,
+        )
+      },
+    ),
+  )
+
+  private val superseded = SupersededSession(userId = testUserId, sessionId = PublicSessionId("kz-1.first-cells-session"))
+  private val supersedingRecord =
+    loginRecord.copy(supersededSessionId = Some(superseded.sessionId), supersededSessionUserId = Some(superseded.userId))
+
+  private val finished = ConversationResult.Complete(
+    redirectUri,
+    Some(State("test-state")),
+    AuthorizationCode(Array.fill(32)(1.toByte)),
+    SessionId(Array.fill(32)(2.toByte)),
+    None,
+    testUserAgentId,
+    UserAgentData(None, testUserId, UserAgentDetails.parse(None)),
+  )
+
+  /** versolauth/versola#1048: the session a handed sign-in replaces is ended when the sign-in finishes. */
+  val supersededSessionSuite = suite("the session a handed sign-in replaces")(
+    suite("supersedes")(
+      test("writes both the session and its user on the conversation with one overwrite") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val read = loginRecord.copy(version = 3)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(read))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.router.supersedes(authId, superseded)
+        yield assertTrue(
+          env.conversationRepository.overwrite.calls == List(
+            (authId, read.copy(supersededSessionId = Some(superseded.sessionId), supersededSessionUserId = Some(superseded.userId))),
+          ),
+        )
+      },
+      test("does nothing for a conversation that is not there") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(None)
+          _ <- env.router.supersedes(authId, superseded)
+        yield assertTrue(env.conversationRepository.overwrite.calls.isEmpty)
+      },
+      test("is done even when the conversation changed under it and the write was not made") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          exit <- env.router.supersedes(authId, superseded).exit
+        yield assertTrue(exit.isSuccess, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+    ),
+    suite("submit")(
+      test("ends the superseded session once, through the directory, when the sign-in completes") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          _ <- env.directory.sessionSuperseded.succeedsWith(())
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls == List(superseded))
+      },
+      test("does not end it when the step is not complete") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == checked, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("does not end it when the sign-in is refused") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == ConversationResult.BadRequest, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("asks nobody when the conversation has no superseded session") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("asks nobody when the conversation has a superseded session id but no user for it") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord.copy(supersededSessionUserId = None)))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("leaves the result complete when the directory fails to end the session") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          _ <- env.directory.sessionSuperseded.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls == List(superseded))
+      },
+    ),
+    suite("submitHanded")(
+      test("ends the superseded session once, through the directory, when the sign-in completes") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          _ <- env.directory.sessionSuperseded.succeedsWith(())
+          (result, _) <- env.router.submitHanded(authId, loginSubmission, None, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls == List(superseded))
+      },
+      test("does not end it when the step is not complete") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submitHanded(authId, loginSubmission, None, None, None)
+        yield assertTrue(result == checked, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("asks nobody when the conversation has no superseded session") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          (result, _) <- env.router.submitHanded(authId, loginSubmission, None, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("leaves the result complete when the directory fails to end the session") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          _ <- env.directory.sessionSuperseded.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submitHanded(authId, loginSubmission, None, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls == List(superseded))
+      },
+    ),
+  )
+
+  /** versolauth/versola#1051: a user who is leaving this cell is not signed in, at whatever step the sign-in names them; and a sign-in
+    * of anybody else costs no read. */
+  val leavingSuite = suite("a user who is leaving")(
+    test("a step of a conversation that knows its user is the step's service unavailable, and no service is asked") {
+      RecordingDepartures.make(Map(testUserId -> DepartureRefusal.Leaving), None).flatMap: departures =>
+        val env = Env(departures = departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord.copy(userId = Some(testUserId))))
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == ConversationResult.ServiceUnavailable,
+          env.otpConversationService.checkLoginPassword.calls.isEmpty,
+          env.otpConversationService.accessDenied.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+    },
+    test("the same step of a user who is not leaving is answered as before") {
+      RecordingDepartures.make(Map.empty, None).flatMap: departures =>
+        val env = Env(departures = departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord.copy(userId = Some(testUserId))))
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+          asked <- departures.asked
+        yield assertTrue(result == ConversationResult.BadRequest, asked == List(s"user:$testUserId"))
+    },
+    test("an address that is a leaving user's is the step's service unavailable: the sign-in is not handed on and no code is sent") {
+      RecordingDepartures.make(Map(testUserId -> DepartureRefusal.Leaving), None).flatMap: departures =>
+        val env = Env(TestEnvConfig.cellCoreConfig, departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailOtpRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(Some(heldUser.copy(email = Some(email))))
+          (result, _) <- env.router.submit(authId, EmailSubmission(email, ProofInput.NoScript, "test-csrf"), None, None)
+        yield assertTrue(
+          result == ConversationResult.ServiceUnavailable,
+          env.directory.homeOfAddress.calls.isEmpty,
+          env.otpConversationService.prepareInitialOtp.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+    },
+    test("a login and password of a leaving user is refused before the password is looked at, and a wrong password is answered as a right one") {
+      RecordingDepartures.make(Map(testUserId -> DepartureRefusal.Leaving), None).flatMap: departures =>
+        val env = Env(TestEnvConfig.cellCoreConfig, departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(heldUser.copy(id = testUserId)))
+          (right, _) <- env.router.submit(authId, loginSubmission, None, None)
+          (wrong, _) <- env.router.submit(authId, LoginPasswordSubmission(login, Password("another-password"), "test-csrf"), None, None)
+        yield assertTrue(
+          right == ConversationResult.ServiceUnavailable,
+          wrong == right,
+          env.otpConversationService.checkLoginPassword.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+    },
+    test("a login and password of a user who is served is checked as before, after the one departure read by user id") {
+      RecordingDepartures.make(Map.empty, None).flatMap: departures =>
+        val env = Env(TestEnvConfig.cellCoreConfig, departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(heldUser.copy(id = testUserId)))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+          asked <- departures.asked
+        yield assertTrue(result == checked, asked == List(s"user:$testUserId"), env.otpConversationService.checkLoginPassword.calls.size == 1)
+    },
+    test("a passkey assertion handed here for a leaving user is refused before the credential is looked at, so its counter is not written") {
+      RecordingDepartures.make(Map(testUserId -> DepartureRefusal.Leaving), None).flatMap: departures =>
+        val env = Env(TestEnvConfig.cellCoreConfig, departures)
+        val fresh = loginRecord.copy(authFlow = passkeyFlow, step = passkeyCard, version = 4)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(fresh))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          (result, _) <- env.router.submitHanded(authId, assertion, Some(pendingRequest), None, None)
+        yield assertTrue(result == ConversationResult.ServiceUnavailable, env.otpConversationService.finishPasskeyAssertion.calls.isEmpty)
+    },
+    test("an address no one here holds costs no departure read") {
+      RecordingDepartures.make(Map(testUserId -> DepartureRefusal.Leaving), None).flatMap: departures =>
+        val env = Env(departures = departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailOtpRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(ConversationResult.RenderStep(emailOtpRecord.step))
+          (result, _) <- env.router.submit(authId, EmailSubmission(email, ProofInput.NoScript, "test-csrf"), None, None)
+          asked <- departures.asked
+        yield assertTrue(result != ConversationResult.ServiceUnavailable, asked.isEmpty)
+    },
+    test("a login and password that identify a leaving user are not carried on, though the password was right") {
+      RecordingDepartures.make(Map(testUserId -> DepartureRefusal.Leaving), None).flatMap: departures =>
+        val env = Env(departures = departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(heldUser))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(
+            ConversationResult.StepPassed(loginRecord.copy(userId = Some(testUserId))),
+          )
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == ConversationResult.ServiceUnavailable)
+    },
+    test("a passkey of a leaving user is not used: the assertion is not finished, so its counter is not written") {
+      RecordingDepartures.make(Map(testUserId -> DepartureRefusal.Leaving), None).flatMap: departures =>
+        val env = Env(departures = departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.ServiceUnavailable,
+          env.otpConversationService.finishPasskeyAssertion.calls.isEmpty,
+          env.userRepository.find.calls.isEmpty,
+        )
+    },
+    test("a passkey assertion that signs a leaving user in is not carried to the client: no code goes with the redirect") {
+      RecordingDepartures.make(Map(testUserId -> DepartureRefusal.Leaving), None).flatMap: departures =>
+        val env = Env(departures = departures)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord.copy(authFlow = passkeyFlow, step = passkeyCard)))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(finished)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(result == ConversationResult.ServiceUnavailable)
+    },
+    test("a departure read that fails is the step's service unavailable too: nothing is served on a guess") {
+      val unreadable = new UserDepartures:
+        override def refuse(userId: UserId) = ZIO.fail(RuntimeException("db down"))
+        override def refuseToken(token: versola.util.MAC.Of[versola.oauth.model.RefreshToken], clientId: versola.oauth.client.model.ClientId) =
+          ZIO.unit
+      val env = Env(departures = unreadable)
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord.copy(userId = Some(testUserId))))
+        (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+      yield assertTrue(result == ConversationResult.ServiceUnavailable, env.otpConversationService.checkLoginPassword.calls.isEmpty)
+    },
+  )
+
+  private val registrationTenant = TenantId("tenant-1")
+
+  private val registrationClient = OAuthClientRecord(
+    id = clientId,
+    tenantId = registrationTenant,
+    clientName = Map("en" -> "Registering client"),
+    redirectUris = Set("https://example.com/callback"),
+    scope = Set(ScopeToken("read")),
+    secret = None,
+    previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    theme = "default",
+    authFlow = None,
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
+    applicationType = ApplicationType.web,
+  )
+
+  private val codeVerifiedAt = Instant.ofEpochSecond(1_700_000_000L)
+  private val codeVerified = PassedFactorRecord(codeVerifiedAt, Set(AuthMethodRef.otp, AuthMethodRef.sms))
+
+  /** What a conversation looks like once the code of a registration has passed and the next step is to register the user. */
+  private val codeTyped = registrationRecord.copy(
+    credential = Some(Right(phone)),
+    step = otp,
+    registrationStep = Some(0),
+    amr = Map(PassedAuthFactor.otp -> codeVerified),
+  )
+
+  private val handedRegistration = CellHandoff.Registered(credential = Right(phone), verified = codeVerified, tenantId = registrationTenant)
+
+  private def taken(env: Env) =
+    for
+      _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
+      _ <- env.configService.get.succeedsWith(registrationClient)
+    yield ()
+
+  /** A verified registration refused by a cell that takes no users, and taken by the one that does (versolauth/versola#1052). */
+  val registrationHandoffSuite = suite("a registration that a cell that takes no users refuses")(
+    test(
+      "is handed to the cell central names, with the credential, the factor and when it passed, and the tenant; this cell's conversation is left to be ended once it is sealed",
+    ) {
+      val env = Env(TestEnvConfig.cellCoreConfig)
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(codeTyped))
+        _ <- env.otpConversationService.checkOtp.succeedsWith(ConversationResult.StepPassed(codeTyped))
+        _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(Some(otherCell)))
+        _ <- env.configService.get.succeedsWith(registrationClient)
+        (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+      yield assertTrue(
+        result == ConversationResult.RegistrationElsewhere(otherCell, handedRegistration, codeTyped.copy(registrationStep = Some(1))),
+        env.otpConversationService.offerSetPassword.calls.isEmpty,
+        env.otpConversationService.accessDenied.calls.isEmpty,
+        // ended by the controller, once the seal is made
+        env.conversationRepository.delete.calls.isEmpty,
+        env.handoff.sealRegistration.calls.isEmpty,
+      )
+    },
+    test("ends with the error of a registration that cannot be made when no cell takes users: no handoff") {
+      val env = Env(TestEnvConfig.cellCoreConfig)
+      val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(codeTyped))
+        _ <- env.otpConversationService.checkOtp.succeedsWith(ConversationResult.StepPassed(codeTyped))
+        _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(None))
+        _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+        (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+      yield assertTrue(result == denied, env.otpConversationService.accessDenied.calls.size == 1)
+    },
+    test("ends with that error when central names this very cell: a cell is not handed its own refusal") {
+      val env = Env(TestEnvConfig.cellCoreConfig)
+      val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(codeTyped))
+        _ <- env.otpConversationService.checkOtp.succeedsWith(ConversationResult.StepPassed(codeTyped))
+        _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(Some(TestEnvConfig.cellId)))
+        _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+        (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+      yield assertTrue(result == denied)
+    },
+    test("is registered here, and not handed on, when the directory takes it") {
+      val env = Env(TestEnvConfig.cellCoreConfig)
+      val registered = codeTyped.copy(userId = Some(testUserId), registrationStep = Some(1))
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(codeTyped))
+        _ <- env.otpConversationService.checkOtp.succeedsWith(ConversationResult.StepPassed(codeTyped))
+        _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.Registering(registered))
+        _ <- env.otpConversationService.offerSetPassword.succeedsWith(conversationResult)
+        (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+      yield assertTrue(result == conversationResult)
+    },
+    suite("taken by the cell it was handed to")(
+      test("the credential step is passed by the factor that passed it, the user is registered through the ordinary path, and the flow goes on") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val flow = tenantRegistrationFlow.copy(steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()))
+        val registered = initialRecord.copy(userId = Some(testUserId), registrationFlow = Some(flow), registrationStep = Some(1))
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(flow))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.Registering(registered))
+          _ <- env.otpConversationService.offerSetPassword.succeedsWith(conversationResult)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+          written = env.conversationRepository.overwrite.calls.map(_._2)
+          asked = env.otpConversationService.registerVerifiedUser.calls
+        yield assertTrue(
+          result == conversationResult,
+          env.configService.registrationFor.calls == List((clientId, Right(phone))),
+          written.size == 1,
+          written.head.credential == Some(Right(phone)),
+          written.head.amr == Map(PassedAuthFactor.otp -> codeVerified),
+          written.head.registrationFlow == Some(flow),
+          // past the code step, on the step after it
+          written.head.registrationStep == Some(1),
+          written.head.userId.isEmpty,
+          asked.size == 1,
+          asked.head._4 == Right(phone),
+          // no code is asked for again, and central is not asked where the address goes
+          env.otpConversationService.prepareInitialOtp.calls.isEmpty,
+          env.otpConversationService.startRegistration.calls.isEmpty,
+          env.directory.homeOfAddress.calls.isEmpty,
+          env.otpConversationService.offerSetPassword.calls.size == 1,
+        )
+      },
+      test("a flow that is only the code finishes the sign-in") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val registered = initialRecord.copy(userId = Some(testUserId))
+        val finished = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.Registering(registered))
+          _ <- env.otpConversationService.finish.succeedsWith(finished)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(result == finished, env.otpConversationService.finish.calls.size == 1)
+      },
+      test("is not handed on a second time when this cell is refused in turn: the registration cannot be made") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(Some(otherCell)))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+          _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(None))
+          (noneResult, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(result == denied, noneResult == denied, env.handoff.sealRegistration.calls.isEmpty)
+      },
+      test("is refused, and nothing is registered, for a request of another tenant than the one that verified it") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration.copy(tenantId = TenantId("another")), None, None)
+        yield assertTrue(
+          result == denied,
+          env.otpConversationService.registerVerifiedUser.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+      },
+      test("is refused when this cell's tenant does not register the address (its phone regions, its email domains)") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(None)
+          _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(
+          result == denied,
+          env.otpConversationService.registerVerifiedUser.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+      },
+      test("is refused when this cell's registration flow has no code step: an address is registered only once it is verified") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow.copy(steps = List(RegistrationStep.SetPassword()))))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(result == denied, env.otpConversationService.registerVerifiedUser.calls.isEmpty)
+      },
+      test("loses the conversation it was handed for: a write conflict, and nobody registered") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(result == ConversationResult.WriteConflict, env.otpConversationService.registerVerifiedUser.calls.isEmpty)
+      },
+      test("fails as expired when the conversation started for it is gone") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(None)
+          result <- env.router.submitRegistered(authId, handedRegistration, None, None).exit
+        yield assertTrue(result.isFailure, env.otpConversationService.registerVerifiedUser.calls.isEmpty)
+      },
+    ),
+  )
+
   val spec = suite("ConversationRouter")(
+    handedSubmissionSuite,
+    registrationHandoffSuite,
+    leavingSuite,
+    supersededSessionSuite,
     suite("getConversation")(
       test("return conversation record when it exists") {
         val env = Env()
@@ -284,6 +1069,290 @@ object ConversationRouterSpec extends UnitSpecBase:
           prepareTimes == 1,
         )
       },
+      // versolauth/versola#1046: a cell that does not find the address asks the directory before it treats it as new.
+      test("a cell hands the sign-in to the cell that holds the address: nothing is sent here and the conversation is gone") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val home = RoutingKey.CellId.parse("kz-2").toOption.get
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.homeOfAddress.succeedsWith(Some(home))
+          _ <- env.handoff.seal.succeedsWith("v1.kz-2.sealed")
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          (result, _) <- env.router.submit(authId, submission, None, None)
+          sealedFor = env.handoff.seal.calls.map(call => (call._2, call._3))
+          deleted = env.conversationRepository.delete.calls.map(_._1)
+          prepared = env.otpConversationService.prepareInitialOtp.times
+          registrations = env.otpConversationService.startRegistration.times
+        yield assertTrue(
+          result == ConversationResult.Handoff(CellHandoff.location("v1.kz-2.sealed")),
+          sealedFor == List((Left(submission.email), home)),
+          deleted == List(authId),
+          prepared == 0,
+          registrations == 0,
+        )
+      },
+      test("a cell goes on here for an address central names no cell for, and for one it names this cell for") {
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        def run(found: Option[RoutingKey.CellId]) =
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+            _ <- env.userRepository.findByCredential.succeedsWith(None)
+            _ <- env.directory.homeOfAddress.succeedsWith(found)
+            _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+            _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+            (result, _) <- env.router.submit(authId, submission, None, None)
+          yield (result, env.handoff.seal.calls.size, env.conversationRepository.delete.calls.size)
+        for
+          nobody <- run(None)
+          own <- run(Some(TestEnvConfig.cellId))
+        yield assertTrue(List(nobody, own).forall(_ == (conversationResult, 0, 0)))
+      },
+      test("a cell that cannot ask the directory refuses the step and sends nothing") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.homeOfAddress.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submit(authId, submission, None, None)
+          prepared = env.otpConversationService.prepareInitialOtp.times
+          sealedTimes = env.handoff.seal.calls.size
+        yield assertTrue(result == ConversationResult.ServiceUnavailable, prepared == 0, sealedTimes == 0)
+      },
+      // versolauth/versola#1050: a home cell whose key this cell does not have is a cell it cannot hand a sign-in to.
+      test("a cell whose home cell has no key refuses the step as it does for a directory that does not answer, and keeps the conversation") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val home = RoutingKey.CellId.parse("kz-2").toOption.get
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.homeOfAddress.succeedsWith(Some(home))
+          _ <- env.handoff.seal.failsWith(CellHandoff.NoKey("kz-2"))
+          (result, _, code) <- logContext.locallyWith(identity)(
+            env.router.submit(authId, submission, None, None).zip(logContext.get.map(_.get(Observability.error).map(_.code))),
+          )
+          prepared = env.otpConversationService.prepareInitialOtp.times
+          registrations = env.otpConversationService.startRegistration.times
+        yield assertTrue(
+          result == ConversationResult.ServiceUnavailable,
+          code.contains("directory_unavailable"),
+          env.conversationRepository.delete.calls.isEmpty,
+          prepared == 0,
+          registrations == 0,
+        )
+      },
+      test("a cell keeps the conversation too when the sealed request is too large for a URL") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val home = RoutingKey.CellId.parse("kz-2").toOption.get
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.homeOfAddress.succeedsWith(Some(home))
+          _ <- env.handoff.seal.failsWith(CellHandoff.TooLarge(9000))
+          (result, _) <- env.router.submit(authId, submission, None, None)
+        yield assertTrue(result == ConversationResult.ServiceUnavailable, env.conversationRepository.delete.calls.isEmpty)
+      },
+      test("an auth that is no cell asks the directory nothing, and neither does a cell that finds the user itself") {
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        val plain = Env()
+        val cell = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- plain.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- plain.userRepository.findByCredential.succeedsWith(None)
+          _ <- plain.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- plain.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- plain.router.submit(authId, submission, None, None)
+          _ <- cell.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <-
+            cell.userRepository.findByCredential.succeedsWith(Some(UserRecord(UserId(UUID.randomUUID()), Some(email), None, None, Json.Obj(), None)))
+          _ <- cell.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- cell.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- cell.router.submit(authId, submission, None, None)
+          asked = plain.directory.homeOfAddress.calls.size + cell.directory.homeOfAddress.calls.size
+        yield assertTrue(asked == 0)
+      },
+      // versolauth/versola#1052: an address nobody holds goes where central says, and the redirect does not say whether it is held.
+      test("a cell starts the registration here for an address central names this cell for, and asks it only after its own database") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val submission = PhoneSubmission(phone, ProofInput.NoScript, "test-csrf")
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.homeOfAddress.succeedsWith(Some(TestEnvConfig.cellId))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
+          _ <- env.otpConversationService.startRegistration.succeedsWith(
+            RegistrationEntry.Registering(registrationRecord.copy(registrationStep = Some(0), credential = Some(Right(phone)))),
+          )
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          (result, _) <- env.router.submit(authId, submission, None, None)
+          registrations = env.otpConversationService.startRegistration.times
+        yield assertTrue(
+          result == conversationResult,
+          env.directory.homeOfAddress.calls == List(Right(phone)),
+          registrations == 1,
+          env.handoff.seal.calls.isEmpty,
+          env.conversationRepository.delete.calls.isEmpty,
+        )
+      },
+      test("a cell holding the address signs the user in without asking central") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailOtpRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord(testUserId, Some(email), None, None, Json.Obj(), None)))
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          (result, _) <- env.router.submit(authId, submission, None, None)
+        yield assertTrue(
+          result == conversationResult,
+          env.directory.homeOfAddress.calls.isEmpty,
+          env.handoff.seal.calls.isEmpty,
+        )
+      },
+      // What the browser is told must not depend on whether the address is registered elsewhere or nobody holds it.
+      test("an address held by another cell and one nobody holds that central's hash places there get the same answer, up to the seal") {
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        def typedInX(seal: String) =
+          // Both reach central as the same question and get the same answer: this cell cannot tell them apart, so no
+          // difference between them can show in what it answers.
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(emailOtpRecord))
+            _ <- env.userRepository.findByCredential.succeedsWith(None)
+            _ <- env.directory.homeOfAddress.succeedsWith(Some(otherCell))
+            _ <- env.handoff.seal.succeedsWith(seal)
+            _ <- env.conversationRepository.delete.succeedsWith(true)
+            (result, record) <- env.router.submit(authId, submission, None, None)
+          yield (result, record, env.handoff.seal.calls.map(c => (c._2, c._3)), env.conversationRepository.delete.calls.map(_._1))
+        for
+          heldInY <- typedInX("v1.kz-2.AAAA")
+          nobodyHashY <- typedInX("v1.kz-2.BBBB")
+          (heldResult, heldRecord, heldSealed, heldDeleted) = heldInY
+          (nobodyResult, nobodyRecord, nobodySealed, nobodyDeleted) = nobodyHashY
+        yield assertTrue(
+          heldResult == ConversationResult.Handoff(CellHandoff.location("v1.kz-2.AAAA")),
+          nobodyResult == ConversationResult.Handoff(CellHandoff.location("v1.kz-2.BBBB")),
+          heldRecord == nobodyRecord,
+          heldSealed == nobodySealed,
+          heldDeleted == nobodyDeleted,
+        )
+      },
+      test("an address held here and one nobody holds that central's hash places here get the same answer") {
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        def run(held: Option[UserRecord]) =
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(emailOtpRecord))
+            _ <- env.userRepository.findByCredential.succeedsWith(held)
+            _ <- env.directory.homeOfAddress.succeedsWith(Some(TestEnvConfig.cellId))
+            _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+            _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+            (result, _) <- env.router.submit(authId, submission, None, None)
+          yield (
+            result,
+            env.handoff.seal.calls.size,
+            env.conversationRepository.delete.calls.size,
+            env.otpConversationService.prepareInitialOtp.times,
+          )
+        for
+          heldHere <- run(Some(UserRecord(testUserId, Some(email), None, None, Json.Obj(), None)))
+          nobodyHashHere <- run(None)
+        yield assertTrue(heldHere == (conversationResult, 0, 0, 1), nobodyHashHere == heldHere)
+      },
+      suite("a sign-in handed here")(
+        test("starting with an address held by this cell goes on here without asking central whatever central would say") {
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(emailOtpRecord))
+            _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord(testUserId, Some(email), None, None, Json.Obj(), None)))
+            _ <- env.directory.homeOfAddress.succeedsWith(Some(otherCell))
+            _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+            _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+            (result, _) <- env.router.submitHanded(authId, EmailSubmission(email, ProofInput.NoScript, "csrf"), None, None, None)
+          yield assertTrue(result == conversationResult, env.directory.homeOfAddress.calls.isEmpty, env.handoff.seal.calls.isEmpty)
+        },
+        test("an address this cell does not hold is treated here as unknown, not sent on again, whichever cell central would name") {
+          def run(says: Option[RoutingKey.CellId]) =
+            val env = Env(TestEnvConfig.cellCoreConfig)
+            for
+              _ <- env.otpConversationService.find.succeedsWith(Some(emailOtpRecord))
+              _ <- env.userRepository.findByCredential.succeedsWith(None)
+              _ <- env.directory.homeOfAddress.succeedsWith(says)
+              _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+              _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+              (result, _) <- env.router.submitHanded(authId, EmailSubmission(email, ProofInput.NoScript, "csrf"), None, None, None)
+            yield (
+              result,
+              env.directory.homeOfAddress.calls.size,
+              env.handoff.seal.calls.size,
+              env.conversationRepository.delete.calls.size,
+              env.otpConversationService.prepareInitialOtp.times,
+            )
+          for
+            another <- run(Some(otherCell))
+            own <- run(Some(TestEnvConfig.cellId))
+            none <- run(None)
+          yield assertTrue(List(another, own, none).forall(_ == (conversationResult, 0, 0, 0, 1)))
+        },
+        test("a phone not held here starts the registration here when the tenant offers one") {
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+            _ <- env.userRepository.findByCredential.succeedsWith(None)
+            _ <- env.directory.homeOfAddress.succeedsWith(Some(otherCell))
+            _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
+            _ <- env.otpConversationService.startRegistration.succeedsWith(
+              RegistrationEntry.Registering(registrationRecord.copy(registrationStep = Some(0), credential = Some(Right(phone)))),
+            )
+            _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+            (result, _) <- env.router.submitHanded(authId, PhoneSubmission(phone, ProofInput.NoScript, "csrf"), None, None, None)
+            registrations = env.otpConversationService.startRegistration.times
+          yield assertTrue(
+            result == conversationResult,
+            registrations == 1,
+            env.directory.homeOfAddress.calls.isEmpty,
+            env.handoff.seal.calls.isEmpty,
+          )
+        },
+        test("an address submitted to a conversation past the credential card is refused as it is for any submission") {
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord.copy(userId = Some(testUserId))))
+            _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+            (result, _) <- env.router.submitHanded(authId, EmailSubmission(email, ProofInput.NoScript, "csrf"), None, None, None)
+          yield assertTrue(result == denied, env.userRepository.findByCredential.calls.isEmpty, env.directory.homeOfAddress.calls.isEmpty)
+        },
+      ),
       test("email submission with locked identity (userId set) returns access_denied") {
         val env = Env()
         val lockedRecord = initialRecord.copy(userId = Some(UserId(UUID.randomUUID())))

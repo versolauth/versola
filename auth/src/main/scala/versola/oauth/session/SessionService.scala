@@ -22,6 +22,9 @@ import zio.{Duration, Task, UIO, ZLayer}
 
 trait SessionService:
   def find(rawId: SessionId): Task[Option[SessionInfo]]
+
+  /** The user of a session named by its public id; none when this cell has no such session. */
+  def findOwner(publicId: PublicSessionId): Task[Option[UserId]]
   def prolongIdle(id: MAC.Of[SessionId], idleTtl: Duration): Task[Unit]
 
   /** Atomically invalidates the session resolved by either its public id or raw id,
@@ -88,6 +91,9 @@ object SessionService:
       * widest of every client (see [[RevocationTerms.ttlOfSession]]). */
     private def sessionTerms(cause: RevocationCause): UIO[RevocationTerms] =
       configuration.accessTokenTtls.map(RevocationTerms.widest(cause, _))
+
+    override def findOwner(publicId: PublicSessionId): Task[Option[UserId]] =
+      repository.findSessionOwner(publicId)
 
     override def find(rawId: SessionId): Task[Option[SessionInfo]] =
       for

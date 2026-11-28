@@ -26,6 +26,10 @@ object EdgeAdmission:
       Tier.Continuation
     case (_, "/logout/frontchannel") => Tier.Continuation
     case (_, p) if p.startsWith("/logout/") => Tier.Continuation
+    // The pages of a sign-in, forwarded to auth (IssuerFront): a new one starts, its steps and a logout continue.
+    case (_, IssuerFront.Authorize) => Tier.Start
+    case (_, IssuerFront.Logout) => Tier.Continuation
+    case (_, p) if p.startsWith(IssuerFront.Challenge) => Tier.Continuation
     case (_, "/permissions/me") => Tier.Critical
     case (_, p) if p.startsWith("/resources/") => Tier.Critical
     case _ => Tier.Critical
@@ -34,4 +38,5 @@ object EdgeAdmission:
   def isNamed(pattern: String): Boolean =
     pattern.startsWith("/service/") || pattern.startsWith("/logout/") || pattern.startsWith("/login/") ||
       pattern.startsWith("/native/") || pattern == "/complete" || pattern == "/permissions/me" ||
-      pattern.startsWith("/resources/")
+      pattern.startsWith("/resources/") || pattern == IssuerFront.Authorize || pattern == IssuerFront.Logout ||
+      pattern.startsWith(IssuerFront.Challenge)

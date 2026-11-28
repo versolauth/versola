@@ -6,6 +6,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.{RoleId, RoleRecord, RoleRepository}
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import versola.util.{JWT, Patch}
@@ -22,7 +23,6 @@ import javax.crypto.spec.SecretKeySpec
 object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
   private val tenantId = TenantId("tenant-a")
-  private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
   private val template =
     OtpTemplateRecord("default", tenantId, Map("en" -> "Code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
@@ -75,9 +75,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj()),
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
           1.minute,
-          JWT.Signature.Symmetric(secretKey),
+          TestCentralConfig.authSignature,
         ),
       )
       .getOrThrowFiberFailure()
@@ -119,7 +119,9 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             OtpChallengeController.routes.provideEnvironment(
               ZEnvironment[OtpChallengeService](service) ++
                 ZEnvironment[ChallengeSettingsService](challengeSettingsService) ++
-                tracing ++ ZEnvironment[CentralConfig](config) ++ ZEnvironment[EdgeService](edgeService) ++
+                tracing ++ ZEnvironment[CentralConfig](config) ++ ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[CellRegistry](
+                  TestCentralConfig.noCells,
+                ) ++
                 ZEnvironment[ResourceService](resourceService) ++ ZEnvironment[RoleRepository](roleRepository),
             ),
           ),

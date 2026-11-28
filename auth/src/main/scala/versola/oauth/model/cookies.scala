@@ -6,7 +6,7 @@ import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
-import versola.util.{Base64, Base64Url, Secret}
+import versola.util.{Base64, Base64Url, RoutingKey, Secret}
 import zio.Duration
 import zio.http.{Cookie, Path}
 import zio.json.*
@@ -37,20 +37,32 @@ case class ConversationCookie(
     )
 
 object ConversationCookie:
-  val name = "SSO_CONVERSATION"
+  /** `__Host-` (RFC 6265bis §4.1.3.2) makes a browser take the cookie only from this host itself: `Secure`, no
+    * `Domain`, `Path=/`. A page on a sibling subdomain can otherwise set a cookie of the same name for the whole site
+    * (`Domain=`), and the conversation cookie is what the CSRF token of every step and the seal of a handed submission
+    * (`CellHandoff`) are tied to: with a cookie it planted, such a page could submit a step of a conversation of its
+    * own in the visitor's browser. The price is the path, which the prefix fixes at `/`: the cookie is sent with every
+    * request to this host and not only under `/challenge`, so an edge in front of the issuer keeps it from the
+    * upstreams it proxies to (`IssuerFront.IssuerCookies`). */
+  val name = "__Host-SSO_CONVERSATION"
 
   /** Serialises the payload as JSON, computes a Blake3 keyed-hash over those bytes,
    *  and produces a cookie whose content is `base64url(json) + "." + base64url(mac)`.
+   *
+   *  Under a cell id the content is written behind the routing key, `v1.<cell>.` (versolauth/versola#606), which a
+   *  router reads to send the browser's next request home. The key is a hint outside the signature, like the others
+   *  (`RoutingKey`): [[parse]] sets it aside and verifies the rest, so a cookie with another cell's key is no more
+   *  valid than one with none, and one issued before cells existed is read as ever.
    */
-  def responseCookie(payload: ConversationCookie, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
+  def responseCookie(payload: ConversationCookie, ttl: Duration, secret: Secret.Bytes32, cell: Option[RoutingKey.CellId]): Cookie.Response =
     val payloadBytes = payload.toJson.getBytes(StandardCharsets.UTF_8)
     val payloadB64 = Base64.urlEncode(payloadBytes)
     val sigB64 = Base64.urlEncode(computeMac(payloadBytes, secret))
     Cookie.Response(
       name = name,
-      content = s"$payloadB64.$sigB64",
+      content = cell.fold(s"$payloadB64.$sigB64")(cell => RoutingKey.encode(cell, s"$payloadB64.$sigB64")),
       domain = None,
-      path = Some(Path.root / "challenge"),
+      path = Some(Path.root),
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(ttl),
@@ -63,7 +75,7 @@ object ConversationCookie:
       name = name,
       content = "",
       domain = None,
-      path = Some(Path.root / "challenge"),
+      path = Some(Path.root),
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(Duration.Zero),
@@ -73,7 +85,13 @@ object ConversationCookie:
   /** Parses and HMAC-verifies a cookie produced by [[responseCookie]].
    *  Returns [[Left]] if the content is malformed or the signature does not match.
    */
-  def parse(content: String, secret: Secret.Bytes32): Either[String, ConversationCookie] =
+  def parse(presented: String, secret: Secret.Bytes32): Either[String, ConversationCookie] =
+    for
+      content <- RoutingKey.decode(presented).map(_.value)
+      cookie <- parseSigned(content, secret)
+    yield cookie
+
+  private def parseSigned(content: String, secret: Secret.Bytes32): Either[String, ConversationCookie] =
     val dotIdx = content.lastIndexOf('.')
     if dotIdx < 0 then Left("missing signature")
     else
@@ -107,7 +125,9 @@ case class UserAgentData(
 case class UserAgentCookiePayload(id: UserAgentId, data: UserAgentData) derives JsonCodec
 
 object UserAgentCookie:
-  val name = "SSO_USER_AGENT_ID"
+  /** `__Host-`, like the two cookies below it in the same request ([[ConversationCookie.name]]): the device a sign-in is
+    * recorded for is the browser's own, not one a page on a sibling subdomain chose for it. */
+  val name = "__Host-SSO_USER_AGENT_ID"
 
   def apply(id: UserAgentId, data: UserAgentData, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
     val payloadBytes = UserAgentCookiePayload(id, data).toJson.getBytes(StandardCharsets.UTF_8)
@@ -143,14 +163,19 @@ object UserAgentCookie:
     mac
 
 object SessionCookie:
-  val name = "SSO_SESSION"
+  /** `__Host-`, for the reason [[ConversationCookie.name]] gives: a session cookie a sibling subdomain planted would
+    * sign the visitor's browser in as whoever the page chose, with no step of a sign-in at all. */
+  val name = "__Host-SSO_SESSION"
 
-  def apply(value: SessionId, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
+  /** Under a cell id the content is written behind the routing key, like [[ConversationCookie.responseCookie]]'s: what
+    * is in front of the issuer sends a returning browser to the cell of its session by it (versolauth/versola#1044).
+    * The key is a hint outside the signature; [[parse]] sets it aside and verifies the rest. */
+  def apply(value: SessionId, ttl: Duration, secret: Secret.Bytes32, cell: Option[RoutingKey.CellId]): Cookie.Response =
     val payloadB64 = Base64.urlEncode(value)
     val sigB64 = Base64.urlEncode(computeMac(value, secret))
     Cookie.Response(
       name = name,
-      content = s"$payloadB64.$sigB64",
+      content = cell.fold(s"$payloadB64.$sigB64")(cell => RoutingKey.encode(cell, s"$payloadB64.$sigB64")),
       domain = None,
       path = Some(Path.root),
       isSecure = true,
@@ -172,7 +197,10 @@ object SessionCookie:
       sameSite = Some(Cookie.SameSite.Lax),
     )
 
-  def parse(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
+  def parse(presented: String, secret: Secret.Bytes32): Either[String, SessionId] =
+    RoutingKey.decode(presented).map(_.value).flatMap(parseSigned(_, secret))
+
+  private def parseSigned(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
     val dotIdx = content.lastIndexOf('.')
     if dotIdx < 0 then Left("missing signature")
     else

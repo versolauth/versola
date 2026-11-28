@@ -3,6 +3,7 @@ package versola.central.configuration.metadata
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.topology.CellRegistry
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import zio.*
 import zio.http.*
@@ -10,7 +11,7 @@ import zio.json.*
 import zio.json.ast.Json
 
 object ServerMetadataController extends AuditedController:
-  type Env = ResourceService & CentralConfig & EdgeService & ServerMetadataService
+  type Env = ResourceService & CentralConfig & EdgeService & CellRegistry & ServerMetadataService
 
   def endpoints = List(
     getMetadataEndpoint,

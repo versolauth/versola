@@ -4,12 +4,12 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.*
 import versola.central.configuration.clients.certificates.ClientCertificateService
 import versola.central.configuration.clients.est.ClientEstService
-import versola.central.configuration.edges.{EdgeId, EdgeService}
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Unauthorized
-import versola.util.{Base64Url, CertificateSubject, Patch, Secret, SecurityService}
+import versola.central.configuration.topology.CellRegistry
+import versola.central.{Caller, CentralConfig, SecretTransport, authorizeBasic, authorizeInternal}
+import versola.util.{Base64Url, CertificateSubject, Patch, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -18,7 +18,7 @@ import zio.schema.*
 
 object ClientController extends AuditedController:
   type Env =
-    Tracing & OAuthClientService & ClientCertificateService & ClientEstService & ResourceService & CentralConfig & SecurityService & EdgeService
+    Tracing & OAuthClientService & ClientCertificateService & ClientEstService & ResourceService & CentralConfig & SecurityService & EdgeService & CellRegistry
 
   def endpoints = List(
     getAllClientsEndpoint,
@@ -92,37 +92,26 @@ object ClientController extends AuditedController:
   val getAllClientsSyncEndpoint =
     (Method.GET / "configuration" / "clients" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
-        edgeId <- authorizeInternal(request)
-        response <- clientsSyncResponse(edgeId)
+        caller <- authorizeInternal(request)
+        response <- clientsSyncResponse(caller)
       yield Response.json(response.toJson)
     }
 
   /** The clients a sync caller is served, with every secret encrypted to that caller alone: to
-    * auth under the shared transport secret, to an edge under its registered RSA key. Shared
-    * with `EdgeSyncController`, which is the only route an edge reaches it through (#554); here
-    * `edgeId` is what `authorizeInternal` proved, so an edge is never served another's tenants.
+    * an `auth` under the key its token was verified with, to an edge under its registered RSA key
+    * ([[SecretTransport]]; hybrid, not encryptRsa directly: a generated client secret fits in one
+    * RSA-OAEP block, but edgeSigningKey's stored JWK document does not, and this is the one
+    * transport both go through). Shared with `EdgeSyncController`, which is the only route an edge
+    * reaches it through (#554); here `caller` is what `authorizeInternal` proved, so an edge is
+    * never served another's tenants.
     */
   def clientsSyncResponse(
-      edgeId: Option[EdgeId],
+      caller: Caller,
   ): RIO[OAuthClientService & CentralConfig & SecurityService & EdgeService & ClientCertificateService, GetOAuthClientsSyncResponse] =
+    val edgeId = caller.edgeId
     for
       clientService <- ZIO.service[OAuthClientService]
-      centralConfig <- ZIO.service[CentralConfig]
-      securityService <- ZIO.service[SecurityService]
-      edgeService <- ZIO.service[EdgeService]
-      transportEncrypt <- edgeId match
-        case Some(id) =>
-          edgeService.find(id).someOrFail(Unauthorized).map {
-            edge =>
-              // Hybrid, not encryptRsa directly: a generated client secret fits in one RSA-
-              // OAEP block, but edgeSigningKey's stored JWK document does not, and this is
-              // the one transport both go through.
-              (secret: Secret) =>
-                securityService.encryptRsaHybrid(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
-          }
-        case None =>
-          ZIO.succeed: (secret: Secret) =>
-            securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
+      transportEncrypt <- SecretTransport.to(caller)
       certificateService <- ZIO.service[ClientCertificateService]
       clients <- clientService.getClientsForSync(edgeId)
       // Only an edge enrols (#463), so only an edge is told what its certificates must say.
