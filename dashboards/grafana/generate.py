@@ -529,6 +529,23 @@ def overload(b: Board) -> None:
          desc="What the adaptive limit follows: the mean time to answer per tier, and how late a 10 ms timer fires (a stalled pod completes no calls, so only lateness shows it). Lag of hundreds of milliseconds is a pod that is not scheduling work: GC, CPU throttling or a blocked thread, not a lack of capacity.")
 
 
+def native_start_limit(b: Board) -> None:
+    """The limit on /native/start per source address (edge): a limiter of its own, so a metric family of its own."""
+    sel = b.sel
+    d = "edge_native_start_rate_limit_decisions_total"
+    b.ts("/native/start: refused and would be refused / s", [
+        (f'sum by (policy) (rate({d}{{{sel}, result="limited"}}[$__rate_interval]))', "{{policy}} refused"),
+        (f'sum by (policy) (rate({d}{{{sel}, result="would_limit"}}[$__rate_interval]))', "{{policy}} would be refused"),
+    ], unit="reqps", minimum=0,
+         desc="The limit per address on `/native/start`. `native-start-default` is the default nobody set, `native-start` a limit set in the edge's rate limits. `would be refused` (an edge of the operator starts in shadow): read it over a normal week before enforcing, and if it is not zero find out whether it is real users behind one address or a flood. `refused` on `native-start-default` is a partner's edge enforcing the default: look at the caller addresses in the access log before raising the limit; many subscribers of one carrier share an address.")
+    b.ts("/native/start: share of calls over the limit", [(f'sum by (policy) (rate({d}{{{sel}, result=~"limited|would_limit"}}[$__rate_interval])) / clamp_min(sum by (policy) (rate({d}{{{sel}}}[$__rate_interval])), 0.001)', "{{policy}}")],
+         unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.01, RED)),
+         desc="Refused or would be refused / all starts the limit counted. Above 1% sustained without an attack, the limit is cutting into real sign-ins: raise `limit` or `burst` of `rateLimits.nativeStart`, or check that the edge reads the caller's address (`client-ip = forwarded` behind a proxy; with `socket` every caller shares the proxy's bucket).")
+    b.ts("/native/start: addresses over the cap / s", [(f'sum by (policy) (rate(edge_native_start_rate_limit_overflow_hits_total{{{sel}}}[$__rate_interval]))', "{{policy}}")], unit="ops", minimum=0,
+         line=steps((None, GREEN), (0.001, RED)),
+         desc="Starts counted in the one shared bucket because the limiter already holds 100,000 addresses. Any value is a caller with very many addresses (an IPv6 /48 has 65,536 /64s): real callers past the cap wait with it. Block the source in front of the edge; the alert `NativeStartLimitOverflow` fires on this.")
+
+
 def rate_limits(b: Board, prefix: str) -> None:
     """Rate limit policies, in the order an operator asks: who was refused, who would be, is a policy too tight, is memory bounded."""
     b.row(f"{b.component} — Rate limits")
@@ -699,6 +716,7 @@ unit="s", line=steps((None, GREEN), (0.015, RED)),
         (f"sum(rate(dpop_local_ring_capacity_hits_total{{{s}}}[$__rate_interval]))", "local ring full"),
     ], unit="ops", desc="How often the in-memory replay-proof store overflowed. Empty is healthy; sustained values mean it is undersized for the traffic.")
     rate_limits(b, "edge")
+    native_start_limit(b)
     overload(b)
     outbound(b)
     snapshot(b)

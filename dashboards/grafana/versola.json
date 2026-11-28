@@ -8660,7 +8660,205 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "/native/start: refused and would be refused / s",
+      "description": "The limit per address on `/native/start`. `native-start-default` is the default nobody set, `native-start` a limit set in the edge's rate limits. `would be refused` (an edge of the operator starts in shadow): read it over a normal week before enforcing, and if it is not zero find out whether it is real users behind one address or a flood. `refused` on `native-start-default` is a partner's edge enforcing the default: look at the caller addresses in the access log before raising the limit; many subscribers of one carrier share an address.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(edge_native_start_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", result=\"limited\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}} refused"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(edge_native_start_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", result=\"would_limit\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}} would be refused"
+        }
+      ],
       "id": 164,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 358
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "/native/start: share of calls over the limit",
+      "description": "Refused or would be refused / all starts the limit counted. Above 1% sustained without an attack, the limit is cutting into real sign-ins: raise `limit` or `burst` of `rateLimits.nativeStart`, or check that the edge reads the caller's address (`client-ip = forwarded` behind a proxy; with `socket` every caller shares the proxy's bucket).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(edge_native_start_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", result=~\"limited|would_limit\"}[$__rate_interval])) / clamp_min(sum by (policy) (rate(edge_native_start_rate_limit_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 165,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 366
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "/native/start: addresses over the cap / s",
+      "description": "Starts counted in the one shared bucket because the limiter already holds 100,000 addresses. Any value is a caller with very many addresses (an IPv6 /48 has 65,536 /64s): real callers past the cap wait with it. Block the source in front of the edge; the alert `NativeStartLimitOverflow` fires on this.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (policy) (rate(edge_native_start_rate_limit_overflow_hits_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}}"
+        }
+      ],
+      "id": 166,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 366
+      }
+    },
+    {
+      "id": 167,
       "type": "row",
       "title": "edge — Overload protection",
       "collapsed": true,
@@ -8727,12 +8925,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 165,
+          "id": 168,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 367
+            "y": 375
           }
         },
         {
@@ -8779,12 +8977,12 @@
               "legendFormat": "{{tier}} ({{mode}})"
             }
           ],
-          "id": 166,
+          "id": 169,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 367
+            "y": 375
           }
         },
         {
@@ -8852,12 +9050,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 167,
+          "id": 170,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 375
+            "y": 383
           }
         },
         {
@@ -8913,12 +9111,12 @@
               "legendFormat": "{{pod}} executor lag"
             }
           ],
-          "id": 168,
+          "id": 171,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 375
+            "y": 383
           }
         }
       ],
@@ -8926,11 +9124,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 366
+        "y": 374
       }
     },
     {
-      "id": 169,
+      "id": 172,
       "type": "row",
       "title": "edge — Calls to other services",
       "collapsed": true,
@@ -8978,12 +9176,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 170,
+          "id": 173,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 368
+            "y": 376
           }
         },
         {
@@ -9030,12 +9228,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 171,
+          "id": 174,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 368
+            "y": 376
           }
         },
         {
@@ -9081,12 +9279,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 172,
+          "id": 175,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 376
+            "y": 384
           }
         },
         {
@@ -9142,12 +9340,12 @@
               "legendFormat": "{{peer}} limit"
             }
           ],
-          "id": 173,
+          "id": 176,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 376
+            "y": 384
           }
         },
         {
@@ -9203,12 +9401,12 @@
               "legendFormat": "{{peer}} wait"
             }
           ],
-          "id": 174,
+          "id": 177,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 384
+            "y": 392
           }
         },
         {
@@ -9255,12 +9453,12 @@
               "legendFormat": "{{peer}} {{reason}} ({{mode}})"
             }
           ],
-          "id": 175,
+          "id": 178,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 384
+            "y": 392
           }
         },
         {
@@ -9328,12 +9526,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 176,
+          "id": 179,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 392
+            "y": 400
           }
         },
         {
@@ -9380,12 +9578,12 @@
               "legendFormat": "{{peer}} ({{mode}})"
             }
           ],
-          "id": 177,
+          "id": 180,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 392
+            "y": 400
           }
         },
         {
@@ -9432,12 +9630,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 178,
+          "id": 181,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 400
+            "y": 408
           }
         },
         {
@@ -9484,12 +9682,12 @@
               "legendFormat": "{{pod}} {{cache}}"
             }
           ],
-          "id": 179,
+          "id": 182,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 400
+            "y": 408
           }
         }
       ],
@@ -9497,11 +9695,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 367
+        "y": 375
       }
     },
     {
-      "id": 180,
+      "id": 183,
       "type": "row",
       "title": "edge — Saturation",
       "collapsed": false,
@@ -9510,7 +9708,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 368
+        "y": 376
       }
     },
     {
@@ -9557,12 +9755,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 181,
+      "id": 184,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 369
+        "y": 377
       }
     },
     {
@@ -9626,12 +9824,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 182,
+      "id": 185,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 369
+        "y": 377
       }
     },
     {
@@ -9678,12 +9876,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 183,
+      "id": 186,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 369
+        "y": 377
       }
     },
     {
@@ -9747,16 +9945,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 184,
+      "id": 187,
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 369
+        "y": 377
       }
     },
     {
-      "id": 185,
+      "id": 188,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -9814,12 +10012,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 186,
+          "id": 189,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 378
+            "y": 386
           }
         },
         {
@@ -9865,12 +10063,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 187,
+          "id": 190,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 378
+            "y": 386
           }
         }
       ],
@@ -9878,7 +10076,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 377
+        "y": 385
       }
     }
   ]

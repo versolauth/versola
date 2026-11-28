@@ -609,6 +609,44 @@ test('rate limits: the number of edge pods is saved with the set and shown on th
   await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('3 (each pod enforces 1/3 of a limit)');
 });
 
+test('rate limits: the limit on /native/start shows its default, is set on its own, validated, and returns to the default', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge] } });
+  const card = sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
+  await expect(card).toContainText('Default: shadow · 60 / 60 s per address · burst 20 (only with client-ip = forwarded)');
+
+  await card.getByRole('button', { name: /Edit/ }).click();
+  const dialog = sidePanel(page, 'Edit rate limits');
+  await expect(dialog.getByText('Not set: the edge applies the default')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Set a limit' }).click();
+  await expect(dialog.getByLabel('Native start: calls')).toHaveValue('60');
+  await dialog.getByLabel('Native start: calls').fill('10');
+  await expect(dialog.getByText('burst must not exceed the limit')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+  await expect(dialog.getByLabel('Native start: burst')).toBeFocused();
+  expect(api.requests.filter(request => request.method === 'PATCH')).toHaveLength(0);
+
+  await dialog.getByLabel('Native start: calls').fill('120');
+  await dialog.getByLabel('Native start: burst').fill('30');
+  // The warning about the address is shown only while the limit refuses; an operator needs nobody's approval.
+  await expect(dialog.getByText('Check how this edge reads the caller’s address before enforcing')).toHaveCount(0);
+  await dialog.getByRole('group', { name: 'Mode' }).getByRole('button', { name: 'Enforce' }).click();
+  await expect(dialog.getByText('Check how this edge reads the caller’s address before enforcing')).toBeVisible();
+  await expect(dialog.getByText('This limit needs the operator’s approval')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+  expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toEqual({
+    rateLimits: { replicas: 1, policies: [], nativeStart: { limit: 120, windowSeconds: 60, burst: 30, mode: 'enforce' } },
+    expectedRevisions: { rateLimits: 0 },
+  });
+  await expect(card).toContainText('Enforce · 120 / 60 s per address · burst 30');
+  await expect(card).toContainText('None: only the limit on /native/start applies');
+
+  await card.getByRole('button', { name: /Edit/ }).click();
+  await sidePanel(page, 'Edit rate limits').getByRole('button', { name: 'Use the default' }).click();
+  await sidePanel(page, 'Edit rate limits').getByRole('button', { name: 'Save rate limits' }).click();
+  await expect(card).toContainText('Default: shadow');
+  expect(api.requests.filter(request => request.method === 'PATCH').at(-1)?.body).toMatchObject({ rateLimits: null });
+});
+
 test.describe('policies are one endpoint, with revisions', () => {
   const alpha = { ...alphaEdge, accessLogPolicy: { mode: 'sampled' }, policyRevisions: { accessLog: 4 } };
 

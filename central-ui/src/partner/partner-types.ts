@@ -3,6 +3,7 @@
  * console. These are the DTOs of the contract the edge (P1, #564) implements; the operator's
  * `central-api.ts` is never imported here (a partner bundle must not contain it).
  */
+import type { NativeStartRateLimit, RateLimitPolicies } from '../utils/rate-limit-policies';
 import type { PartnerLimits, PartnerStatus, ResourceEndpoint } from '../types';
 
 export type StaffLevel = 'admin' | 'developer' | 'viewer';
@@ -140,6 +141,14 @@ export type StaffMember = {
 };
 
 export type StaffInvite = { identifier: string; level: StaffLevel; expiresInDays: number };
+
+/** The rate limits of the partner's edges, one setting for its group (`null`: none set), and the revision a save names. */
+export type GroupRateLimits = {
+  rateLimits: RateLimitPolicies | null;
+  revision: number;
+  /** The limit on `/native/start` that waits for the operator's approval; the edges apply `rateLimits` meanwhile. */
+  waiting?: { nativeStart: NativeStartRateLimit; requestedAt: string } | null;
+};
 
 export type PartnerSettings = {
   /** Of the settings as read. A save sends it back, and central refuses it when the settings changed since. */

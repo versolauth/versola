@@ -33,7 +33,7 @@ import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{AuthorizationPresetInput, CreateClientRequest, SaveAuthorizationPresetsRequest}
 import versola.central.users.AuthClient
-import versola.util.http.RateLimitPolicies
+import versola.util.http.{NativeStartRateLimit, RateLimitPolicies}
 import versola.util.{Base64Url, RedirectUri, RsaKeyPair}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec}
@@ -123,16 +123,25 @@ trait PartnerService:
     * edge that joins later is served it too. The policies are validated as `PATCH /configuration/edges/policies` validates `rateLimits`;
     * that validation does not depend on the edge, so it is done once. `expectedRevision`, when given, is the revision the caller read: the
     * comparison and the write are one transaction under the partner's lock, and a change that finds the limits moved on is a conflict.
-    * `overload` and `accessLog` are not touched: they stay the operator's, set per edge with `PATCH /configuration/edges/policies`. */
+    * `overload` and `accessLog` are not touched: they stay the operator's, set per edge with `PATCH /configuration/edges/policies`.
+    *
+    * A limit on `/native/start` that lets through more than the default ([[NativeStartRateLimit.weakerThanDefault]]) and is not the
+    * one already stored is not the partner's to set alone: everything else in the set is stored at once with the stored `nativeStart`
+    * kept, and the new one waits for the operator as a `rate_limits_change` request by `requestedBy` (`waiting` in the answer). A
+    * partner with such a request waiting is refused another until the operator has decided. */
   def setRateLimits(
       partner: PartnerRecord,
       policies: Option[RateLimitPolicies],
       expectedRevision: Option[Int],
+      requestedBy: String,
   ): IO[PartnerError | Throwable, PartnerService.GroupRateLimits]
 
 object PartnerService:
   /** Enrollment tokens of partner edges live a day: a token travels to another organisation. */
   val TokenValidity: Duration = 24.hours
+
+  /** How long a suspension or a resumption waits for the registry to hear of it before it tells auth anyway. */
+  val RegistryWait: Duration = 5.seconds
 
   /** The longest access token of a console client, in seconds: the staff member's token authorises management calls (central checks
     * its signature, expiry, issuer and client, not a revocation), so it lives minutes. */
@@ -171,7 +180,12 @@ object PartnerService:
 
   /** The rate limits of a partner's group: the policies its edges apply (`None`: none set) and their revision, the highest of the
     * edges' for the section, which is what a change names to say what it read. */
-  case class GroupRateLimits(policies: Option[RateLimitPolicies], revision: Int)
+  /** @param waiting the limit on `/native/start` the partner asked for and the operator has not decided on yet */
+  /** What a `rate_limits_change` request holds in `requested` and `current`; `nativeStart` is written even when none, so the operator
+    * reads "the default" and not a missing key. */
+  case class RequestedNativeStart(@zio.json.jsonExplicitNull nativeStart: Option[NativeStartRateLimit]) derives JsonCodec
+
+  case class GroupRateLimits(policies: Option[RateLimitPolicies], revision: Int, waiting: Option[PartnerApprovalRecord] = None)
 
   case class ClientOutsideLimits(clientId: ClientId, fields: List[String])
 
@@ -239,6 +253,14 @@ object PartnerService:
 
     private def nextId: UIO[ApprovalId] = Random.nextUUID.map(uuid => ApprovalId(uuid.toString))
 
+    /** Waits until the registry of this pod holds the partner as `seen` says: the `partner_change` notification of a write that was just
+      * made brings it there, usually within milliseconds. `false` when it has not after [[PartnerService.RegistryWait]] (the listener of
+      * the notifications is down); the registry's own refresh interval catches up then. */
+    private def seenByRegistry(id: PartnerId)(seen: PartnerRecord => Boolean): UIO[Boolean] =
+      def poll: UIO[Boolean] =
+        registry.find(id).flatMap(record => if record.exists(seen) then ZIO.succeed(true) else ZIO.sleep(20.millis) *> poll)
+      poll.timeout(RegistryWait).map(_.getOrElse(false))
+
     private def partner(id: PartnerId): IO[PartnerError | Throwable, PartnerRecord] =
       registry.findFresh(id).someOrFail(PartnerError.NotFound(s"partner '$id'"))
 
@@ -296,14 +318,12 @@ object PartnerService:
         _ <- partners.create(record).catchAll:
           case PartnerAlreadyExists(id) => ZIO.fail(PartnerError.Conflict(s"partner '$id' already exists"))
           case error: Throwable => ZIO.fail(error)
-        _ <- registry.refreshNow
         // The console client: the partner's staff sign in to their console through it, on the group's certificate. Not held
         // to the partner's limits (its scope is what the console needs, its redirect is the console's), but a partner's
         // client in every other way.
         _ <- registration(clients.registerClient(consoleClient(record, request.consoleRedirectUri), allowOutsideLimits = true))
-        // the preset is validated against the clients central has cached, which a notification refreshes after the commit
-        _ <- clients.refreshNow
-        console <- clients.findClient(consoleId).someOrFail(IllegalStateException(s"client '$consoleId' was registered and cannot be read"))
+        // as stored: the `client_change` notification of the registration has not necessarily reached the cache yet
+        console <- clients.findClientFresh(consoleId).someOrFail(IllegalStateException(s"client '$consoleId' was registered and cannot be read"))
         _ <- consolePreset(console, request.consoleRedirectUri)
         edge <- enrol(record, request.firstEdgeId, request.firstEdgePublicUrl)
       yield Created(record, edge)
@@ -420,20 +440,23 @@ object PartnerService:
         _ <- partner(id)
         updated <- partners.updateProfile(id, expectedVersion, displayName, logoUri, contact, reviewAt)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '$id' was changed meanwhile; read it again")).unless(updated)
-        _ <- registry.refreshNow
       yield ()
 
     override def suspend(id: PartnerId): IO[PartnerError | Throwable, StatusChangeOutcome] =
       for
         record <- partner(id)
         _ <- partners.setStatus(id, PartnerStatus.Suspended)
-        // seen by the next sync of auth and by the next call of the partner's edges, not by the next refresh
-        _ <- registry.refreshNow
+        // The `partner_change` notification of this write is what tells the registry, here and on every other pod. Auth's reload is
+        // answered from the registry, so auth is told only once the registry has it: told earlier, it would be served the partner's
+        // clients once more and keep them until its next interval.
+        seen <- seenByRegistry(id)(_.status == PartnerStatus.Suspended)
+        _ <- ZIO.logWarning(s"partner '$id' is suspended and the registry has not heard of it after $RegistryWait").unless(seen)
         // Auth is asked to reload its clients now, rather than at its next interval: it then omits the partner's, which is what makes a
         // certificate of the group useless there. Nothing is deleted or revoked: sessions, refresh tokens and access tokens that were
         // issued run out on their own.
-        synced <- auth.syncConfiguration().as(true).catchAll: error =>
+        told <- auth.syncConfiguration().as(true).catchAll: error =>
           ZIO.logWarning(s"partner '$id' is suspended and auth could not be told to reload its clients: $error").as(false)
+        synced = seen && told
         // an enrollment token that was printed and not used must not turn into a certificate later
         edgesOfPartner <- edges(record)
         _ <- ZIO.foreachDiscard(edgesOfPartner)(edge => enrollmentTokens.revoke(edge.id))
@@ -444,10 +467,13 @@ object PartnerService:
         record <- partner(id)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '$id' is not suspended")).unless(record.status == PartnerStatus.Suspended)
         _ <- partners.setStatus(id, PartnerStatus.Active)
-        _ <- registry.refreshNow
-        // as for a suspension: auth is asked to reload its clients now, rather than at its next interval, so that it knows the partner's again
-        synced <- auth.syncConfiguration().as(true).catchAll: error =>
+        // as for a suspension: the notification of the write tells the registry, and auth is asked to reload its clients once it has, so
+        // that the reload is answered with the partner's clients again
+        seen <- seenByRegistry(id)(_.status == PartnerStatus.Active)
+        _ <- ZIO.logWarning(s"partner '$id' is active again and the registry has not heard of it after $RegistryWait").unless(seen)
+        told <- auth.syncConfiguration().as(true).catchAll: error =>
           ZIO.logWarning(s"partner '$id' is active again and auth could not be told to reload its clients: $error").as(false)
+        synced = seen && told
       yield StatusChangeOutcome(synced)
 
     override def setLimits(id: PartnerId, limits: PartnerLimits): IO[PartnerError | Throwable, Vector[ClientOutsideLimits]] =
@@ -456,7 +482,6 @@ object PartnerService:
         _ <- ZIO.foreachDiscard(validateLimits(limits))(ZIO.fail(_))
         withOpenId = limits.copy(scopes = limits.scopes + ScopeToken("openid"))
         _ <- partners.setLimits(id, withOpenId)
-        _ <- registry.refreshNow
         changed = record.copy(limits = withOpenId)
         own <- clients.getPartnerClients(id).map(_.filter(_.id != record.consoleClientId))
         outside = own.flatMap: client =>
@@ -485,6 +510,8 @@ object PartnerService:
     ): IO[PartnerError | Throwable, PartnerApprovalRecord] =
       for
         approval <- waiting(id)
+        _ <- ZIO.fail(PartnerError.Invalid("a rate limits change is approved or rejected as asked: it has no fields to override"))
+          .when(approval.kind == ApprovalKind.RateLimitsChange && overrides.exists(_.fields.nonEmpty))
         // refused before anything is decided: a field that is not the operator's to override, or one that cannot be read
         applied <- partnerClients.checkOverrides(approval, overrides)
         now <- Clock.instant
@@ -508,9 +535,23 @@ object PartnerService:
               .mapError(reason => PartnerError.Invalid(s"the profile change cannot be read: $reason"))
             // the name and the logo alone: what either side has written to the contact since is not overwritten
             _ <- partners.setNameAndLogo(record.id, change.displayName, change.logoUri)
-            _ <- registry.refreshNow
+          yield ()
+        case ApprovalKind.RateLimitsChange =>
+          for
+            // as stored now: the policies the partner has changed since it asked are kept, only the limit is laid over them
+            record <- partner(approval.partnerId)
+            limit <- requestedNativeStart(approval)
+            set = record.rateLimits.getOrElse(RateLimitPolicies.empty).copy(nativeStart = Some(limit))
+            _ <- ZIO.fromEither(set.validate).mapError(PartnerError.Invalid(_))
+            // the `partner_change` notification of this write brings it to the registry of every pod: nothing is reloaded here
+            _ <- partners.setRateLimits(record.id, Some(set), None).someOrFail(PartnerError.NotFound(s"partner '${record.id}'"))
           yield ()
         case _ => partnerClients.applyApproval(approval, applied)
+
+    private def requestedNativeStart(approval: PartnerApprovalRecord): IO[PartnerError, NativeStartRateLimit] =
+      ZIO.fromEither(approval.requested.toJson.fromJson[RequestedNativeStart])
+        .mapError(reason => PartnerError.Invalid(s"the rate limits change cannot be read: $reason"))
+        .flatMap(requested => ZIO.fromOption(requested.nativeStart).orElseFail(PartnerError.Invalid("the rate limits change names no limit")))
 
     override def reject(id: ApprovalId, decidedBy: Option[String], note: String): IO[PartnerError | Throwable, PartnerApprovalRecord] =
       for
@@ -524,9 +565,7 @@ object PartnerService:
 
     override def activate(partner: PartnerRecord): Task[Unit] =
       // conditional in the database: a read of `onboarding` that a suspension has since made stale must not undo it
-      ZIO.when(partner.status == PartnerStatus.Onboarding)(partners.activate(partner.id).flatMap(activated =>
-        registry.refreshNow.when(activated),
-      )).unit
+      ZIO.when(partner.status == PartnerStatus.Onboarding)(partners.activate(partner.id)).unit
 
     override def setSettings(
         partner: PartnerRecord,
@@ -537,7 +576,6 @@ object PartnerService:
       for
         updated <- partners.setSettings(partner.id, expectedVersion, contact, settings)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '${partner.id}' was changed meanwhile; read the settings again")).unless(updated)
-        _ <- registry.refreshNow
       yield ()
 
     override def requestProfileChange(
@@ -598,24 +636,72 @@ object PartnerService:
       edgeService.getAllEdges.map(_.filter(_.groupId == partner.groupId))
 
     override def rateLimits(partner: PartnerRecord): IO[PartnerError | Throwable, GroupRateLimits] =
-      this.partner(partner.id).map(stored => GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision))
+      for
+        stored <- this.partner(partner.id)
+        waiting <- approvals.waitingFor(partner.id, ApprovalKind.aboutRateLimits, partner.id)
+      yield GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision, waiting.headOption)
 
     override def setRateLimits(
         partner: PartnerRecord,
         policies: Option[RateLimitPolicies],
         expectedRevision: Option[Int],
+        requestedBy: String,
     ): IO[PartnerError | Throwable, GroupRateLimits] =
       for
         // an empty set is the same as none, as for an edge's own
         valid <- ZIO.foreach(policies)(set => ZIO.fromEither(set.validate).mapError(detail => PartnerError.Invalid(detail)))
-          .map(_.filter(_.policies.nonEmpty))
-        stored <- partners.setRateLimits(partner.id, valid, expectedRevision)
+          .map(_.filterNot(_.isEmpty))
+        requested = valid.flatMap(_.nativeStart)
+        // read only when the limit could need the operator: compared with what is stored now, not with what a cache holds
+        current <- ZIO.foreach(requested.filter(_.weakerThanDefault))(_ => this.partner(partner.id).map(_.rateLimits.flatMap(_.nativeStart)))
+        forOperator = requested.filter(limit => current.exists(!_.contains(limit)))
+        // before anything is written: a second request would leave the operator two answers to one question
+        _ <- ZIO.foreachDiscard(forOperator): _ =>
+          approvals.waitingFor(partner.id, ApprovalKind.aboutRateLimits, partner.id).flatMap: open =>
+            ZIO.fail(PartnerError.Conflict(alreadyWaiting(partner.id))).when(open.nonEmpty)
+        toStore = if forOperator.isEmpty then valid else valid.map(_.copy(nativeStart = current.flatten)).filterNot(_.isEmpty)
+        stored <- partners.setRateLimits(partner.id, toStore, expectedRevision)
           .catchSome:
             case _: PartnerRateLimitsChanged => ZIO.fail(PartnerError.Conflict("the rate limits changed since they were read; read them again"))
           .someOrFail(PartnerError.NotFound(s"partner '${partner.id}'"))
-        // the partners are cached and the cache hears of a write through a notification: this one is seen by the next sync of an edge at once
-        _ <- registry.refreshNow
-      yield GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision)
+        // the partners are cached, and the cache of every pod hears of this write through the `partner_change` notification
+        waiting <- ZIO.foreach(forOperator)(limit => requestRateLimitsChange(partner, requestedBy, limit, current.flatten))
+      yield GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision, waiting)
+
+    private def alreadyWaiting(id: PartnerId): String =
+      s"partner '$id' already has a limit on /native/start waiting for the operator"
+
+    private def requestRateLimitsChange(
+        partner: PartnerRecord,
+        requestedBy: String,
+        limit: NativeStartRateLimit,
+        current: Option[NativeStartRateLimit],
+    ): IO[PartnerError | Throwable, PartnerApprovalRecord] =
+      def json(value: Option[NativeStartRateLimit]): Json.Obj =
+        RequestedNativeStart(value).toJsonAST.toOption.collect { case obj: Json.Obj => obj }.getOrElse(Json.Obj())
+      for
+        now <- Clock.instant
+        id <- nextId
+        approval = PartnerApprovalRecord(
+          id = id,
+          partnerId = partner.id,
+          kind = ApprovalKind.RateLimitsChange,
+          targetId = partner.id,
+          requested = json(Some(limit)),
+          current = Some(json(current)),
+          applied = None,
+          outsideLimits = List("nativeStart"),
+          requestedBy = requestedBy,
+          requestedAt = now,
+          status = ApprovalStatus.Waiting,
+          decidedBy = None,
+          decidedAt = None,
+          note = None,
+        )
+        // under the partner's lock: two requests made at once cannot both find none waiting
+        queued <- approvals.createIfNoneWaiting(approval, ApprovalKind.aboutRateLimits)
+        _ <- ZIO.fail(PartnerError.Conflict(alreadyWaiting(partner.id))).unless(queued)
+      yield approval
 
   /** The partner's own name and logo, as asked (`requested`) and as registered (`current`). */
   case class ProfileChange(displayName: String, logoUri: Option[String]) derives JsonCodec

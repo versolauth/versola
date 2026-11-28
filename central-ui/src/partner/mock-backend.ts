@@ -11,10 +11,20 @@ import type { MockPage, MockRequest } from '../demo/mock-backend';
 import type { PartnerLimits } from '../types';
 import { CONSENT_SCREEN_FIELDS, partnerLimitViolations } from '../utils/partners';
 import { validateAccessTokenTtl } from '../utils/validators';
+import { nativeStartWeakerThanDefault, type RateLimitPolicies } from '../utils/rate-limit-policies';
 import type {
-  AuditEventRecord, CreatedEdge, EnrollmentToken, PartnerClient, PartnerClientWrite, PartnerEdge, PartnerMe, PartnerResource, PartnerResourceWrite, PartnerSettings,
+  AuditEventRecord, CreatedEdge, EnrollmentToken, GroupRateLimits, PartnerClient, PartnerClientWrite, PartnerEdge, PartnerMe, PartnerResource, PartnerResourceWrite, PartnerSettings,
   ProfileApproval, ProfileChange, Revocation, RevocationRequest, StaffInvite, StaffLevel, StaffMember,
 } from './partner-types';
+
+/** What `GET /rate-limits/recommended` answers: central's starting set, every policy in shadow (two of them are enough for the mock). */
+const RECOMMENDED_RATE_LIMITS: RateLimitPolicies = {
+  replicas: 1,
+  policies: [
+    { name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 120000, windowSeconds: 60 }], burst: 5000, cost: 1, mode: 'shadow' },
+    { name: 'per-user', by: ['subject'], scope: 'edge-wide', limits: [{ limit: 300, windowSeconds: 60 }, { limit: 5000, windowSeconds: 3600 }], burst: 60, cost: 1, mode: 'shadow' },
+  ],
+};
 
 export type MockPartnerState = {
   /** What `/partner/api/me` answers; `null` answers 500. */
@@ -32,6 +42,8 @@ export type MockPartnerState = {
   audit: AuditEventRecord[];
   staff: StaffMember[];
   settings: PartnerSettings;
+  /** The rate limits of the group and their revision; none set when absent. */
+  rateLimits?: GroupRateLimits;
   profileApproval: ProfileApproval | null;
   /** Holds every request this long, to look at loading states. */
   delayMs?: number;
@@ -126,7 +138,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
     const level: StaffLevel = state.me?.staff.level ?? 'viewer';
     const rank: Record<StaffLevel, number> = { viewer: 0, developer: 1, admin: 2 };
     const required: StaffLevel = pathname === '/me' ? 'viewer'
-      : pathname.startsWith('/staff') || pathname === '/settings' || pathname === '/profile' || (pathname === '/revocations' && write) ? 'admin'
+      : pathname.startsWith('/staff') || pathname === '/settings' || pathname === '/profile' || (pathname === '/rate-limits' && write) || (pathname === '/revocations' && write) ? 'admin'
         : write ? 'developer' : 'viewer';
     if (pathname !== '/me' && rank[level] < rank[required]) {
       await refuse(403, 'insufficient_level', { required, message: `A ${level} may not do this` });
@@ -461,6 +473,49 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         }
         state.settings = { ...clone(sent), version: sent.version + 1 };
         await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+    // ── rate limits: one setting for the group, with a revision ──
+    if (pathname === '/rate-limits/recommended' && method === 'GET') {
+      await route.fulfill(json(RECOMMENDED_RATE_LIMITS));
+      return;
+    }
+    if (pathname === '/rate-limits') {
+      const current = state.rateLimits ?? { rateLimits: null, revision: 0, waiting: null };
+      if (method === 'GET') {
+        await route.fulfill(json(current));
+        return;
+      }
+      if (method === 'PUT') {
+        const sent = body as { rateLimits?: RateLimitPolicies | null; expectedRevision?: number };
+        if (sent.rateLimits === undefined) {
+          await route.fulfill(json({ error: 'invalid_request', fields: ['rateLimits'], message: 'rateLimits is required: the limits, or null to remove them' }, 400));
+          return;
+        }
+        if (typeof sent.expectedRevision === 'number' && sent.expectedRevision !== current.revision) {
+          await route.fulfill(json({ error: 'conflict', message: 'the rate limits changed since they were read; read them again' }, 409));
+          return;
+        }
+        // Like central: a limit on /native/start looser than the default, and not the one stored, waits for the operator; the rest is stored.
+        const stored = current.rateLimits?.nativeStart;
+        const asked = sent.rateLimits?.nativeStart;
+        const forOperator = asked && nativeStartWeakerThanDefault(asked) && JSON.stringify(asked) !== JSON.stringify(stored) ? asked : null;
+        if (forOperator && current.waiting) {
+          await route.fulfill(json({ error: 'conflict', message: "partner 'pilot-pay' already has a limit on /native/start waiting for the operator" }, 409));
+          return;
+        }
+        const next: RateLimitPolicies | null = sent.rateLimits === null ? null : forOperator ? { ...clone(sent.rateLimits), nativeStart: stored } : clone(sent.rateLimits);
+        if (next && !next.nativeStart) delete next.nativeStart;
+        const empty = next === null || (next.policies.length === 0 && !next.nativeStart);
+        state.rateLimits = {
+          rateLimits: empty ? null : next,
+          revision: current.revision + 1,
+          waiting: forOperator ? { nativeStart: forOperator, requestedAt: state.now ?? new Date().toISOString() } : current.waiting ?? null,
+        };
+        // every edge of the group is served the same limits
+        state.edges = state.edges.map(edge => ({ ...edge, policies: { ...edge.policies, rateLimits: (state.rateLimits!.rateLimits ?? {}) as Record<string, unknown> } }));
+        await route.fulfill(json(state.rateLimits, forOperator ? 202 : 200));
         return;
       }
     }

@@ -39,11 +39,12 @@ import versola.central.configuration.edges.{
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.users.AuthClient
-import versola.util.http.RateLimitPolicies
+import versola.util.http.{GuardMode, NativeStartRateLimit, RateLimitPolicies}
 import versola.util.{RedirectUri, RsaKeyPair}
 import zio.*
 import zio.http.URL
 import zio.json.DecoderOps
+import zio.json.EncoderOps
 import zio.json.ast.Json
 import zio.test.*
 
@@ -196,7 +197,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         groups.find.succeedsWith(None) *>
         clients.findClient.succeedsWith(None) *>
         edges.findFresh.succeedsWith(None) *>
-        registry.refreshNow.succeedsWith(()) *>
         clients.checkRegistration.succeedsWith(())
 
   private val configured = TestCentralConfig.config.copy(
@@ -228,7 +228,14 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
               ),
             ),
           )
-          _ <- env.clients.refreshNow.succeedsWith(())
+          // read back as stored: the cache has not necessarily heard of the registration yet, and nothing reloads it by hand
+          _ <- env.clients.findClientFresh.returnsZIO(id =>
+            ZIO.succeed(
+              Option.when(id == ClientId("acme-console") && env.clients.registerClient.calls.nonEmpty)(
+                console.copy(scope = env.clients.registerClient.calls.head._1.allowedScopes),
+              ),
+            ),
+          )
           _ <- env.presets.savePresets.succeedsWith(Right(()))
           _ <- env.edges.registerEdgeWithoutKey.succeedsWith(())
           _ <- env.edges.sync().succeedsWith(())
@@ -357,20 +364,22 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     suite("the kill switch")(
       test(
-        "suspend records the status, makes it visible at once, tells auth to reload its clients and voids the unused enrollment tokens; it revokes nothing",
+        "suspend records the status, tells auth to reload its clients once the registry has heard of it, and voids the unused enrollment tokens; it revokes nothing",
       ) {
         val env = Env()
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setStatus.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
+          // the notification of the write has reached the registry
+          _ <- env.registry.find.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
           _ <- env.auth.syncConfiguration().succeedsWith(())
           _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1")), edge(EdgeId("other"), EdgeGroupId("globex"))))
           _ <- env.enrollmentTokens.revoke.succeedsWith(0)
           outcome <- env.service.suspend(acme.id)
         yield assertTrue(
           env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
-          env.registry.refreshNow.calls.size == 1,
+          // the registry is asked whether it has heard, never told: the notification of the write is what tells it
+          env.registry.find.calls == List(acme.id),
           env.auth.syncConfiguration().calls.size == 1,
           // an enrollment token that was printed and not used is void: of the partner's edges only
           env.enrollmentTokens.revoke.calls == List(EdgeId("edge-acme-1")),
@@ -379,12 +388,36 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           outcome == PartnerService.StatusChangeOutcome(authSynced = true),
         )
       },
+      test(
+        "a suspension the registry has not heard of in time still tells auth, and says the reload may have been answered with the partner's clients",
+      ) {
+        val env = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme))
+          _ <- env.partners.setStatus.succeedsWith(true)
+          // the notification never comes: the registry keeps the partner as active
+          _ <- env.registry.find.succeedsWith(Some(acme))
+          _ <- env.auth.syncConfiguration().succeedsWith(())
+          _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
+          suspending <- env.service.suspend(acme.id).fork
+          _ <- TestClock.adjust(PartnerService.RegistryWait.minus(1.second))
+          toldEarly = env.auth.syncConfiguration().calls.size
+          _ <- TestClock.adjust(1.second)
+          outcome <- suspending.join
+        yield assertTrue(
+          // auth is not asked to reload while the registry would still answer with the partner's clients
+          toldEarly == 0,
+          env.auth.syncConfiguration().calls.size == 1,
+          env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
+          outcome == PartnerService.StatusChangeOutcome(authSynced = false),
+        )
+      },
       test("a suspension auth could not be told of is still a suspension, and says so") {
         val env = Env()
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setStatus.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.registry.find.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
           _ <- env.auth.syncConfiguration().failsWith(RuntimeException("auth is down"))
           _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
           outcome <- env.service.suspend(acme.id)
@@ -398,7 +431,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
           _ <- env.partners.setStatus.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.registry.find.succeedsWith(Some(acme))
           _ <- env.auth.syncConfiguration().succeedsWith(())
           resumed <- env.service.resume(acme.id)
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
@@ -420,7 +453,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
         _ <- env.partners.setStatus.succeedsWith(true)
-        _ <- env.registry.refreshNow.succeedsWith(())
+        _ <- env.registry.find.succeedsWith(Some(acme))
         _ <- env.auth.syncConfiguration().failsWith(RuntimeException("auth is down"))
         resumed <- env.service.resume(acme.id)
       yield assertTrue(
@@ -434,7 +467,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.registry.findFresh.succeedsWith(Some(acme))
         _ <- env.partners.setLimits.succeedsWith(true)
-        _ <- env.registry.refreshNow.succeedsWith(())
         _ <- env.clients.getPartnerClients.succeedsWith(Vector(client(ClientId("acme-console"), ClientApproval.Approved), shop))
         outside <- env.service.setLimits(acme.id, limits.copy(accessTokenTtlMax = 300))
       yield assertTrue(
@@ -521,7 +553,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.partnerClients.checkOverrides.succeedsWith(None)
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setNameAndLogo.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.approvals.decide.succeedsWith(true)
           _ <- env.service.approve(profile.id, Some("admin-1"), None, None)
         yield assertTrue(
@@ -561,18 +592,17 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val env = Env()
         for
           _ <- env.partners.activate.succeedsWith(true)
-          _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.service.activate(acme.copy(status = PartnerStatus.Onboarding))
           _ <- env.service.activate(acme)
         yield assertTrue(env.partners.activate.calls == List(acme.id), env.partners.setStatus.calls.isEmpty)
       },
-      test("an activation that finds the partner suspended meanwhile changes nothing, and nothing is reloaded") {
+      test("an activation that finds the partner suspended meanwhile changes nothing") {
         val env = Env()
         for
           // the read said `onboarding`; the row says otherwise, and the conditional update is what decides
           _ <- env.partners.activate.succeedsWith(false)
           _ <- env.service.activate(acme.copy(status = PartnerStatus.Onboarding))
-        yield assertTrue(env.partners.activate.calls == List(acme.id), env.registry.refreshNow.calls.isEmpty, env.partners.setStatus.calls.isEmpty)
+        yield assertTrue(env.partners.activate.calls == List(acme.id), env.partners.setStatus.calls.isEmpty)
       },
       test("a profile change is a request for the operator, and only one at a time") {
         val env = Env()
@@ -640,7 +670,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // each names the version the CALLER read (not one the service reads for itself, which would protect nothing)
           env.partners.updateProfile.calls.map(_._2) == List(3L),
           env.partners.setSettings.calls.map(_._2) == List(3L),
-          env.registry.refreshNow.calls.isEmpty,
         )
       },
       test("a token for an edge of the partner's group lives a day; an edge of another group is not the partner's") {
@@ -658,18 +687,16 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("the rate limits of the group (the partner's to manage, once for the group)")(
-      test("setting them writes the partner once, not an edge, and the cache is told at once") {
+      test("setting them writes the partner once, not an edge, and leaves the cache to the notification of the write") {
         val env = Env()
         val policies = RateLimitPolicies.recommended
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(policies), rateLimitsRevision = 3)))
-          _ <- env.registry.refreshNow.succeedsWith(())
-          set <- env.service.setRateLimits(acme, Some(policies), Some(2))
+          set <- env.service.setRateLimits(acme, Some(policies), Some(2), "staff-1")
         yield assertTrue(
           env.partners.setRateLimits.calls == List((acme.id, Some(policies), Some(2))),
           // what an edge is served is the partner's value: no edge is written
           env.edges.patchPolicies.calls.isEmpty,
-          env.registry.refreshNow.calls.size == 1,
           set == PartnerService.GroupRateLimits(Some(policies), 3),
         )
       },
@@ -679,25 +706,158 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val invalid = RateLimitPolicies(RateLimitPolicies.recommended.policies ++ RateLimitPolicies.recommended.policies.take(1), 1)
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme))
-          _ <- env.registry.refreshNow.succeedsWith(())
-          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1)), None)
-          refused <- env.service.setRateLimits(acme, Some(invalid), None).flip
+          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1)), None, "staff-1")
+          refused <- env.service.setRateLimits(acme, Some(invalid), None, "staff-1").flip
         yield assertTrue(
           env.partners.setRateLimits.calls == List((acme.id, None, None)),
           refused.isInstanceOf[PartnerError.Invalid],
+        )
+      },
+      test("a limit on /native/start that is no looser than the default is the partner's to set: stored at once, nobody is asked") {
+        val env = Env()
+        val stricter =
+          RateLimitPolicies(Nil, 1, nativeStart = Some(NativeStartRateLimit(limit = 30, windowSeconds = 60, burst = 10, mode = GuardMode.Enforce)))
+        val invalid = stricter.copy(nativeStart = Some(NativeStartRateLimit(limit = 5, windowSeconds = 60, burst = 50, mode = GuardMode.Enforce)))
+        for
+          _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(stricter), rateLimitsRevision = 1)))
+          set <- env.service.setRateLimits(acme, Some(stricter), None, "staff-1")
+          refused <- env.service.setRateLimits(acme, Some(invalid), None, "staff-1").flip
+        yield assertTrue(
+          env.partners.setRateLimits.calls == List((acme.id, Some(stricter), None)),
+          set.waiting.isEmpty,
+          env.approvals.createIfNoneWaiting.calls.isEmpty,
+          refused.isInstanceOf[PartnerError.Invalid],
+        )
+      },
+      test("a looser limit on /native/start waits for the operator: the rest of the set is stored with the stored limit kept") {
+        val looser = List(
+          NativeStartRateLimit.default(GuardMode.Off),
+          NativeStartRateLimit.default(GuardMode.Shadow),
+          NativeStartRateLimit(limit = 61, windowSeconds = 60, burst = 20, mode = GuardMode.Enforce),
+          NativeStartRateLimit(limit = 60, windowSeconds = 59, burst = 20, mode = GuardMode.Enforce),
+          NativeStartRateLimit(limit = 60, windowSeconds = 60, burst = 21, mode = GuardMode.Enforce),
+        )
+        val stored = NativeStartRateLimit(limit = 30, windowSeconds = 60, burst = 10, mode = GuardMode.Enforce)
+        val held = acme.copy(rateLimits = Some(RateLimitPolicies(Nil, 1, Some(stored))), rateLimitsRevision = 4)
+        ZIO.foreach(looser): limit =>
+          val env = Env()
+          val asked = RateLimitPolicies.recommended.copy(nativeStart = Some(limit))
+          for
+            _ <- env.registry.findFresh.succeedsWith(Some(held))
+            _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
+            _ <- env.partners.setRateLimits.succeedsWith(Some(held.copy(rateLimitsRevision = 5)))
+            _ <- env.approvals.createIfNoneWaiting.succeedsWith(true)
+            set <- env.service.setRateLimits(acme, Some(asked), Some(4), "staff-1")
+            queued = env.approvals.createIfNoneWaiting.calls
+          yield assertTrue(
+            // the policies and the pods of the request, the limit that was stored
+            env.partners.setRateLimits.calls == List((acme.id, Some(asked.copy(nativeStart = Some(stored))), Some(4))),
+            set.revision == 5,
+            set.waiting.map(_.kind) == Some(ApprovalKind.RateLimitsChange),
+            queued.map(_._2) == List(ApprovalKind.aboutRateLimits),
+            queued.head._1.targetId == acme.id,
+            queued.head._1.requestedBy == "staff-1",
+            queued.head._1.outsideLimits == List("nativeStart"),
+            queued.head._1.requested.toJson == PartnerService.RequestedNativeStart(Some(limit)).toJson,
+            queued.head._1.current.map(_.toJson) == Some(PartnerService.RequestedNativeStart(Some(stored)).toJson),
+          )
+        .map(_.reduce(_ && _))
+      },
+      test("the default itself and the looser limit the operator has already approved need nobody; with none stored the request says so") {
+        val approved = NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)
+        val held = acme.copy(rateLimits = Some(RateLimitPolicies(Nil, 1, Some(approved))), rateLimitsRevision = 2)
+        val env = Env()
+        val fresh = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(held))
+          _ <- env.partners.setRateLimits.succeedsWith(Some(held))
+          // the policies change, the approved limit is sent back as it is
+          kept <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended.copy(nativeStart = Some(approved))), None, "staff-1")
+          default <-
+            env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Enforce)))), None, "staff-1")
+          _ <- fresh.registry.findFresh.succeedsWith(Some(acme))
+          _ <- fresh.approvals.waitingFor.succeedsWith(Vector.empty)
+          _ <- fresh.partners.setRateLimits.succeedsWith(Some(acme))
+          _ <- fresh.approvals.createIfNoneWaiting.succeedsWith(true)
+          first <- fresh.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(approved))), None, "staff-1")
+        yield assertTrue(
+          kept.waiting.isEmpty,
+          default.waiting.isEmpty,
+          env.approvals.createIfNoneWaiting.calls.isEmpty,
+          // nothing else was in the set, so nothing is stored: the edges keep the default
+          fresh.partners.setRateLimits.calls == List((acme.id, None, None)),
+          first.waiting.flatMap(_.current).map(_.toJson) == Some("""{"nativeStart":null}"""),
+        )
+      },
+      test("a second looser limit while one waits is refused before anything is written") {
+        val env = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme))
+          _ <- env.approvals.waitingFor.succeedsWith(Vector(rateLimitsRequest(NativeStartRateLimit.default(GuardMode.Off))))
+          refused <- env.service.setRateLimits(
+            acme,
+            Some(RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Shadow)))),
+            None,
+            "staff-1",
+          ).flip
+        yield assertTrue(
+          refused.isInstanceOf[PartnerError.Conflict],
+          env.partners.setRateLimits.calls.isEmpty,
+          env.approvals.createIfNoneWaiting.calls.isEmpty,
+        )
+      },
+      test("reading the limits says what waits for the operator") {
+        val env = Env()
+        val waiting = rateLimitsRequest(NativeStartRateLimit.default(GuardMode.Off))
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(rateLimitsRevision = 2)))
+          _ <- env.approvals.waitingFor.succeedsWith(Vector(waiting))
+          read <- env.service.rateLimits(acme)
+        yield assertTrue(
+          read == PartnerService.GroupRateLimits(None, 2, Some(waiting)),
+          env.approvals.waitingFor.calls == List((acme.id, ApprovalKind.aboutRateLimits, acme.id)),
+        )
+      },
+      test("approving lays the requested limit over the limits as they are now; overrides are refused; rejecting changes nothing") {
+        val asked = NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)
+        val request = rateLimitsRequest(asked)
+        // the partner has changed its policies since it asked
+        val held = acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 6)
+        val env = Env()
+        val rejecting = Env()
+        for
+          _ <- env.approvals.find.succeedsWith(Some(request))
+          overridden <- env.service.approve(request.id, Some("operator-1"), None, Some(Json.Obj("nativeStart" -> Json.Null))).flip
+          _ <- env.partnerClients.checkOverrides.succeedsWith(None)
+          _ <- env.approvals.decide.succeedsWith(true)
+          _ <- env.registry.findFresh.succeedsWith(Some(held))
+          _ <- env.partners.setRateLimits.succeedsWith(Some(held))
+          approved <- env.service.approve(request.id, Some("operator-1"), None, None)
+          _ <- rejecting.approvals.find.succeedsWith(Some(request))
+          _ <- rejecting.approvals.decide.succeedsWith(true)
+          _ <- rejecting.partnerClients.rejectApproval.succeedsWith(())
+          rejected <- rejecting.service.reject(request.id, Some("operator-1"), "too much for one address")
+        yield assertTrue(
+          overridden.isInstanceOf[PartnerError.Invalid],
+          approved.status == ApprovalStatus.Approved,
+          env.partners.setRateLimits.calls == List((acme.id, Some(RateLimitPolicies.recommended.copy(nativeStart = Some(asked))), None)),
+          rejected.status == ApprovalStatus.Rejected,
+          rejecting.partners.setRateLimits.calls.isEmpty,
         )
       },
       test("a revision the limits have moved on from is a conflict") {
         val env = Env()
         for
           _ <- env.partners.setRateLimits.failsWith(PartnerRateLimitsChanged(acme.id, 5))
-          refused <- env.service.setRateLimits(acme, None, Some(4)).flip
-        yield assertTrue(refused.isInstanceOf[PartnerError.Conflict], env.registry.refreshNow.calls.isEmpty)
+          refused <- env.service.setRateLimits(acme, None, Some(4), "staff-1").flip
+        yield assertTrue(refused.isInstanceOf[PartnerError.Conflict])
       },
       test("what is read is what the partner stores, with its revision; a partner that has none set reads none") {
         val env = Env()
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 2)))
+          // nothing of the partner's waits for the operator
+          _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
           read <- env.service.rateLimits(acme)
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           none <- env.service.rateLimits(acme)
@@ -710,9 +870,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val env = Env()
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 1)))
-          _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
-          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended), None)
+          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended), None, "staff-1")
           _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1"))))
           _ <- env.edges.findFresh.returnsZIO(id =>
             ZIO.succeed(Option.when(id == EdgeId("edge-acme-2") && env.edges.registerEdgeWithoutKey.calls.nonEmpty)(edge(id))),
@@ -774,6 +933,15 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
   ) @@ TestAspect.silentLogging
+
+  private def rateLimitsRequest(limit: NativeStartRateLimit) = waiting.copy(
+    id = ApprovalId("rl"),
+    kind = ApprovalKind.RateLimitsChange,
+    targetId = acme.id,
+    requested = Json.Obj("nativeStart" -> limit.toJsonAST.toOption.get),
+    current = Some(Json.Obj("nativeStart" -> Json.Null)),
+    outsideLimits = List("nativeStart"),
+  )
 
   private val waiting = PartnerApprovalRecord(
     id = ApprovalId("c"),

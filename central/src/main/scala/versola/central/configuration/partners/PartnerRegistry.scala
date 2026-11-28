@@ -8,7 +8,7 @@ import zio.{Scope, Task, UIO, ZIO, ZLayer}
 
 /** The partners as central keeps them in memory, like clients: the status of a partner is read on every call of one of its
   * edges, and the sync to auth and to the first-party edges filters by it. Reads only; `PartnerService` writes, through the
-  * repository, and the `partner_change` notification brings the change here. Kept apart from the service so that what
+  * repository, and the `partner_change` notification brings the change here: nothing reloads this cache by hand after a write. Kept apart from the service so that what
   * registers clients and resources can read a partner without the service depending on them in turn. */
 trait PartnerRegistry:
   def getAll: UIO[Vector[PartnerRecord]]
@@ -23,9 +23,8 @@ trait PartnerRegistry:
 
   def sync(event: SyncEvent.PartnersUpdated): Task[Unit]
 
-  /** Reloads the whole cache now rather than at the next refresh or notification: for a write whose effect must be seen by
-    * the next call (a suspension). */
-  def refreshNow: Task[Unit]
+  /** Every stored partner, through the repository: for the console's list, which is read right after a write of its own. */
+  def getAllFresh: Task[Vector[PartnerRecord]]
 
 object PartnerRegistry:
   val live: ZLayer[PartnerRepository & Scope & CentralConfig, Throwable, PartnerRegistry] =
@@ -45,4 +44,4 @@ object PartnerRegistry:
     override def sync(event: SyncEvent.PartnersUpdated): Task[Unit] =
       SyncOps.syncCache(event)(cache, repository.find(event.id))
 
-    override def refreshNow: Task[Unit] = repository.getAll.flatMap(cache.set)
+    override def getAllFresh: Task[Vector[PartnerRecord]] = repository.getAll.map(_.sortBy(_.id))

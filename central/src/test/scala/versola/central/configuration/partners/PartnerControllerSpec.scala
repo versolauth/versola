@@ -131,6 +131,8 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- resources.verifySecret.succeedsWith(true)
         _ <- certificates.latest.succeedsWith(Map.empty)
         _ <- stubs.registry.getAll.succeedsWith(Vector(acme, globex))
+        // the list is read as stored, so that a write of a moment ago is in it
+        _ <- stubs.registry.getAllFresh.succeedsWith(Vector(acme, globex))
         _ <- setup(stubs)
         authed = if authorized then request.addHeader(TestAdminAuth.basicAuthHeader) else request
         response <- client.batched(authed)

@@ -143,9 +143,13 @@ object PartnerEdgeFixture:
           s"""mode = "partner"
              |configuration-cache-refresh-interval = "2 seconds"
              |edge-url = "$baseUrl"
+             |client-ip = "forwarded"
+             |client-ip-header = "X-Real-IP"
              |central { identity { directory = "$identity" } }
              |partner { admins = ["${admin.phone}"], console-directory = "$console" }
              |""".stripMargin
+        // `client-ip = forwarded`, as a partner's edge behind its proxy runs: the default limit on /native/start applies only then. A call of a
+        // spec that sends no `X-Real-IP` is counted under its peer.
         // the staged first-party edge's configuration, less what a partner's edge refuses or does not hold: the internal secret, and the
         // certificate deployed with the edge (`central.identity` is the partner's)
         partnerEnvConf <- partnerEnvConf(config)

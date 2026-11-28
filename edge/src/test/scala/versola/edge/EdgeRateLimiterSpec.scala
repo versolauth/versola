@@ -43,7 +43,9 @@ object EdgeRateLimiterSpec extends ZIOSpecDefault:
       override val current = ZIO.succeed(Nil)
       override val replicas = ZIO.succeed(policySetReplicas)
     ZIO.scoped:
-      EdgeRateLimiter.live.build.provideSomeEnvironment[Scope](_.add(config(replicasFrom)).add[RateLimitPolicySource](source)) *> effect
+      (EdgeReplicas.live >+> EdgeRateLimiter.live).build.provideSomeEnvironment[Scope](_.add(
+        config(replicasFrom),
+      ).add[RateLimitPolicySource](source)) *> effect
 
   /** The applier publishes once a second; wait for the first publication. */
   private def settled(source: String, expected: Double) =

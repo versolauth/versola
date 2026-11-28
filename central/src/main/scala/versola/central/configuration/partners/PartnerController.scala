@@ -43,7 +43,8 @@ object PartnerController extends AuditedController:
       for
         _ <- authorizeBasic(request)
         tenantId <- request.url.queryZIO[Option[TenantId]]("tenantId")
-        partners <- ZIO.serviceWithZIO[PartnerRegistry](_.getAll)
+        // as stored: the console reads the list right after a write of its own, before the notification of it has reached the cache
+        partners <- ZIO.serviceWithZIO[PartnerRegistry](_.getAllFresh)
         listed = tenantId.fold(partners)(id => partners.filter(_.tenantId == id))
       yield Response.json(GetPartnersResponse(listed.map(PartnerResponse.of)).toJson)
     }

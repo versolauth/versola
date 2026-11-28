@@ -51,6 +51,12 @@ object NativeController extends Controller:
       case NativeError.InvalidGrant(description) => oauth("invalid_grant", Some(description))
       // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 here
       // (EdgeController's own comment on that case applies unchanged).
+      // No body and the same fields as the other refusals of the rate limiter (`AddressLimit`): what a caller can act on is in them
+      case NativeError.RateLimited(retryAfterSeconds, headers) =>
+        Response.status(Status.TooManyRequests)
+          .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString))
+          .addHeaders(Headers(headers.map((name, value) => Header.Custom(name, value))))
+          .addHeader(Header.CacheControl.NoStore)
       case NativeError.NonceRequired(nonce) =>
         Response.status(Status.Unauthorized)
           .addHeader(Header.Custom("WWW-Authenticate", """DPoP error="use_dpop_nonce""""))

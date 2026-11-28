@@ -662,7 +662,7 @@ export class VersolaPartnersList extends LitElement {
       ${waiting.map(approval => html`
         <div class="banner warn" role="status">
           <div class="banner-text">
-            <div class="banner-title">${statusIcon('alert')}${approval.kind === 'profile_change' ? 'A name or logo change' : approval.kind === 'client_change' ? `A change to client ${approval.targetId}` : `Client ${approval.targetId}`} is waiting for your approval</div>
+            <div class="banner-title">${statusIcon('alert')}${approval.kind === 'profile_change' ? 'A name or logo change' : approval.kind === 'rate_limits_change' ? 'A looser limit on /native/start' : approval.kind === 'client_change' ? `A change to client ${approval.targetId}` : `Client ${approval.targetId}`} is waiting for your approval</div>
             <div>Since ${formatDate(approval.requestedAt)}. The partner cannot use it until you decide.
               <button type="button" class="link-button" @click=${() => this.openApprovals(approval.id)}>Review request</button></div>
           </div>
@@ -738,7 +738,7 @@ export class VersolaPartnersList extends LitElement {
       <versola-record-card heading="Waiting approvals" subheading="What the partner asked for beyond its limits." .body=${html`
         ${waiting.length ? html`<div class="record-list">${waiting.map(approval => html`
           <div class="edge-row">
-            <button type="button" class="link-button" @click=${() => this.openApprovals(approval.id)}>${approval.kind === 'profile_change' ? 'Name or logo change' : `${approval.kind === 'client_create' ? 'New client' : 'Change to'} ${approval.targetId}`}</button>
+            <button type="button" class="link-button" @click=${() => this.openApprovals(approval.id)}>${approval.kind === 'profile_change' ? 'Name or logo change' : approval.kind === 'rate_limits_change' ? 'Limit on /native/start' : `${approval.kind === 'client_create' ? 'New client' : 'Change to'} ${approval.targetId}`}</button>
             <span class="muted small">${formatDate(approval.requestedAt)} · <span class="mono">${approval.requestedBy}</span></span>
           </div>`)}</div>` : this.row('Queue', html`<span class="muted">Nothing is waiting.</span>`)}
         <versola-record-row .value=${html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openApprovals()}>Open the approvals queue</button>`}></versola-record-row>

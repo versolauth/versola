@@ -9,6 +9,7 @@ import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { copyToClipboard, formatDate } from '../../utils/helpers';
 import { relativeTime } from '../../utils/user-display';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
+import { nativeStartText, type RateLimitPolicies } from '../../utils/rate-limit-policies';
 import { validateEdgeId } from '../../utils/validators';
 import { createEdge, deleteEdge, fetchEdges, issueEnrollmentToken, revokeEnrollmentToken, writeErrorMessage, readErrorMessage } from '../partner-api';
 import type { EnrollmentToken, PartnerEdge, PartnerMe } from '../partner-types';
@@ -305,7 +306,8 @@ export class VersolaPartnerEdges extends LitElement {
     const overload = edge.policies.overload as { inbound?: { mode?: string }; outbound?: { retryBudgetPercent?: number } };
     const accessLog = edge.policies.accessLog as { mode?: string };
     return html`
-      ${this.row('Rate limits', rateLimits.length ? html`<div class="uri-list">${rateLimits.map(policy => html`<div><span class="mono">${policy.name}</span> · ${(policy.limits ?? []).map(limit => `${limit.limit} / ${limit.windowSeconds} s`).join(', ')}${policy.by?.length ? ` per ${policy.by.join(', ')}` : ''}</div>`)}</div>` : html`<span class="muted">None set</span>`, 'Operator')}
+      ${this.row('Rate limits', rateLimits.length ? html`<div class="uri-list">${rateLimits.map(policy => html`<div><span class="mono">${policy.name}</span> · ${(policy.limits ?? []).map(limit => `${limit.limit} / ${limit.windowSeconds} s`).join(', ')}${policy.by?.length ? ` per ${policy.by.join(', ')}` : ''}</div>`)}</div>` : html`<span class="muted">None set</span>`, 'Set in Settings')}
+      ${this.row('Native start limit', nativeStartText(edge.policies.rateLimits as unknown as RateLimitPolicies, true), 'Set in Settings')}
       ${this.row('Overload', html`${overload.inbound?.mode ? `inbound ${overload.inbound.mode}` : 'deployment default'}${overload.outbound?.retryBudgetPercent != null ? ` · retry budget ${overload.outbound.retryBudgetPercent} %` : ''}`, 'Operator')}
       ${this.row('Access log', accessLog.mode ?? 'deployment default', 'Operator')}
     `;

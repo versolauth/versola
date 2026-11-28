@@ -427,13 +427,14 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case _ => ZIO.succeed(Some(approved))
         _ <- env.clients.updateClient.returnsZIO((_, _, _, _) => ZIO.unit)
         _ <- env.clients.setApproval.succeedsWith(true)
-        _ <- env.clients.refreshNow.succeedsWith(())
         _ <- env.presets.savePresets.succeedsWith(Right(()))
         _ <- env.service.applyApproval(waitingCreate, applied)
       yield assertTrue(
         env.clients.updateClient.calls.head._1.redirectUris.add == Set(RedirectUri("https://other.acme.example/cb")),
         env.presets.savePresets.calls.head.presets.head.redirectUri == RedirectUri("https://other.acme.example/cb"),
         env.clients.setApproval.calls == List((request.id, ClientApproval.Approved)),
+        // the preset is validated against the client as stored: the client cache is not reloaded for it
+        env.clients.refreshNow.calls.isEmpty,
       )
     },
     test("reverting an approval puts a created client back to pending, and leaves a change alone") {
@@ -451,7 +452,6 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
         _ <- env.clients.updateClient.returnsZIO((_, _, _, _) => ZIO.unit)
         _ <- env.clients.setApproval.succeedsWith(true)
-        _ <- env.clients.refreshNow.succeedsWith(())
         _ <- env.presets.savePresets.succeedsWith(Right(()))
         applied <- env.service.checkOverrides(waitingCreate, Some(Json.Obj("clientName" -> Json.Obj("en" -> Json.Str("ACME Shop (verified)")))))
         _ <- env.service.applyApproval(waitingCreate, applied)
@@ -475,7 +475,6 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
         _ <- env.clients.setApproval.succeedsWith(true)
-        _ <- env.clients.refreshNow.succeedsWith(())
         _ <- env.presets.savePresets.succeedsWith(Right(()))
         applied <- env.service.checkOverrides(waitingCreate, None)
         _ <- env.service.applyApproval(waitingCreate, applied)

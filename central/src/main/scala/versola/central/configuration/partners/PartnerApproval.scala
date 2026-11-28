@@ -29,12 +29,20 @@ enum ApprovalKind(val code: String):
   /** The partner's own name and logo. */
   case ProfileChange extends ApprovalKind("profile_change")
 
+  /** A limit on `/native/start` of the partner's edges that lets through more than the default: every call that passes reaches the
+    * operator's auth, so loosening it is the operator's decision. `requested` and `current` are `{nativeStart: <limit> | null}`. */
+  case RateLimitsChange extends ApprovalKind("rate_limits_change")
+
 object ApprovalKind:
   /** The requests about a client of the partner. A request about the partner itself (`ProfileChange`) names the partner's id as its
     * target, which is another namespace than the clients': a client may be called as the partner is. */
   val aboutClients: Set[ApprovalKind] = Set(ClientCreate, ClientChange)
 
   val aboutPartner: Set[ApprovalKind] = Set(ProfileChange)
+
+  /** The requests about the rate limits of the partner's edges, which name the partner's id as their target too; a family of its own,
+    * so that one of them and a profile change can wait at the same time. */
+  val aboutRateLimits: Set[ApprovalKind] = Set(RateLimitsChange)
 
   def from(code: String): Either[String, ApprovalKind] =
     values.find(_.code == code).toRight(s"unknown approval kind '$code', expected one of ${values.map(_.code).mkString(", ")}")
