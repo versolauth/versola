@@ -436,6 +436,27 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   private def peer(address: String)(request: Request) = request.copy(remoteAddress = Some(InetAddress.getByName(address)))
 
+  /** The `X-Forwarded-For` and `X-Real-IP` values a resource is sent for a call shaped by `request`, on an edge configured by `configure`. */
+  private def upstreamAddressFields(request: Request => Request, configure: EdgeConfig => EdgeConfig) =
+    val env = new Env
+    for
+      _ <- env.setupDefaults()
+      capture <- captureUpstream()
+      client <- ZIO.service[Client]
+      security <- ZIO.service[SecurityService]
+      _ <- env.withResources(usersResource(usersEndpoint()))
+      token <- env.signToken()
+      service = env.buildService(client, security, config = configure(env.edgeConfig))
+      _ <- service.proxy(
+        ResourceId("users-api"),
+        Path.decode("/users"),
+        request(Request.get(URL.empty / "users").addCookie(sessionCookie(token))),
+      )
+      upstream <- capture.get
+      sent = upstream.map(_.headers).getOrElse(Headers.empty)
+      valuesOf = (name: String) => sent.iterator.filter(_.headerName.equalsIgnoreCase(name)).map(_.renderedValue).toList
+    yield (valuesOf("X-Forwarded-For"), valuesOf("X-Real-IP"))
+
   private def clientAddressSuite =
     suite("the caller's address as a rule reads it (request.clientIp)")(
       test("under client-ip = socket it is the peer of the connection, and an actorIp the caller sent is replaced") {
@@ -644,11 +665,17 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       audienceRateLimits = Nil,
     )
 
-  private def captureUpstream(status: Status = Status.Ok, body: String = "ok"): ZIO[TestClient, Nothing, Ref[Option[Request]]] =
+  private def captureUpstream(
+      status: Status = Status.Ok,
+      body: String = "ok",
+      headers: List[(String, String)] = Nil,
+  ): ZIO[TestClient, Nothing, Ref[Option[Request]]] =
     for
       capture <- Ref.make(Option.empty[Request])
       _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (req: Request) =>
-        capture.set(Some(req)).as(Response(status = status, body = Body.fromString(body)))
+        capture.set(Some(req)).as(
+          Response(status = status, headers = Headers(headers.map((name, value) => Header.Custom(name, value))), body = Body.fromString(body)),
+        )
       })
     yield capture
 
@@ -2753,6 +2780,154 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.headers.get("x-trace").contains("trace-1")),
       )
     },
+    // What the caller writes in these fields is the caller's claim, not edge's knowledge: the upstream is sent edge's own address and nothing else.
+    test("sends the upstream edge's own address, whatever forwarding and connection fields the caller wrote") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users")
+          .addCookie(sessionCookie(token))
+          .addHeader("X-Forwarded-For", "198.51.100.9")
+          .addHeader("X-Forwarded-Host", "forged.example")
+          .addHeader("X-Forwarded-Proto", "http")
+          .addHeader("X-Real-IP", "198.51.100.9")
+          .addHeader("Forwarded", "for=198.51.100.9")
+          .addHeader("Proxy-Authorization", "Basic Zm9vOmJhcg==")
+          .addHeader("Keep-Alive", "timeout=300")
+          .addHeader("TE", "trailers")
+          .addHeader("Upgrade", "websocket")
+          .addHeader("Connection", "keep-alive, X-Hop")
+          .addHeader("X-Hop", "1")
+          .addHeader("X-Request-Trace", "kept")
+          .copy(remoteAddress = Some(InetAddress.getByName("203.0.113.7")))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+        sent = upstream.map(_.headers).getOrElse(Headers.empty)
+        valuesOf = (name: String) => sent.iterator.filter(_.headerName.equalsIgnoreCase(name)).map(_.renderedValue).toList
+      yield assertTrue(
+        response.status == Status.Ok,
+        valuesOf("X-Forwarded-For") == List("203.0.113.7"),
+        valuesOf("X-Real-IP") == List("203.0.113.7"),
+        valuesOf("X-Request-Trace") == List("kept"),
+        List("Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "Proxy-Authorization", "Keep-Alive", "TE", "Upgrade", "X-Hop").forall(
+          valuesOf(_).isEmpty,
+        ),
+      )
+    },
+    test("sends the upstream no address field when the caller's address is unknown, and none of the caller's") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users")
+          .addCookie(sessionCookie(token))
+          .addHeader("X-Forwarded-For", "198.51.100.9")
+          .addHeader("X-Real-IP", "198.51.100.9")
+        service = env.buildService(client, security)
+        _ <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(
+        upstream.exists(_.headers.get("x-forwarded-for").isEmpty),
+        upstream.exists(_.headers.get("x-real-ip").isEmpty),
+      )
+    },
+    test("sends the upstream the address of the header `client-ip` names, when the operator says that header is set by their proxy") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users")
+          .addCookie(sessionCookie(token))
+          .addHeader("X-Forwarded-For", "198.51.100.9, 10.0.0.1")
+          .addHeader("X-Real-IP", "192.0.2.44")
+          .copy(remoteAddress = Some(InetAddress.getByName("10.0.0.1")))
+        service = env.buildService(
+          client,
+          security,
+          config = env.edgeConfig.copy(clientIp = ClientIpSource.Forwarded, clientIpHeader = "X-Real-IP"),
+        )
+        _ <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(
+        upstream.exists(_.headers.get("x-forwarded-for").contains("192.0.2.44")),
+        upstream.exists(_.headers.get("x-real-ip").contains("192.0.2.44")),
+      )
+    },
+    // The rate limit keys an IPv6 caller by its /64 (`v6/20010db800010002`); that is a bucket name, not an address a resource can read.
+    test("sends the upstream an IPv6 caller's whole address, not the /64 key the address rate limit uses") {
+      for (forwardedFor, realIp) <- upstreamAddressFields(peer("2001:db8:1:2::1"), identity)
+      yield assertTrue(forwardedFor == List("2001:db8:1:2:0:0:0:1"), realIp == List("2001:db8:1:2:0:0:0:1"))
+    },
+    test("sends the upstream an IPv4-mapped IPv6 peer as the IPv4 address") {
+      for (forwardedFor, realIp) <- upstreamAddressFields(peer("::ffff:203.0.113.7"), identity)
+      yield assertTrue(forwardedFor == List("203.0.113.7"), realIp == List("203.0.113.7"))
+    },
+    test("sends the upstream no address when `client-ip = forwarded` finds no address in the header: the peer is the proxy's, not the caller's") {
+      val forwarded = (config: EdgeConfig) => config.copy(clientIp = ClientIpSource.Forwarded, clientIpHeader = "X-Real-IP")
+      for
+        missing <- upstreamAddressFields(request => peer("10.0.0.1")(request.addHeader("X-Forwarded-For", "198.51.100.9")), forwarded)
+        malformed <- upstreamAddressFields(request => peer("10.0.0.1")(request.addHeader("X-Real-IP", "unknown")), forwarded)
+      yield assertTrue(missing == (Nil, Nil), malformed == (Nil, Nil))
+    },
+    test("sends the upstream no address on the mutual-TLS listener, where the caller is a certificate, and removes what the caller wrote") {
+      val certificate = TestCertificates.generate(subject = "CN=bank-a,O=Bank,C=KZ").certificate
+      for sent <- upstreamAddressFields(
+          request => peer("10.0.0.1")(request.addHeader("X-Forwarded-For", "198.51.100.9").copy(remoteCertificate = Some(certificate))),
+          identity,
+        )
+      yield assertTrue(sent == (Nil, Nil))
+    },
+    test("hands the caller none of the connection-specific or forwarding fields the upstream answered with") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream(
+          headers = List(
+            "Keep-Alive" -> "timeout=5",
+            "Proxy-Authenticate" -> "Basic",
+            "Upgrade" -> "h2c",
+            "TE" -> "trailers",
+            "Connection" -> "X-Hop",
+            "X-Hop" -> "1",
+            "Forwarded" -> "for=10.0.0.1",
+            "X-Forwarded-For" -> "10.0.0.1",
+            "X-Real-IP" -> "10.0.0.1",
+            "X-Answer" -> "kept",
+          ),
+        )
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        response <- service.proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(token)),
+        )
+        answered = response.headers.iterator.map(_.headerName.toLowerCase).toSet
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.headers.get("x-answer").contains("kept"),
+        Set("keep-alive", "proxy-authenticate", "upgrade", "te", "connection", "x-hop", "forwarded", "x-forwarded-for", "x-real-ip")
+          .intersect(answered)
+          .isEmpty,
+      )
+    },
     test("appends injected query params to upstream URL (InjectTarget.query)") {
       val env = new Env
       val endpoint = usersEndpoint(
@@ -2815,6 +2990,141 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.isDefined,
       )
     },
+    // `SameSite=Strict` lets another subdomain of the same site through, so a cookie call that changes state also has to come from an origin of ours.
+    suite("a state-changing call made with the session cookie")(
+      test("the origin that was refused is in the log, once, and the refusal is counted") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          service = env.buildService(client, security)
+          request = Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)).addHeader("Origin", "https://evil.app.example")
+          responses <- ZIO.foreach(1 to 3)(_ => service.proxy(ResourceId("users-api"), Path.decode("/users"), request))
+          out <- ZTestLogger.logOutput
+          warnings = out.filter(_.logLevel == LogLevel.Warning).map(_.message()).filter(_.contains("evil.app.example"))
+          upstream <- capture.get
+        yield assertTrue(responses.forall(_.status == Status.Forbidden), warnings.size == 1, warnings.head.contains("preset="), upstream.isEmpty)
+      },
+      test("from an origin that is not ours is refused before anything is sent, even with the right cookie") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          service = env.buildService(client, security)
+          responses <- ZIO.foreach(
+            List(
+              List("Origin" -> "https://evil.app.example"),
+              List("Origin" -> "null"),
+              List("Sec-Fetch-Site" -> "cross-site"),
+              List("Sec-Fetch-Site" -> "same-site"),
+              List("Origin" -> "https://evil.app.example", "Sec-Fetch-Site" -> "same-origin"),
+            ),
+          ): headers =>
+            val request = headers.foldLeft(Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)))((r, h) =>
+              r.addHeader(h._1, h._2),
+            )
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+          upstream <- capture.get
+        yield assertTrue(responses.forall(_.status == Status.Forbidden), upstream.isEmpty)
+      },
+      test("from edge's own origin, the preset's app, or with no sign of where it comes from goes on") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          _ <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          service = env.buildService(client, security)
+          responses <- ZIO.foreach(
+            List(
+              List("Origin" -> "https://edge.example"),
+              List("Origin" -> "https://app.example"),
+              List("Origin" -> "https://app.example", "Sec-Fetch-Site" -> "same-site"),
+              List("Sec-Fetch-Site" -> "same-origin"),
+              List("Sec-Fetch-Site" -> "none"),
+              Nil,
+            ),
+          ): headers =>
+            val request = headers.foldLeft(Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)))((r, h) =>
+              r.addHeader(h._1, h._2),
+            )
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield assertTrue(responses.forall(_.status == Status.Ok))
+      },
+      test("is refused when the preset of the session no longer exists and the call comes from its app") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          token <- env.signToken()
+          request = Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)).addHeader("Origin", "https://app.example")
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+          upstream <- capture.get
+        yield assertTrue(response.status == Status.Forbidden, upstream.isEmpty)
+      },
+      test("with an invalid token is still refused as cross-origin, not told about the token") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          request =
+            Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie("not-a-token")).addHeader("Origin", "https://evil.app.example")
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield assertTrue(response.status == Status.Forbidden)
+      },
+    ),
+    suite("a call that no cookie authenticated, or that only reads, is not checked for its origin")(
+      test("a bearer token goes on from any origin") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          _ <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          request = Request.post(URL.empty / "users", Body.empty)
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader("Origin", "https://evil.app.example")
+            .addHeader("Sec-Fetch-Site", "cross-site")
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield assertTrue(response.status == Status.Ok)
+      },
+      test("a read with the cookie goes on from any origin") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          _ <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(usersEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          request = Request.get(URL.empty / "users").addCookie(sessionCookie(token)).addHeader("Origin", "https://evil.app.example")
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield assertTrue(response.status == Status.Ok)
+      },
+    ),
     test("strips upstream Set-Cookie headers from the response") {
       val env = new Env
       for

@@ -513,6 +513,23 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
 
+#### Behaviour change: edge sends a resource its own view of the caller, not the forwarding fields the caller wrote
+
+On `/resources/*`, edge no longer passes these request fields to the resource: `Forwarded`, every `X-Forwarded-*`, `X-Real-IP`,
+`Proxy-Authorization`, and the connection-specific ones, which are `Connection` (and each field it names), `Proxy-Connection`,
+`Keep-Alive`, `TE`, `Transfer-Encoding` and `Upgrade` (RFC 9110 §7.6.1). Instead it sets `X-Forwarded-For` and `X-Real-IP` to one
+address, the one it uses for the address rate limit (`client-ip`, see [Rate limits](#rate-limits)): the peer of the connection by
+default, or the value of `client-ip-header` when `client-ip = "forwarded"`. The address is written as an address (an IPv6 one whole, an IPv4-mapped one as IPv4), not as the key of the address rate limit. When edge has no address it can vouch for, it sets neither: the peer of a connection that stands in for a missing or malformed `client-ip-header`, and the mutual-TLS listener, where the caller is a certificate. The same fields
+(and `Proxy-Authenticate`) are dropped from what the resource answers. `Forwarded` is never set (RFC 7239 §4: off by default).
+Before, all of them went through as the caller sent them, so a caller could choose the identity a resource read from them.
+
+- **Who can notice.** A resource that reads the client address from `X-Forwarded-For` / `X-Real-IP` set by a proxy in front of edge:
+  with the default `client-ip = "socket"` it now gets the address of that proxy. Set `client-ip = "forwarded"` (only when edge is reachable
+  *only* through that proxy, as already required for the address limit) and the resource gets the address the proxy set.
+  A resource that reads `X-Forwarded-Proto` or `X-Forwarded-Host` no longer gets them and has to be configured with its public origin.
+- **CEL.** `request.headers` still shows the fields as the caller sent them; a rule must not read an identity from them.
+- **No setting, no migration.**
+
 #### Behaviour change: a one-time code is good for 10 minutes after it was sent
 
 A code used to be accepted for as long as its sign-in lived (`authConversationTtlSeconds` of the tenant, 15 minutes by default, more where
@@ -553,6 +570,34 @@ in a compose file or a Helm `env` block is ignored. See [Access log](#access-log
   upgrading if you want the lines back.
 - Schema: migration `V1028` adds the nullable `edges.access_log_policy` column; additive, the previous release runs on it.
   `LOG_LEVEL` is unchanged.
+
+#### Behaviour change: edge refuses a state-changing call with the session cookie that a browser says comes from another origin
+
+`SameSite=Strict` keeps a cross-**site** page from using the `EDGE_SESSION` cookie, but not another subdomain of the same site: that is the
+same site. So on `/resources/*`, a call that is authenticated by the cookie and whose method is not `GET`, `HEAD`, `OPTIONS` or `TRACE` is
+now answered `403` (error code `cross_origin_rejected`, nothing is sent on) when the browser says where it comes from and that is not an
+origin of ours:
+
+- `Origin` present: it decides. It has to be the origin of `edge-url`, or of the `redirect-uri`, `post-login-redirect-uri` or
+  `post-logout-redirect-uri` of the preset the session was made for. `null` and anything else is refused.
+- No `Origin`, `Sec-Fetch-Site` present: `same-site` and `cross-site` are refused; `same-origin`, `none` and an unknown value go on.
+- Neither: goes on. A script, a test or an old client is not a browser holding someone else's cookie.
+
+A call with a bearer or DPoP token, and every read, is not checked. Nothing else changes: no setting, no migration.
+
+- **How to see it.** Every refusal is counted in `edge_cookie_origin_decisions_total{surface="resources",result}` (`refused_origin`,
+  `refused_fetch_site`), and a call with neither header, which goes on, as `result="no_headers"`; an origin is never a label. The log
+  has a `WARN` line for a refusal that names the origin and the preset (`cookie call on resources refused (refused_origin): POST
+  origin='https://app.example.com' preset=web`), at most once a minute for each origin and preset (when more than 256 different origins are refused within a minute, further ones are counted and not named, and one line a minute says so): that origin is what goes into the
+  preset's post-login redirect URI, if the app is yours. After an upgrade, a count above zero that you cannot explain from your own apps is
+  a page on another origin using someone's cookie.
+- **The partner console** (`/partner/api/*`, same cookie) is checked by the same rule, with `surface="partner"`: a state-changing request
+  with `Sec-Fetch-Site: same-site` or `cross-site` and no `Origin` is refused `403 origin_mismatch` as one with a foreign `Origin` was.
+
+- **Who can notice.** A browser app that calls `/resources/*` with the cookie from an origin that is not `edge-url` and not one of its
+  preset's URIs, for example a single-page app on `app.example.com` whose preset sends the user back to `edge.example.com`. Put the app's
+  origin in the preset (its post-login redirect URI) and the call goes on. A session whose preset was removed accepts only `edge-url`'s origin
+  until the user signs in again.
 
 #### Behaviour change: `auth` keeps its own list of revoked access tokens (migration `V0032`)
 
@@ -1966,6 +2011,7 @@ Nothing changes while the database is up: a drain takes the time it takes.
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
+| `VERSOLA_TLS_CIPHER_POLICY` | `bcp195` | `bcp195` refuses the TLS 1.2 AES-CBC cipher suites on the mutual-TLS listeners and on every connection the process opens (RFC 9325 §4.2 recommends only AES-GCM suites; FAPI 2.0 requires BCP 195), and the service does not start when the JDK still offers one; gauge `tls_cbc_refused` is 1 then. `jdk` keeps the JDK's own list (gauge 0). The setting is process-wide: a peer that offers only CBC in TLS 1.2 fails the handshake (`handshake_failure`), whether it is a client of a listener or a server the process connects to. In a `versola`-generated compose file the value is read from the environment of the `versola` command that starts the containers (`export VERSOLA_TLS_CIPHER_POLICY=jdk`; set it in every shell that runs `versola up` or a rollout, or the next start returns to `bcp195`) and defaults to `bcp195`; the chart takes it through `extraEnv` |
 | `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
 

@@ -206,6 +206,36 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           (code, _) <- errorOf(foreign)
         yield assertTrue(foreign.status == Status.Forbidden, code == "origin_mismatch", own.status == Status.BadRequest)
       },
+      test("a state-changing request that says only Sec-Fetch-Site same-site or cross-site is refused as one from another origin, and one that says nothing is not") {
+        for
+          h <- harness(Some(StaffLevel.developer))
+          sibling <- send(h, write(Method.POST, "/clients", "{}").addHeader(Header.Custom("Sec-Fetch-Site", "same-site")))
+          cross <- send(h, write(Method.POST, "/clients", "{}").addHeader(Header.Custom("Sec-Fetch-Site", "cross-site")))
+          own <- send(h, write(Method.POST, "/clients", "{}").addHeader(Header.Custom("Sec-Fetch-Site", "same-origin")))
+          silent <- send(h, write(Method.POST, "/clients", "{}"))
+          (code, _) <- errorOf(sibling)
+        yield assertTrue(
+          sibling.status == Status.Forbidden,
+          code == "origin_mismatch",
+          cross.status == Status.Forbidden,
+          own.status == Status.BadRequest,
+          silent.status == Status.BadRequest,
+        )
+      },
+      test("`Origin: null` is refused, a safe method is never refused whatever it says, and the edge's own origin is matched by scheme, host and port, not by spelling") {
+        for
+          h <- harness(Some(StaffLevel.developer))
+          nullOrigin <- send(h, write(Method.POST, "/clients", "{}", origin = Some("null")))
+          options <- send(h, write(Method.OPTIONS, "/clients", "{}", origin = Some("https://evil.example")))
+          spelled <- send(h, write(Method.POST, "/clients", "{}", origin = Some("https://LOGIN.acme.example:443")))
+          (code, _) <- errorOf(nullOrigin)
+        yield assertTrue(
+          nullOrigin.status == Status.Forbidden,
+          code == "origin_mismatch",
+          options.status != Status.Forbidden,
+          spelled.status == Status.BadRequest,
+        )
+      },
       test("the cookie a refresh produced is set on the answer") {
         for
           h <- harness(Some(StaffLevel.viewer), current = session(rotated = Some(Cookie.Response("EDGE_SESSION", "acme-console:next"))))

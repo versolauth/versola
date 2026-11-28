@@ -1,0 +1,18 @@
+# Alert rule for the TLS cipher policy of the services (#1049): `auth`, `central` and `edge` refuse the TLS 1.2 AES-CBC cipher suites on their
+# mutual-TLS listeners and on the connections they open, which FAPI 2.0 asks for through BCP 195 (RFC 9325 §4.2). Prometheus rule-group
+# format: loaded as it is by Prometheus (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
+#
+# Every service exports the gauge `tls_cbc_refused` once, at start: 1 when the policy is in force (a service that is asked for it and
+# cannot apply it does not start), 0 when `VERSOLA_TLS_CIPHER_POLICY=jdk` turned it off. The rule aggregates by namespace and has no other
+# label to name the service: the one that runs without the policy is found by its own `tls_cbc_refused`.
+groups:
+  - name: versola-tls
+    rules:
+      - alert: TlsCbcPolicyOff
+        expr: min by (namespace) (tls_cbc_refused) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A service runs without the TLS cipher policy in {{ $labels.namespace }}"
+          description: "A service exports tls_cbc_refused 0: VERSOLA_TLS_CIPHER_POLICY=jdk turned the policy off, so its mutual-TLS listeners agree to the TLS 1.2 AES-CBC cipher suites (TLS_ECDHE_RSA_WITH_AES_{128,256}_CBC_SHA) that RFC 9325 §4.2 does not recommend. On an installation that has to meet FAPI 2.0 that is a deviation; on one that does not, it is the opt-out working as set. Read the variable in the environment of the service that exports 0."

@@ -2,7 +2,7 @@ package versola.edge.partner
 
 import versola.edge.model.{RefreshTokenFamilyId, SessionId}
 import versola.edge.partner.PartnerCentral.{Answer, Failure}
-import versola.edge.{EdgeConfig, EdgeService, SSOClient}
+import versola.edge.{CsrfGuard, CsrfReport, EdgeConfig, EdgeService, SSOClient}
 import versola.util.audit.AuditEvent
 import versola.util.http.Observability
 import zio.http.*
@@ -122,20 +122,17 @@ final class PartnerApi(
 
   private val internalError: Response = json(Status.InternalServerError, Json.Obj("error" -> Json.Str("internal_error")))
 
-  /** A state-changing request from another origin is not the console's: the cookie is `SameSite=Strict`, which already keeps it from
-    * being sent, and this refuses what a browser that ignored that would send. A request with no `Origin` is not a browser's. */
+  private val csrfReport = CsrfReport("partner")
+
+  /** A state-changing request from another origin is not the console's: the cookie is `SameSite=Strict`, which does not keep out another
+    * subdomain of the same site, so the call is checked as a cookie call to a resource is ([[CsrfGuard]]): by its `Origin`, else by
+    * `Sec-Fetch-Site`. The console's origin is edge's. A request that says neither is not a browser's. */
   private def sameOrigin(request: Request): IO[Fail, Unit] =
-    val mutating = request.method != Method.GET && request.method != Method.HEAD
-    val origin = request.header(Header.Origin).map {
-      case Header.Origin.Value(scheme, host, port) => s"$scheme://$host${port.fold("")(p => s":$p")}"
-      case _ => "null"
-    }
-    val own = config.edgeUrl.scheme.fold("")(_.encode) + "://" + config.edgeUrl.host.getOrElse("") + config.edgeUrl.port.filterNot(p =>
-      p == 443 || p == 80,
-    ).fold("")(p => s":$p")
-    ZIO.fail(Fail(Status.Forbidden, "origin_mismatch")).when(mutating && origin.exists(_ != own)).tapError(_ =>
-      Observability.setError("origin_mismatch"),
-    ).unit
+    val verdict = CsrfGuard.verdict(request, List(config.edgeUrl))
+    csrfReport.record(verdict, request, "console") *>
+      ZIO.fail(Fail(Status.Forbidden, "origin_mismatch")).when(CsrfGuard.refused(verdict)).tapError(_ =>
+        Observability.setError("origin_mismatch"),
+      ).unit
 
   private def consoleOf(request: Request): IO[Fail | Throwable, EdgeService.ConsoleSession] =
     edgeService.consoleSession(request).catchAll:
