@@ -44,6 +44,7 @@ import versola.util.{RedirectUri, RsaKeyPair}
 import zio.*
 import zio.http.URL
 import zio.json.DecoderOps
+import zio.json.EncoderOps
 import zio.json.ast.Json
 import zio.test.*
 
@@ -664,7 +665,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(policies), rateLimitsRevision = 3)))
           _ <- env.registry.refreshNow.succeedsWith(())
-          set <- env.service.setRateLimits(acme, Some(policies), Some(2))
+          set <- env.service.setRateLimits(acme, Some(policies), Some(2), "staff-1")
         yield assertTrue(
           env.partners.setRateLimits.calls == List((acme.id, Some(policies), Some(2))),
           // what an edge is served is the partner's value: no edge is written
@@ -680,39 +681,155 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme))
           _ <- env.registry.refreshNow.succeedsWith(())
-          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1)), None)
-          refused <- env.service.setRateLimits(acme, Some(invalid), None).flip
+          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1)), None, "staff-1")
+          refused <- env.service.setRateLimits(acme, Some(invalid), None, "staff-1").flip
         yield assertTrue(
           env.partners.setRateLimits.calls == List((acme.id, None, None)),
           refused.isInstanceOf[PartnerError.Invalid],
         )
       },
-      test("a set that only overrides the limit on /native/start is stored: it is the partner's answer to the default") {
+      test("a limit on /native/start that is no looser than the default is the partner's to set: stored at once, nobody is asked") {
         val env = Env()
-        val only =
-          RateLimitPolicies(Nil, 1, nativeStart = Some(NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)))
-        val invalid = only.copy(nativeStart = Some(NativeStartRateLimit(limit = 5, windowSeconds = 60, burst = 50, mode = GuardMode.Enforce)))
+        val stricter =
+          RateLimitPolicies(Nil, 1, nativeStart = Some(NativeStartRateLimit(limit = 30, windowSeconds = 60, burst = 10, mode = GuardMode.Enforce)))
+        val invalid = stricter.copy(nativeStart = Some(NativeStartRateLimit(limit = 5, windowSeconds = 60, burst = 50, mode = GuardMode.Enforce)))
         for
-          _ <- env.partners.setRateLimits.succeedsWith(Some(acme))
+          _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(stricter), rateLimitsRevision = 1)))
           _ <- env.registry.refreshNow.succeedsWith(())
-          _ <- env.service.setRateLimits(acme, Some(only), None)
-          refused <- env.service.setRateLimits(acme, Some(invalid), None).flip
+          set <- env.service.setRateLimits(acme, Some(stricter), None, "staff-1")
+          refused <- env.service.setRateLimits(acme, Some(invalid), None, "staff-1").flip
         yield assertTrue(
-          env.partners.setRateLimits.calls == List((acme.id, Some(only), None)),
+          env.partners.setRateLimits.calls == List((acme.id, Some(stricter), None)),
+          set.waiting.isEmpty,
+          env.approvals.createIfNoneWaiting.calls.isEmpty,
           refused.isInstanceOf[PartnerError.Invalid],
+        )
+      },
+      test("a looser limit on /native/start waits for the operator: the rest of the set is stored with the stored limit kept") {
+        val looser = List(
+          NativeStartRateLimit.default(GuardMode.Off),
+          NativeStartRateLimit.default(GuardMode.Shadow),
+          NativeStartRateLimit(limit = 61, windowSeconds = 60, burst = 20, mode = GuardMode.Enforce),
+          NativeStartRateLimit(limit = 60, windowSeconds = 59, burst = 20, mode = GuardMode.Enforce),
+          NativeStartRateLimit(limit = 60, windowSeconds = 60, burst = 21, mode = GuardMode.Enforce),
+        )
+        val stored = NativeStartRateLimit(limit = 30, windowSeconds = 60, burst = 10, mode = GuardMode.Enforce)
+        val held = acme.copy(rateLimits = Some(RateLimitPolicies(Nil, 1, Some(stored))), rateLimitsRevision = 4)
+        ZIO.foreach(looser): limit =>
+          val env = Env()
+          val asked = RateLimitPolicies.recommended.copy(nativeStart = Some(limit))
+          for
+            _ <- env.registry.findFresh.succeedsWith(Some(held))
+            _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
+            _ <- env.partners.setRateLimits.succeedsWith(Some(held.copy(rateLimitsRevision = 5)))
+            _ <- env.registry.refreshNow.succeedsWith(())
+            _ <- env.approvals.createIfNoneWaiting.succeedsWith(true)
+            set <- env.service.setRateLimits(acme, Some(asked), Some(4), "staff-1")
+            queued = env.approvals.createIfNoneWaiting.calls
+          yield assertTrue(
+            // the policies and the pods of the request, the limit that was stored
+            env.partners.setRateLimits.calls == List((acme.id, Some(asked.copy(nativeStart = Some(stored))), Some(4))),
+            set.revision == 5,
+            set.waiting.map(_.kind) == Some(ApprovalKind.RateLimitsChange),
+            queued.map(_._2) == List(ApprovalKind.aboutRateLimits),
+            queued.head._1.targetId == acme.id,
+            queued.head._1.requestedBy == "staff-1",
+            queued.head._1.outsideLimits == List("nativeStart"),
+            queued.head._1.requested.toJson == PartnerService.RequestedNativeStart(Some(limit)).toJson,
+            queued.head._1.current.map(_.toJson) == Some(PartnerService.RequestedNativeStart(Some(stored)).toJson),
+          )
+        .map(_.reduce(_ && _))
+      },
+      test("the default itself and the looser limit the operator has already approved need nobody; with none stored the request says so") {
+        val approved = NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)
+        val held = acme.copy(rateLimits = Some(RateLimitPolicies(Nil, 1, Some(approved))), rateLimitsRevision = 2)
+        val env = Env()
+        val fresh = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(held))
+          _ <- env.partners.setRateLimits.succeedsWith(Some(held))
+          _ <- env.registry.refreshNow.succeedsWith(())
+          // the policies change, the approved limit is sent back as it is
+          kept <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended.copy(nativeStart = Some(approved))), None, "staff-1")
+          default <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Enforce)))), None, "staff-1")
+          _ <- fresh.registry.findFresh.succeedsWith(Some(acme))
+          _ <- fresh.approvals.waitingFor.succeedsWith(Vector.empty)
+          _ <- fresh.partners.setRateLimits.succeedsWith(Some(acme))
+          _ <- fresh.registry.refreshNow.succeedsWith(())
+          _ <- fresh.approvals.createIfNoneWaiting.succeedsWith(true)
+          first <- fresh.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(approved))), None, "staff-1")
+        yield assertTrue(
+          kept.waiting.isEmpty,
+          default.waiting.isEmpty,
+          env.approvals.createIfNoneWaiting.calls.isEmpty,
+          // nothing else was in the set, so nothing is stored: the edges keep the default
+          fresh.partners.setRateLimits.calls == List((acme.id, None, None)),
+          first.waiting.flatMap(_.current).map(_.toJson) == Some("""{"nativeStart":null}"""),
+        )
+      },
+      test("a second looser limit while one waits is refused before anything is written") {
+        val env = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme))
+          _ <- env.approvals.waitingFor.succeedsWith(Vector(rateLimitsRequest(NativeStartRateLimit.default(GuardMode.Off))))
+          refused <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Shadow)))), None, "staff-1").flip
+        yield assertTrue(
+          refused.isInstanceOf[PartnerError.Conflict],
+          env.partners.setRateLimits.calls.isEmpty,
+          env.approvals.createIfNoneWaiting.calls.isEmpty,
+        )
+      },
+      test("reading the limits says what waits for the operator") {
+        val env = Env()
+        val waiting = rateLimitsRequest(NativeStartRateLimit.default(GuardMode.Off))
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(rateLimitsRevision = 2)))
+          _ <- env.approvals.waitingFor.succeedsWith(Vector(waiting))
+          read <- env.service.rateLimits(acme)
+        yield assertTrue(read == PartnerService.GroupRateLimits(None, 2, Some(waiting)), env.approvals.waitingFor.calls == List((acme.id, ApprovalKind.aboutRateLimits, acme.id)))
+      },
+      test("approving lays the requested limit over the limits as they are now; overrides are refused; rejecting changes nothing") {
+        val asked = NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)
+        val request = rateLimitsRequest(asked)
+        // the partner has changed its policies since it asked
+        val held = acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 6)
+        val env = Env()
+        val rejecting = Env()
+        for
+          _ <- env.approvals.find.succeedsWith(Some(request))
+          overridden <- env.service.approve(request.id, Some("operator-1"), None, Some(Json.Obj("nativeStart" -> Json.Null))).flip
+          _ <- env.partnerClients.checkOverrides.succeedsWith(None)
+          _ <- env.approvals.decide.succeedsWith(true)
+          _ <- env.registry.findFresh.succeedsWith(Some(held))
+          _ <- env.partners.setRateLimits.succeedsWith(Some(held))
+          _ <- env.registry.refreshNow.succeedsWith(())
+          approved <- env.service.approve(request.id, Some("operator-1"), None, None)
+          _ <- rejecting.approvals.find.succeedsWith(Some(request))
+          _ <- rejecting.approvals.decide.succeedsWith(true)
+          _ <- rejecting.partnerClients.rejectApproval.succeedsWith(())
+          rejected <- rejecting.service.reject(request.id, Some("operator-1"), "too much for one address")
+        yield assertTrue(
+          overridden.isInstanceOf[PartnerError.Invalid],
+          approved.status == ApprovalStatus.Approved,
+          env.partners.setRateLimits.calls == List((acme.id, Some(RateLimitPolicies.recommended.copy(nativeStart = Some(asked))), None)),
+          env.registry.refreshNow.calls.size == 1,
+          rejected.status == ApprovalStatus.Rejected,
+          rejecting.partners.setRateLimits.calls.isEmpty,
         )
       },
       test("a revision the limits have moved on from is a conflict") {
         val env = Env()
         for
           _ <- env.partners.setRateLimits.failsWith(PartnerRateLimitsChanged(acme.id, 5))
-          refused <- env.service.setRateLimits(acme, None, Some(4)).flip
+          refused <- env.service.setRateLimits(acme, None, Some(4), "staff-1").flip
         yield assertTrue(refused.isInstanceOf[PartnerError.Conflict], env.registry.refreshNow.calls.isEmpty)
       },
       test("what is read is what the partner stores, with its revision; a partner that has none set reads none") {
         val env = Env()
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 2)))
+          // nothing of the partner's waits for the operator
+          _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
           read <- env.service.rateLimits(acme)
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           none <- env.service.rateLimits(acme)
@@ -727,7 +844,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 1)))
           _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
-          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended), None)
+          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended), None, "staff-1")
           _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1"))))
           _ <- env.edges.findFresh.returnsZIO(id =>
             ZIO.succeed(Option.when(id == EdgeId("edge-acme-2") && env.edges.registerEdgeWithoutKey.calls.nonEmpty)(edge(id))),
@@ -789,6 +906,15 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
   ) @@ TestAspect.silentLogging
+
+  private def rateLimitsRequest(limit: NativeStartRateLimit) = waiting.copy(
+    id = ApprovalId("rl"),
+    kind = ApprovalKind.RateLimitsChange,
+    targetId = acme.id,
+    requested = Json.Obj("nativeStart" -> limit.toJsonAST.toOption.get),
+    current = Some(Json.Obj("nativeStart" -> Json.Null)),
+    outsideLimits = List("nativeStart"),
+  )
 
   private val waiting = PartnerApprovalRecord(
     id = ApprovalId("c"),

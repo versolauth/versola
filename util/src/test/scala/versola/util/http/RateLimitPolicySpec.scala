@@ -184,6 +184,24 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
             .fromJson[RateLimitPolicies].isLeft,
         )
       },
+      test("is weaker than the default when it does not refuse, or its rate or its burst is above the default's") {
+        def limit(calls: Int, seconds: Int, burst: Int, mode: GuardMode = GuardMode.Enforce) = NativeStartRateLimit(calls, seconds, burst, mode)
+        assertTrue(
+          !NativeStartRateLimit.default(GuardMode.Enforce).weakerThanDefault,
+          !limit(30, 60, 10).weakerThanDefault,
+          // the same rate over another window
+          !limit(120, 120, 20).weakerThanDefault,
+          !limit(1, 86_400, 1).weakerThanDefault,
+          NativeStartRateLimit.default(GuardMode.Shadow).weakerThanDefault,
+          NativeStartRateLimit.default(GuardMode.Off).weakerThanDefault,
+          limit(61, 60, 20).weakerThanDefault,
+          limit(60, 59, 20).weakerThanDefault,
+          limit(60, 60, 21).weakerThanDefault,
+          // the ceilings of the generic rules do not overflow the comparison
+          limit(1_000_000, 86_400, 20).weakerThanDefault,
+          limit(1_000_000, 1, 20).weakerThanDefault,
+        )
+      },
       test("the default is 60 a minute with bursts of 20, counted per address") {
         val policy = NativeStartRateLimit.default(GuardMode.Shadow).toPolicy(NativeStartRateLimit.DefaultPolicyName)
         assertTrue(

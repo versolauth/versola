@@ -435,10 +435,14 @@ object PartnerEdgeController extends Controller:
 
   /** Sets the rate limits of the group, validated as `PATCH /configuration/edges/policies` validates `rateLimits` of one edge: the body is
     * `{rateLimits: <policies> | null, expectedRevision?: n}`, `null` removes them, the key must be there (an empty body is refused, not
-    * read as a removal), and `expectedRevision` is the `revision` of the last read (`409` when the limits changed since). */
+    * read as a removal), and `expectedRevision` is the `revision` of the last read (`409` when the limits changed since).
+    *
+    * A `nativeStart` that lets through more than the default (not `enforce`, a higher rate or a larger burst) is not applied: the rest of
+    * the set is stored with the stored `nativeStart` kept, the new one waits for the operator as a `rate_limits_change` request, and the
+    * answer is `202` with it in `waiting`. `409` while such a request is already waiting. */
   val putRateLimitsEndpoint =
     Method.PUT / "edge" / "partner" / "rate-limits" ->
-      managed("partner-edge", Some(Audit.action("rate-limits")), "/edge/partner/rate-limits") { (caller, _, request) =>
+      managed("partner-edge", Some(Audit.action("rate-limits")), "/edge/partner/rate-limits") { (caller, principal, request) =>
         for
           body <- request.bodyAs[Json.Obj]
           _ <- Audit.target(caller.partner.groupId)
@@ -453,8 +457,8 @@ object PartnerEdgeController extends Controller:
           expected <- body.get("expectedRevision") match
             case None | Some(Json.Null) => ZIO.none
             case Some(value) => ZIO.fromEither(value.as[Int]).mapBoth(detail => PartnerError.Invalid(s"expectedRevision: $detail"), Some(_))
-          limits <- ZIO.serviceWithZIO[PartnerService](_.setRateLimits(caller.partner, policies, expected))
-        yield Response.json(GroupRateLimitsResponse.of(limits).toJson)
+          limits <- ZIO.serviceWithZIO[PartnerService](_.setRateLimits(caller.partner, policies, expected, principal.sub))
+        yield Response.json(GroupRateLimitsResponse.of(limits).toJson).status(if limits.waiting.isDefined then Status.Accepted else Status.Ok)
       }
 
   /** The partner's own name and logo: a `profile_change` request for the operator. */
@@ -763,10 +767,19 @@ case class ResourceIdRequest(resourceId: ResourceId) derives JsonCodec
 case class RotatedSecretResponse(secret: String) derives JsonCodec
 
 /** The rate limits of the partner's edges (`null`: none set) and their `revision`, which a change names to say what it read. */
-case class GroupRateLimitsResponse(rateLimits: Option[RateLimitPolicies], revision: Int) derives JsonCodec
+case class GroupRateLimitsResponse(rateLimits: Option[RateLimitPolicies], revision: Int, waiting: Option[WaitingNativeStartResponse] = None)
+    derives JsonCodec
+
+/** The limit on `/native/start` the partner asked for that waits for the operator: the edges keep applying what `rateLimits` says. */
+case class WaitingNativeStartResponse(id: ApprovalId, nativeStart: Json, requestedAt: java.time.Instant) derives JsonCodec
 
 object GroupRateLimitsResponse:
-  def of(limits: PartnerService.GroupRateLimits): GroupRateLimitsResponse = GroupRateLimitsResponse(limits.policies, limits.revision)
+  def of(limits: PartnerService.GroupRateLimits): GroupRateLimitsResponse =
+    GroupRateLimitsResponse(
+      limits.policies,
+      limits.revision,
+      limits.waiting.map(approval => WaitingNativeStartResponse(approval.id, approval.requested.get("nativeStart").getOrElse(Json.Null), approval.requestedAt)),
+    )
 
 case class PartnerEdgesResponse(edges: Vector[EdgeResponse]) derives Schema, JsonCodec
 

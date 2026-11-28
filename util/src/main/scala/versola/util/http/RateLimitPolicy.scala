@@ -148,6 +148,13 @@ final case class NativeStartRateLimit(limit: Int, windowSeconds: Int, burst: Int
       .map(_ => this)
       .left.map(_.replace(s"policy ${NativeStartRateLimit.PolicyName}:", "nativeStart:"))
 
+  /** Lets through more than [[NativeStartRateLimit.default]] in `enforce` does: it does not refuse, or its rate or its burst is
+    * above the default's. What a partner may not set for its edges without the operator. */
+  def weakerThanDefault: Boolean =
+    val default = NativeStartRateLimit.default(GuardMode.Enforce)
+    mode != GuardMode.Enforce || burst > default.burst ||
+    limit.toLong * default.windowSeconds > default.limit.toLong * windowSeconds
+
   /** The policy a limiter counts it with: one bucket per address. */
   def toPolicy(name: String): RateLimitPolicy = RateLimitPolicy(
     name = name,
