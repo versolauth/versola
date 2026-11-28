@@ -61,6 +61,12 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
       f.api.browserLogin(auth, f.consoleClientId, person.login, person.password, consent = Some(Set("openid", "phone", "email")), emailOtp = true),
     )
 
+  /** A start on the partner's edge as a proxy in front of it would pass it on: `address` is what the proxy puts in `X-Real-IP`. No client of
+    * that name and no proof: the limit is the first step of a start, so a call it lets through is answered 404 and one over it 429. */
+  private def startNative(f: PartnerEdgeFixture, address: Option[String]): ZIO[Client, Throwable, Response] =
+    ZIO.fromEither(URL.decode(s"${f.baseUrl}/native/start/e2e-no-such-native-client")).mapError(RuntimeException(_))
+      .flatMap(url => Client.batched(address.foldLeft(Request.post(url, Body.empty))((request, value) => request.addHeader("X-Real-IP", value))))
+
   /** What the operator sees of the partner's approvals, waiting. */
   private def waitingApprovals(central: CentralApi, f: PartnerEdgeFixture) =
     central.get(
@@ -403,10 +409,10 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         )
       def nativeStart(limit: Int, burst: Int, mode: String) =
         Json.Obj("limit" -> Json.Num(limit), "windowSeconds" -> Json.Num(60), "burst" -> Json.Num(burst), "mode" -> Json.Str(mode))
-      // No client of that name and no proof: the limit is the first step of a start, so a call it lets through is answered 404 and one over it 429.
-      def start(f: PartnerEdgeFixture) =
-        ZIO.fromEither(URL.decode(s"${f.baseUrl}/native/start/e2e-no-such-native-client")).mapError(RuntimeException(_))
-          .flatMap(url => Client.batched(Request.post(url, Body.empty)))
+      // these calls send no address header, so the edge counts them under their peer
+      def start(f: PartnerEdgeFixture) = startNative(f, None)
+      def refusedBy(policy: String)(response: Response) =
+        response.status == Status.TooManyRequests && response.rawHeader("RateLimit-Policy").exists(_.startsWith(s"\"$policy\";"))
       for
         f <- fixture
         auth <- ZIO.service[OAuthClient]
@@ -433,7 +439,7 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         viewerWrite <- call(f, Some(viewerSession), Method.PUT, "/partner/api/rate-limits", Some(Json.Obj("rateLimits" -> Json.Null)))
         // awaited: the edge's next sync of its rate limits (every two seconds) and the limiter picking it up (every second); every call here
         // comes from one address, so the third and later ones are over the limit of two
-        refused <- PartnerEdgeFixture.eventually(start(f), attempts = 60)(_.status == Status.TooManyRequests)
+        refused <- PartnerEdgeFixture.eventually(start(f), attempts = 80)(refusedBy("native-start"))
         // looser than the default (it does not refuse): not applied, sent to the operator
         asked <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(limits(nativeStart(2, 2, "off"), revisionOf(saved))))
         again <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(limits(nativeStart(2, 2, "shadow"), revisionOf(asked))))
@@ -470,7 +476,8 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         error(viewerWrite).contains("insufficient_level"),
         refused.status == Status.TooManyRequests,
         refused.rawHeader("Retry-After").exists(_.toIntOption.exists(_ >= 1)),
-        refused.rawHeader("RateLimit-Policy").exists(_.contains("native-start")),
+        // the limit that was set, not the default it replaced
+        refused.rawHeader("RateLimit-Policy").contains("\"native-start\";q=2;w=60"),
         asked._1 == Status.Accepted,
         asked._2.obj("waiting").flatMap(_.obj("nativeStart")).flatMap(_.str("mode")).contains("off"),
         // the limit in force is still the one the partner set itself
@@ -484,6 +491,32 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         after._2.obj("waiting").isEmpty,
         allowed.status != Status.TooManyRequests,
         removed._1 == Status.Ok,
+      )
+    },
+    test(
+      "with no limit set, the partner's edge refuses over the default per forwarded address: another address is not affected, and a header that is not an address is counted under the peer",
+    ) {
+      def defaultRefusal(response: Response) =
+        response.status == Status.TooManyRequests && response.rawHeader("RateLimit-Policy").contains("\"native-start-default\";q=60;w=60")
+      for
+        f <- fixture
+        admin <- signIn(f, f.admin)
+        limits <- call(f, Some(admin), Method.GET, "/partner/api/rate-limits")
+        // awaited: the default taking over after the test above removed the limits (the edge's next sync and the limiter picking it up), then
+        // the burst of 20 of this address being spent: the calls come four a second and the default gives one back a second
+        refused <- PartnerEdgeFixture.eventually(startNative(f, Some("203.0.113.7")), attempts = 120)(defaultRefusal)
+        other <- startNative(f, Some("203.0.113.8"))
+        // what a proxy that appends to the header sends on when the caller put a value of its own in front: not out of the limit, but
+        // counted under the peer, whose burst the same calls spend
+        unreadable <- PartnerEdgeFixture.eventually(startNative(f, Some("x, 203.0.113.9")), attempts = 120)(defaultRefusal)
+        stillOther <- startNative(f, Some("203.0.113.8"))
+      yield assertTrue(
+        limits._2.fields.exists((name, value) => name == "rateLimits" && value == Json.Null),
+        defaultRefusal(refused),
+        refused.rawHeader("Retry-After").exists(_.toIntOption.exists(_ >= 1)),
+        other.status != Status.TooManyRequests,
+        defaultRefusal(unreadable),
+        stillOther.status != Status.TooManyRequests,
       )
     },
     test("a suspended partner is 403 partner_suspended on a management call, and its edge serves again once it is resumed") {
