@@ -382,6 +382,90 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         versionOf(reread) == versionOf(after),
       )
     },
+    test("the rate limits of the group through the partner edge: read, written with the revision read, refused to a viewer; a limit on /native/start reaches the edge and refuses there, and a looser one waits for the operator") {
+      def revisionOf(result: (Status, Json.Obj)): Option[Int] =
+        result._2.fields.collectFirst { case ("revision", Json.Num(number)) => number.intValue }
+      def limits(nativeStart: Json, revision: Option[Int]) =
+        Json.Obj(
+          (List("rateLimits" -> (Json.Obj("policies" -> Json.Arr(), "replicas" -> Json.Num(1), "nativeStart" -> nativeStart): Json)) ++
+            revision.map(r => "expectedRevision" -> (Json.Num(r): Json)))*,
+        )
+      def nativeStart(limit: Int, burst: Int, mode: String) =
+        Json.Obj("limit" -> Json.Num(limit), "windowSeconds" -> Json.Num(60), "burst" -> Json.Num(burst), "mode" -> Json.Str(mode))
+      // No client of that name and no proof: the limit is the first step of a start, so a call it lets through is answered 404 and one over it 429.
+      def start(f: PartnerEdgeFixture) =
+        ZIO.fromEither(URL.decode(s"${f.baseUrl}/native/start/e2e-no-such-native-client")).mapError(RuntimeException(_))
+          .flatMap(url => Client.batched(Request.post(url, Body.empty)))
+      for
+        f <- fixture
+        auth <- ZIO.service[OAuthClient]
+        central <- ZIO.service[CentralApi]
+        admin <- signIn(f, f.admin)
+        before <- call(f, Some(admin), Method.GET, "/partner/api/rate-limits")
+        recommended <- call(f, Some(admin), Method.GET, "/partner/api/rate-limits/recommended")
+        unlimited <- start(f)
+        // stricter than the default, so the partner's to set alone: two starts a minute from one address
+        saved <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(limits(nativeStart(2, 2, "enforce"), revisionOf(before))))
+        // the same revision again is stale: the save above moved it on
+        stale <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(limits(nativeStart(3, 3, "enforce"), revisionOf(before))))
+        missing <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(Json.Obj("expectedRevision" -> Json.Num(1))))
+        viewer <- PartnerEdgeFixture.person(auth, 7)
+        _ <- call(f, Some(admin), Method.POST, "/partner/api/staff", Some(Json.Obj("identifier" -> Json.Str(viewer.phone), "level" -> Json.Str("viewer"))))
+        viewerSession <- signIn(f, viewer)
+        viewerRead <- call(f, Some(viewerSession), Method.GET, "/partner/api/rate-limits")
+        viewerWrite <- call(f, Some(viewerSession), Method.PUT, "/partner/api/rate-limits", Some(Json.Obj("rateLimits" -> Json.Null)))
+        // awaited: the edge's next sync of its rate limits (every two seconds) and the limiter picking it up (every second); every call here
+        // comes from one address, so the third and later ones are over the limit of two
+        refused <- PartnerEdgeFixture.eventually(start(f), attempts = 60)(_.status == Status.TooManyRequests)
+        // looser than the default (it does not refuse): not applied, sent to the operator
+        asked <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(limits(nativeStart(2, 2, "off"), revisionOf(saved))))
+        again <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(limits(nativeStart(2, 2, "shadow"), revisionOf(asked))))
+        stillInForce <- call(f, Some(admin), Method.GET, "/partner/api/rate-limits")
+        waiting <- waitingApprovals(central, f)
+        request = waiting.find(_.str("kind").contains("rate_limits_change"))
+        overridden <- ZIO.foreach(request.flatMap(_.str("id")))(id =>
+          central.post("/configuration/partners/approvals/approve", Json.Obj("id" -> Json.Str(id), "overrides" -> Json.Obj("nativeStart" -> Json.Null))),
+        )
+        approved <- ZIO.foreach(request.flatMap(_.str("id")))(id =>
+          central.post("/configuration/partners/approvals/approve", Json.Obj("id" -> Json.Str(id), "note" -> Json.Str("e2e"))),
+        )
+        after <- call(f, Some(admin), Method.GET, "/partner/api/rate-limits")
+        // awaited: the same sync, now carrying the limit the operator approved; with it off no start is refused for its address
+        allowed <- PartnerEdgeFixture.eventually(start(f), attempts = 60)(_.status != Status.TooManyRequests)
+        // the limits are removed, so that the default of a partner's edge is what the other specs of this edge run under
+        removed <- call(f, Some(admin), Method.PUT, "/partner/api/rate-limits", Some(Json.Obj("rateLimits" -> Json.Null)))
+      yield assertTrue(
+        before._1 == Status.Ok,
+        revisionOf(before).isDefined,
+        recommended._2.arr("policies").nonEmpty,
+        unlimited.status != Status.TooManyRequests,
+        saved._1 == Status.Ok,
+        saved._2.obj("rateLimits").flatMap(_.obj("nativeStart")).exists(_.toJson.contains("\"limit\":2")),
+        revisionOf(saved).exists(r => revisionOf(before).exists(_ < r)),
+        stale._1 == Status.Conflict,
+        error(stale).contains("conflict"),
+        missing._1 == Status.BadRequest,
+        viewerRead._1 == Status.Ok,
+        viewerWrite._1 == Status.Forbidden,
+        error(viewerWrite).contains("insufficient_level"),
+        refused.status == Status.TooManyRequests,
+        refused.rawHeader("Retry-After").exists(_.toIntOption.exists(_ >= 1)),
+        refused.rawHeader("RateLimit-Policy").exists(_.contains("native-start")),
+        asked._1 == Status.Accepted,
+        asked._2.obj("waiting").flatMap(_.obj("nativeStart")).flatMap(_.str("mode")).contains("off"),
+        // the limit in force is still the one the partner set itself
+        asked._2.obj("rateLimits").flatMap(_.obj("nativeStart")).flatMap(_.str("mode")).contains("enforce"),
+        again._1 == Status.Conflict,
+        stillInForce._2.obj("rateLimits").flatMap(_.obj("nativeStart")).flatMap(_.str("mode")).contains("enforce"),
+        request.flatMap(_.str("targetId")).contains(f.partnerId),
+        overridden.exists(_.status == Status.BadRequest),
+        approved.exists(_.status.isSuccess),
+        after._2.obj("rateLimits").flatMap(_.obj("nativeStart")).flatMap(_.str("mode")).contains("off"),
+        after._2.obj("waiting").isEmpty,
+        allowed.status != Status.TooManyRequests,
+        removed._1 == Status.Ok,
+      )
+    },
     test("a suspended partner is 403 partner_suspended on a management call, and its edge serves again once it is resumed") {
       for
         f <- fixture
