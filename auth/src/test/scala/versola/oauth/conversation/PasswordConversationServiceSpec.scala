@@ -8,7 +8,20 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken, TenantId}
+import versola.oauth.client.model.{
+  Acr,
+  AuthFlow,
+  AuthMethodRef,
+  ClientId,
+  PassedAuthFactor,
+  PassedFactorRecord,
+  PrimaryCredential,
+  RegistrationCredential,
+  RegistrationFlow,
+  RegistrationStep,
+  ScopeToken,
+  TenantId,
+}
 import versola.oauth.conversation.limit.{Acquisition, ChallengeThrottleRecord, ChallengeType, LimitStatus, Reservation, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -606,6 +619,57 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           overwriteCalls.head._2.userId.contains(userId),
           overwriteCalls.head._2.userLogin.contains(login),
           overwriteCalls.head._2.userClaims.contains(loginUser.claims),
+        )
+      },
+      test("a right password is credited alone, whatever another identity left in the conversation") {
+        val env = Env()
+        val leftover = baseRecord.copy(
+          amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp))),
+          registrationFlow = Some(RegistrationFlow(RegistrationCredential.phone, List(RegistrationStep.Otp()), Set.empty)),
+          registrationStep = Some(1),
+          needsPasswordChange = true,
+        )
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, charges))
+          _ <- env.submissionLimiter.refund.succeedsWith(())
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkLoginPassword(authId, leftover, login, password)
+          stored = env.conversationRepository.overwrite.calls.head._2
+        yield assertTrue(
+          stored.amr.keySet == Set(PassedAuthFactor.password),
+          stored.registrationFlow.isEmpty,
+          stored.registrationStep.isEmpty,
+          !stored.needsPasswordChange,
+          stored.userId.contains(userId),
+        )
+      },
+      test("a temporary password is credited alone too, and asks for a new one") {
+        val env = Env()
+        val leftover = baseRecord.copy(
+          amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp))),
+          registrationStep = Some(1),
+        )
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, charges))
+          _ <- env.submissionLimiter.refund.succeedsWith(())
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Temporary)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkLoginPassword(authId, leftover, login, password)
+          stored = env.conversationRepository.overwrite.calls.head._2
+        yield assertTrue(stored.amr.keySet == Set(PassedAuthFactor.password), stored.registrationStep.isEmpty, stored.needsPasswordChange)
+      },
+      test("return BadRequest on the passkey-only card, without looking the login up") {
+        val env = Env()
+        val card = baseRecord.copy(step = credentialStep.copy(passkey = true, passkeyOnly = true))
+        for
+          result <- env.service.checkLoginPassword(authId, card, login, password)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.userRepository.findByLogin.calls.isEmpty,
+          env.submissionLimiter.acquireAll.calls.isEmpty,
         )
       },
       test("reports a write conflict when accepting a correct password cannot be persisted") {

@@ -28,7 +28,7 @@ object AccessLogPolicySyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends AccessLogPolicySyncClient:
-    private val AccessLogPolicyURL = config.central.url / "edge" / "sync" / "access-log"
+    private val AccessLogPolicyURL = config.syncUrl("access-log")
 
     override def getAll: Task[EdgeAccessLogPolicy] =
       for

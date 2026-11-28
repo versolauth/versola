@@ -52,6 +52,7 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
         nativeApp = false,
         issuedCertificate = false,
         enrolledCertificate = false,
+        groupCertificate = None,
       ),
     )
 

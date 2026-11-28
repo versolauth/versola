@@ -1,18 +1,10 @@
 package versola.e2e.flows.central
 
-import com.nimbusds.jose.crypto.RSASSASigner
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
-import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.e2e.support.{*, given}
 import zio.*
 import zio.http.{ClientSSLConfig, Status}
 import zio.json.ast.Json
 import zio.test.*
-
-import java.security.KeyFactory
-import java.security.spec.PKCS8EncodedKeySpec
-import java.time.Instant
-import java.util.{Base64, Date, UUID}
 
 /** Central's edge-facing surface, `/edge/sync/<resource>` (#554), seen from a second edge registered
   * for a tenant of its own.
@@ -47,29 +39,7 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       otherPreset: String,
   )
 
-  /** What edge's `CentralSyncTokenService` presents: `RS256` with the registered key, naming
-    * the edge in the `edge_id` header, and a `jti`, which central's verifier insists on. Built
-    * with Nimbus directly, since e2e has no access to the services' own `JWT` helper. */
-  private def edgeToken(edgeId: String, keyId: String, privateKey: String): Task[String] =
-    ZIO.attempt:
-      val key = KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(Base64.getUrlDecoder.decode(privateKey)))
-      val now = Instant.now()
-      val claims = JWTClaimsSet.Builder()
-        .issuer("edge")
-        .subject("edge")
-        .audience("central")
-        .jwtID(UUID.randomUUID().toString)
-        .issueTime(Date.from(now))
-        .expirationTime(Date.from(now.plusSeconds(60)))
-        .build()
-      val header = JWSHeader.Builder(JWSAlgorithm.RS256)
-        .keyID(keyId)
-        .`type`(JOSEObjectType.JWT)
-        .customParam("edge_id", edgeId)
-        .build()
-      val jwt = SignedJWT(header, claims)
-      jwt.sign(RSASSASigner(key))
-      jwt.serialize()
+  private def edgeToken(edgeId: String, keyId: String, privateKey: String): Task[String] = EdgeToken.sign(edgeId, keyId, privateKey)
 
   /** A fixture write that was refused would leave the edge with nothing to be shown, and the
     * assertions would then report a missing row instead of the refusal. */

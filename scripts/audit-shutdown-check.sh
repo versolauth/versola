@@ -11,7 +11,7 @@
 # Two probes, `PROBE=`:
 #   authorize  (default) `GET /authorize` of a registered client: one `authorize.request` event with the outcome `success` for every
 #              request, with the client `PROBE_CLIENT` (default `shutdown-probe`). The client has to exist, with a redirect URI, a
-#              scope and no secret, and `audit.events.authorize-success` has to be on (the default). In a local stack it can be made
+#              scope and no secret, and the audit log of its tenant has to be on (the default). In a local stack it can be made
 #              from the console's bootstrap client, with central and auth stopped, then started again:
 #                INSERT INTO oauth_clients SELECT ... FROM oauth_clients WHERE id = 'central-admin' with id = 'shutdown-probe',
 #                secret = NULL, scope = '{openid}', require_pushed_authorization_requests = false.

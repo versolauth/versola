@@ -1,6 +1,7 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
+import versola.edge.partner.PartnerOAuthClientsSyncClient
 import versola.util.cel.CelEvaluator
 import versola.util.{ConfigSnapshot, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -55,8 +56,17 @@ object ConfigurationSourceSpec extends ZIOSpecDefault:
         source.get[RateLimitPolicySyncClient].isInstanceOf[RateLimitPolicySyncClient.Impl],
       )
     },
-    test("partner is refused as not implemented, the same way the configuration is") {
-      for error <- build(config.copy(mode = EdgeMode.Partner)).flip
-      yield assertTrue(error == EdgeMode.NotImplemented(EdgeMode.Partner))
+    test("partner reads the clients and presets of its own partner, and has no roles and no permissions") {
+      for
+        source <- build(config.copy(mode = EdgeMode.Partner))
+        roles <- source.get[RolesSyncClient].getAll
+        permissions <- source.get[PermissionsSyncClient].getAll
+      yield assertTrue(
+        source.get[OAuthClientsSyncClient].isInstanceOf[PartnerOAuthClientsSyncClient.Impl],
+        source.get[AuthorizationPresetsSyncClient].isInstanceOf[AuthorizationPresetsSyncClient.Impl],
+        source.get[JwksSyncClient].isInstanceOf[JwksSyncClient.Impl],
+        roles.isEmpty,
+        permissions.isEmpty,
+      )
     },
   ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging

@@ -217,6 +217,30 @@ object AddressLimitSpec extends ZIOSpecDefault:
         )
       },
     ),
+    suite("ClientAddress.trustedLiteral")(
+      test("under socket it is the peer as text, an IPv6 one whole and not as its /64 key") {
+        assertTrue(
+          ClientAddress.trustedLiteral(from("/x", "203.0.113.7"), ClientIpSource.Socket, "X-Real-IP").contains("203.0.113.7"),
+          ClientAddress.trustedLiteral(from("/x", "2001:db8:1:2::1"), ClientIpSource.Socket, "X-Real-IP").contains("2001:db8:1:2:0:0:0:1"),
+          ClientAddress.trustedLiteral(Request.get(URL.root), ClientIpSource.Socket, "X-Real-IP").isEmpty,
+        )
+      },
+      test("under forwarded it is the header's address; a missing or malformed header is nothing, not the proxy's own address") {
+        def forwarded(value: Option[String]) =
+          ClientAddress.trustedLiteral(
+            value.fold(from("/x", "10.0.0.1"))(v => from("/x", "10.0.0.1").addHeader("X-Real-IP", v)),
+            ClientIpSource.Forwarded,
+            "X-Real-IP",
+          )
+        assertTrue(
+          forwarded(Some("198.51.100.9")).contains("198.51.100.9"),
+          forwarded(Some("2001:db8::7")).contains("2001:db8::7"),
+          forwarded(None).isEmpty,
+          forwarded(Some("unknown")).isEmpty,
+          forwarded(Some("198.51.100.9, 10.0.0.1")).isEmpty,
+        )
+      },
+    ),
     suite("the certificate (mutual-TLS listener)")(
       test("every call of a certificate counts, a certificate has its own bucket, and a call with none is not limited") {
         val a = TestCertificates.generate(subject = "CN=bank-a,O=Bank,C=KZ").certificate

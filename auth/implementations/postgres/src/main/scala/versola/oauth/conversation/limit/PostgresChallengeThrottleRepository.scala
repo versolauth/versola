@@ -101,21 +101,22 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
       banDurationSeconds: Long,
   ): Task[Reservation] =
     xa.transactMeasured("reserve-challenge-throttle-attempt"):
-      if alreadyBanned(tenantId, subject, challengeType, now) then Reservation.Denied(LimitStatus.Banned)
-      else
-        readModifyWrite(tenantId, subject, challengeType): existing =>
-          ThrottlePolicy.reserve(existing, tenantId, subject, challengeType, now, wLimits, banDurationSeconds) match
-            case Left(denied) => None -> Reservation.Denied(denied)
-            case Right((applied, status)) =>
-              Some(applied) -> Reservation.Granted(
-                tenantId = tenantId,
-                subject = subject,
-                challengeType = challengeType,
-                after = status,
-                reservedAt = now,
-                previous = existing,
-                applied = applied,
-              )
+      deniedWithoutLock(tenantId, subject, challengeType, now, wLimits) match
+        case Some(denied) => Reservation.Denied(denied)
+        case None =>
+          readModifyWrite(tenantId, subject, challengeType): existing =>
+            ThrottlePolicy.reserve(existing, tenantId, subject, challengeType, now, wLimits, banDurationSeconds) match
+              case Left(denied) => None -> Reservation.Denied(denied)
+              case Right((applied, status)) =>
+                Some(applied) -> Reservation.Granted(
+                  tenantId = tenantId,
+                  subject = subject,
+                  challengeType = challengeType,
+                  after = status,
+                  reservedAt = now,
+                  previous = existing,
+                  applied = applied,
+                )
 
   override def refundAttempt(reservation: Reservation.Granted): Task[Unit] =
     xa.transactMeasured("refund-challenge-throttle-attempt"):
@@ -136,6 +137,27 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
           case Some(restored) =>
             if restored != current then update(restored)
     .unit
+
+  /** The decision for a subject that is already denied, taken from an unlocked primary-key read: a ban or a hard window that is
+    * full. [[alreadyBanned]] short-circuits only the ban; a subject over a hard window (rate limited, not banned) is as much what
+    * an attacker keeps hammering, and would otherwise queue on the row lock and hold a connection for every request of the flood.
+    * It is the same decision [[ThrottlePolicy.reserve]] takes, from the same function, so what is answered here is what the
+    * locked path would answer. Only a refusal is taken without the lock: a state that lets the attempt through, and any state
+    * that changes between this read and the write, is decided again under the lock in [[readModifyWrite]].
+    */
+  private def deniedWithoutLock(
+      tenantId: TenantId,
+      subject: String,
+      challengeType: ChallengeType,
+      now: Instant,
+      wLimits: NonEmptyChunk[RateLimit],
+  )(using DbCon): Option[LimitStatus] =
+    sql"""SELECT tenant_id, subject, challenge_type, attempts, banned_until, expires_at
+          FROM challenge_throttle
+          WHERE tenant_id = $tenantId AND subject = $subject AND challenge_type = $challengeType"""
+      .query[ChallengeThrottleRecord].run().headOption
+      .map(ThrottlePolicy.evaluate(_, wLimits, now))
+      .filter(_ != LimitStatus.Allowed)
 
   /** Short-circuits subjects that are already banned, before taking any lock or writing anything. A
     * ban is precisely the state an attacker keeps hammering, so without this the hot path under

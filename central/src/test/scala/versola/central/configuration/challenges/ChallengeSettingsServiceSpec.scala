@@ -37,6 +37,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     securityProfile = SecurityProfile.fapi2,
     logoLight = None,
     logoDark = None,
+    auditSettings = AuditSettings.default,
   )
 
   private val noChange = PatchChallengeSettingsRequest(
@@ -63,6 +64,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     securityProfile = None,
     logoLight = None,
     logoDark = None,
+    auditSettings = None,
   )
 
   private val userRole = RoleRecord(ChallengeSettingsRecord.DefaultRoleId, tenantId, Map("en" -> "User"), Set.empty, active = true)

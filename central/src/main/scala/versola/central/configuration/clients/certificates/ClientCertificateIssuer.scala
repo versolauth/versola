@@ -1,6 +1,8 @@
 package versola.central.configuration.clients.certificates
 
 import versola.central.CentralConfig
+import versola.central.audit.CentralAudit.CertReasons
+import versola.central.configuration.clients.ClientCertificateAuthority
 import zio.*
 import zio.http.Client
 
@@ -10,6 +12,11 @@ import zio.http.Client
   *   everything the issued certificate must name; a backend must not add to or change them.
   * @param commonName the request's subject common name, for backends that need it separately
   *   (a step-ca one-time token names it).
+  * @param subjectDn set when central, not the request, decides what the certificate names (an edge's first enrolment, whose request
+  *   cannot name an edge it does not yet know the identity of): the certificate then carries this subject and the names above, and the
+  *   request is only the proof of the key. Honoured by the CA central holds the key of ([[LocalCaIssuer]]); a CA that signs the request
+  *   as it stands (cert-manager) or checks it against the names (step-ca) issues a certificate without them or refuses, and central
+  *   refuses what does not carry exactly the names it asked for.
   * @param validity how long the certificate should be valid. A backend may issue a shorter one
   *   if its own policy says so, never a longer one, and the result's `notAfter` is what counts.
   */
@@ -21,6 +28,7 @@ case class CertificateSigningRequest(
     emailAddresses: List[String],
     ipAddresses: List[String],
     validity: Duration,
+    subjectDn: Option[String] = None,
 )
 
 /** Signs client certificates with a CA central does not hold the key of: cert-manager on
@@ -40,6 +48,33 @@ object ClientCertificateIssuer:
   case object NotConfigured extends RuntimeException(
       "central has no `client-certificates` configuration, so it cannot issue client certificates",
     )
+
+  /** The CA did not sign: it could not be reached, refused, did not answer in time or answered something that is no certificate.
+    * `reason` is the code the audit log records (one of [[CertReasons]]); `message` is for the operator's log and may quote what the
+    * CA said, so it never goes anywhere else. */
+  class IssuerFailed(val reason: String, message: String) extends RuntimeException(message)
+
+  object IssuerFailed:
+    def refused(message: String): IssuerFailed = IssuerFailed(CertReasons.IssuerRefused, message)
+
+    def timedOut(message: String): IssuerFailed = IssuerFailed(CertReasons.IssuerTimeout, message)
+
+    def invalidAnswer(message: String): IssuerFailed = IssuerFailed(CertReasons.IssuerInvalidAnswer, message)
+
+    /** The request never got an answer: the connection, the handshake or the read failed. */
+    def unreachable(cause: Throwable): IssuerFailed =
+      val failure = IssuerFailed(CertReasons.IssuerUnreachable, Option(cause.getMessage).getOrElse(cause.getClass.getSimpleName))
+      failure.initCause(cause)
+      failure
+
+  /** The reason code of a failure to get a certificate from the CA: a typed one the backends raise, the two states the CA can be in
+    * without being asked (no CA configured, the local CA expired), or `issuer_error` for any other. */
+  def reasonOf(error: Throwable): String =
+    error match
+      case NotConfigured => CertReasons.CaNotConfigured
+      case _: ClientCertificateAuthority.Expired => CertReasons.CaExpired
+      case failure: IssuerFailed => failure.reason
+      case _ => CertReasons.IssuerError
 
   val notConfigured: ClientCertificateIssuer =
     (_: CertificateSigningRequest) => ZIO.fail(NotConfigured)

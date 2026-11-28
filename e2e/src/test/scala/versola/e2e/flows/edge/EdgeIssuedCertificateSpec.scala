@@ -56,7 +56,8 @@ object EdgeIssuedCertificateSpec
       ),
     ),
     scopes = Set("openid", "email", "offline_access"),
-    presetScope = Set("openid"),
+    // `offline_access`: the last case needs the session to hold a refresh token, to show what auth answers it.
+    presetScope = Set("openid", "offline_access"),
     postLogoutRedirectUri = None,
     cookiePath = None,
     awaitProxyReady = true,
@@ -67,6 +68,7 @@ object EdgeIssuedCertificateSpec
     nativeApp = false,
     issuedCertificate = true,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =
@@ -190,5 +192,35 @@ object EdgeIssuedCertificateSpec
         response.status == Status.Ok,
         seen.flatMap(_.header("X-User-Sub")).exists(_.nonEmpty),
       )
+    },
+    // What a renewal costs such a client today, recorded so that it is a decision and not a surprise (#1008 leaves it
+    // alone). Central renews the certificate with a new key, the session's token names the old one, and auth holds the
+    // grant of a client registered by its own subject to the certificate it was issued over: the refresh the edge
+    // makes is refused and the user signs in again. Last in the suite: it replaces the certificate the cases above use.
+    test("a session does not survive central renewing the certificate: the call that needs userinfo is sent to sign in") {
+      for
+        f <- fixture
+        centralApi <- central
+        edgeApi <- edge
+        session <- signIn
+        before <- edgeApi.proxy(Method.GET, f.resourceId, "/profile", session.auth)
+        renewal <- centralApi.postEmpty("/configuration/clients/edge-certificate/renew", "clientId" -> f.clientId)
+        // Awaited: the edge holds the renewed certificate, which shows as the old session being refused. Each attempt is
+        // a fresh pull: central brings its caches up to date by a notification the renewal does not wait for.
+        refused <- (edgeApi.syncConfiguration *> edgeApi.proxy(Method.GET, f.resourceId, "/profile", session.auth))
+          .repeat(Schedule.spaced(1.second) *> Schedule.recurUntil[ApiResult](_.status == Status.Unauthorized))
+          .timeoutFail(RuntimeException("the session was still served a minute after the renewal"))(60.seconds)
+        // The session is over for good, not for one call: a new sign-in is what works, over the renewed certificate.
+        fresh <- signIn
+        after <- edgeApi.proxy(Method.GET, f.resourceId, "/profile", fresh.auth)
+      yield assertTrue(before.status == Status.Ok, renewal.status == Status.NoContent)
+        .label("the control: the session was served, and central renewed the certificate") &&
+        assertTrue(
+          refused.status == Status.Unauthorized,
+          refused.response.headers.get("Location").contains(s"/login/${f.presetId}"),
+          EdgeApi.sessionCookie(refused.response).contains(""),
+        ).label("the edge refreshed, auth refused the grant, and the browser is sent to the login with its cookie cleared") &&
+        assertTrue(after.status == Status.Ok)
+          .label("signing in again is what restores access")
     },
   ) @@ TestAspect.sequential

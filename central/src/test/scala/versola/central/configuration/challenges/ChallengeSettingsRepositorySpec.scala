@@ -47,6 +47,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     securityProfile = SecurityProfile.fapi2,
     logoLight = None,
     logoDark = None,
+    auditSettings = AuditSettings.default,
   )
 
   private def noChange(tenantId: TenantId) = PatchChallengeSettingsRequest(
@@ -73,6 +74,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     securityProfile = None,
     logoLight = None,
     logoDark = None,
+    auditSettings = None,
   )
 
   override def testCases(env: ChallengeSettingsRepositorySpec.Env) =
@@ -150,6 +152,25 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
           _ <- env.repository.upsert(record)
           found <- env.repository.findByTenant(tenantA)
         yield assertTrue(found == Some(record))
+      },
+      test("upsert and patch round-trip the audit settings") {
+        val original = settingsFor(tenantA)
+        val off = original.copy(auditSettings = AuditSettings(log = false, tokenRefresh = true))
+        for
+          _ <- env.repository.upsert(off)
+          stored <- env.repository.findByTenant(tenantA)
+          all <- env.repository.getAll
+          patched <- env.repository.patch(
+            tenantA,
+            noChange(tenantA).copy(auditSettings = Some(Patch.Modified(AuditSettings(log = true, tokenRefresh = false)))),
+          )
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(
+          stored == Some(off),
+          all == Vector(off),
+          patched == ChallengeSettingsPatchResult.Patched(original),
+          found == Some(original),
+        )
       },
       test("patch merges the patch into the stored row and returns the stored result") {
         val original = settingsFor(tenantA)

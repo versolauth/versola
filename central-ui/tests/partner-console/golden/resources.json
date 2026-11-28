@@ -1,0 +1,32 @@
+{
+  "resources": [
+    {
+      "resourceId": "acme-orders",
+      "resource": "http://orders.acme.internal:8080",
+      "audience": [
+        "acme-web"
+      ],
+      "endpoints": [
+        {
+          "id": 401,
+          "method": "GET",
+          "path": "/orders",
+          "fetchUserInfo": false,
+          "allow": "'profile' in token.scope",
+          "inject": [
+            {
+              "target": "header",
+              "name": "X-User",
+              "expression": "token.sub"
+            }
+          ],
+          "stepUpCondition": null,
+          "stepUpAcr": null,
+          "maxAge": null,
+          "rateLimit": null
+        }
+      ],
+      "secretRotation": false
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 package versola.oauth.client.model
 
 import versola.util.theme.ThemeOverrides
-import versola.util.{Dpop, JsonWebKeySet, Secret}
+import versola.util.{Dpop, EdgeIdentityNames, JsonWebKeySet, Secret}
 import zio.Duration
 import zio.http.URL
 import zio.json.{JsonCodec, JsonEncoder}
@@ -128,8 +128,28 @@ case class OAuthClientRecord(
     * certificate is edge's, the same for every installation of the app, so a token bound to
     * it would be replayable by anyone who can reach edge. Its `cnf` carries only the device's
     * `jkt`, which `dpopBoundAccessTokens` -- enforced for it at registration -- guarantees.
+    *
+    * A client named by a group of edges ([[authenticatesByEdgeGroup]], which a partner's client is) is bound like any other
+    * `tls_client_auth` client: to the certificate of the edge that asked for the token. It stays usable through the other edges
+    * of the group because a refresh with another edge's certificate re-binds it (`OAuthTokenService`), not because it is unbound.
     */
   def bindsAccessTokens: Boolean =
     (mtlsAuth.nonEmpty && !isEdgeFrontedNative) || certificateBoundAccessTokens
+
+  /** Whether this client is registered by the name of a group of edges (`tls_client_auth`, `san_uri`
+    * `urn:versola:edge-group:<group>`), so that every edge of the group authenticates it, each with a
+    * certificate of its own that is renewed with a new key.
+    *
+    * It is the one kind of client whose refresh grant follows the certificate it authenticates with
+    * (RFC 8705 §7.1, see `OAuthTokenService`), so the test is as narrow as the registration: the method,
+    * the subject type and the exact prefix central writes, with a group id after it. A name that only
+    * resembles one (another case, an edge's own name, the same text under another subject type) is any
+    * other client's. An edge-fronted native client is left out: its grant carries no certificate.
+    */
+  def authenticatesByEdgeGroup: Boolean =
+    authMethod == AuthMethod.tls_client_auth && !isEdgeFrontedNative && mtlsAuth.exists:
+      case MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, name) =>
+        name.startsWith(EdgeIdentityNames.GroupPrefix) && name.length > EdgeIdentityNames.GroupPrefix.length
+      case _ => false
 
   def isPublic: Boolean = !isConfidential

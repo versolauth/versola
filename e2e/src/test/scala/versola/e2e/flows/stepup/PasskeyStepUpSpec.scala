@@ -150,6 +150,8 @@ object PasskeyStepUpSpec extends E2ESpec:
         (cookie, challenge, verifier) <- startStepUp(s, auth, enrolled.idToken)
         swapped <- auth.submitLoginPassword(cookie, other.login.get, other.password, challenge.csrf)
         noCode <- swapped.assertRedirect.exit
+        // The refusal is the step again, not some other 303: the page is still the passkey step, of nobody else.
+        again <- auth.getChallenge(cookie)
         options <- auth.getPasskeyOptions(cookie).flatMap(_.body.asString)
         response <- TestAuthenticator.get(enrolled.credential, options, passkeyOrigin, s.userId)
         code <- auth.submitPasskeyAssertion(cookie, response.toJson, challenge.csrf).assertRedirect
@@ -162,6 +164,9 @@ object PasskeyStepUpSpec extends E2ESpec:
         ).success
         claims <- claimsOf(token.idToken.get)
       yield assertTrue(noCode.isFailure).label("no authorization code for the other user's password") &&
+        assertTrue(swapped.location.contains("/challenge")).label(s"sent back to the step: ${swapped.location}") &&
+        assertTrue(again.step.contains(ConversationStep.Credential), again.html.contains("\"passkeyOnly\":true")).label("still the passkey step") &&
+        assertTrue(!again.html.contains(other.login.get.toString)).label("the page names nothing of the other user") &&
         assertTrue(claims.contains(s""""sub":"${s.userId}"""")).label(s"the code is the first user's: $claims") &&
         assertTrue(!claims.contains(other.userId.toString)).label(s"nothing of the other user in $claims")
     },

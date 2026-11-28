@@ -2,6 +2,7 @@ package versola.oauth.client
 
 import versola.oauth.client.model.{
   Acr,
+  AuditSettings,
   AuthFactorType,
   AuthorizationDetailType,
   AuthorizationDetailTypeRecord,
@@ -164,6 +165,14 @@ trait OAuthConfigurationService:
     * the same answer every tenant gave before the switch existed. Erring the other way would
     * mean a cache that has not loaded yet starts challenging clients that cannot retry. */
   def requireDpopNonce(id: ClientId): UIO[Boolean]
+
+  /** Whether the tenant keeps an audit log: its `auditLog` switch in central's Security settings. `false` only where the tenant switched it
+    * off; a tenant with no settings row, and a cache that has not loaded, read as `true`, so that what cannot be told is recorded. A
+    * change of the switch applies when the cache next refreshes (`configuration-cache-refresh-interval`). */
+  def auditLog(tenantId: TenantId): UIO[Boolean]
+
+  /** Whether a `refresh_token` grant of the tenant is an event: its `auditTokenRefresh` switch. `false` for a tenant with no settings row. */
+  def auditTokenRefresh(tenantId: TenantId): UIO[Boolean]
 
   /** The `kid` this tenant's tokens are signed with, as selected in central. `None` means
     * nothing was selected, leaving auth to fall back to its configured `jwt.private-key` --
@@ -648,6 +657,12 @@ object OAuthConfigurationService:
               .getOrElse(Map.empty)
               .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
           )
+
+    override def auditLog(tenantId: TenantId): UIO[Boolean] =
+      tenantChallengeSettings(tenantId).map(_.flatMap(_.auditSettings).getOrElse(AuditSettings.default).log)
+
+    override def auditTokenRefresh(tenantId: TenantId): UIO[Boolean] =
+      tenantChallengeSettings(tenantId).map(_.flatMap(_.auditSettings).getOrElse(AuditSettings.default).tokenRefresh)
 
     override def getSigningKeyId(tenantId: TenantId): UIO[Option[String]] =
       challengeSettingsCache.get.map(_.find(_.tenantId == tenantId).flatMap(_.signingKeyId))

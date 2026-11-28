@@ -105,6 +105,18 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         maxAge = None,
       ),
       EdgeFixture.Endpoint(
+        name = "scoped",
+        method = "GET",
+        path = "/scoped",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = Some("request.query['tenant'] == 'acme'"),
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
         name = "secret",
         method = "GET",
         path = "/secret",
@@ -129,6 +141,7 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
     nativeApp = false,
     issuedCertificate = false,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   override val bootstrap
@@ -326,6 +339,44 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         seen <- stub.lastRequest
       yield assertTrue(response.status == Status.Ok) && assertTrue(seen.map(_.path).contains("/items/a.b/parts"))
     },
+    test("a rule that reads a query parameter is unsatisfied when the parameter occurs twice") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        once <- edgeApi.proxy(Method.GET, f.resourceId, "/scoped", established.auth, query = List("tenant" -> "acme"))
+        _ <- stub.reset
+        twice <- edgeApi.proxy(
+          Method.GET,
+          f.resourceId,
+          "/scoped",
+          established.auth,
+          query = List("tenant" -> "acme", "tenant" -> "other"),
+        )
+        seen <- stub.requests
+      yield assertTrue(once.status == Status.Ok, twice.status == Status.Forbidden, seen.isEmpty)
+        .label("the rule sees one value and the upstream may read another, so a repeated parameter satisfies no rule")
+    },
+    test("a JSON body in which a name occurs twice is refused and does not reach the upstream") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        duplicated <- edgeApi.proxy(
+          Method.POST,
+          f.resourceId,
+          "/items",
+          established.auth,
+          rawJson = Some("""{"name":"a","name":"b"}"""),
+        )
+        notJson <- edgeApi.proxy(Method.POST, f.resourceId, "/items", established.auth, rawJson = Some("""{"name":"""))
+        seen <- stub.requests
+      yield assertTrue(duplicated.status == Status.BadRequest, notJson.status == Status.BadRequest, seen.isEmpty)
+    },
     test("query parameters reach the upstream") {
       for
         edgeApi <- edge
@@ -403,6 +454,65 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         )
         seen <- stub.lastRequest
       yield assertTrue(seen.flatMap(_.header("x-request-trace")).contains("e2e-proxy"))
+    },
+    test("the upstream is sent edge's own view of the caller, not the forwarding fields the caller wrote") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        _ <- edgeApi.proxy(
+          Method.GET,
+          f.resourceId,
+          "/items",
+          established.auth,
+          headers = List(
+            "X-Forwarded-For" -> "198.51.100.77",
+            "X-Forwarded-Host" -> "forged.example",
+            "X-Forwarded-Proto" -> "http",
+            "X-Real-IP" -> "198.51.100.77",
+            "Forwarded" -> "for=198.51.100.77",
+            "Proxy-Authorization" -> "Basic Zm9vOmJhcg==",
+            "X-Request-Trace" -> "e2e-forged",
+          ),
+        )
+        seen <- stub.lastRequest
+        sent = seen.map(_.headers.values.mkString(" ")).getOrElse("")
+      yield assertTrue(
+        seen.flatMap(_.header("x-request-trace")).contains("e2e-forged"),
+        seen.flatMap(_.header("forwarded")).isEmpty,
+        seen.flatMap(_.header("x-forwarded-host")).isEmpty,
+        seen.flatMap(_.header("x-forwarded-proto")).isEmpty,
+        seen.flatMap(_.header("proxy-authorization")).isEmpty,
+        !sent.contains("198.51.100.77"),
+      ).label("a caller chooses these fields, so the identity the upstream reads from them must be edge's, not the caller's") &&
+        assertTrue(seen.flatMap(_.header("x-forwarded-for")).isDefined, seen.flatMap(_.header("x-real-ip")).isDefined)
+          .label("edge states the address of the connection it accepted")
+    },
+    test("a forwarding or connection-specific field of the upstream's answer does not reach the caller") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        _ <- stub.replyWith(
+          headers = List(
+            "X-Forwarded-For" -> "10.9.9.9",
+            "Forwarded" -> "for=10.9.9.9",
+            "X-Real-IP" -> "10.9.9.9",
+            "Proxy-Authenticate" -> "Basic",
+            "X-Answer" -> "kept",
+          ),
+        )
+        established <- session
+        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", established.auth)
+        _ <- stub.reset
+        answered = response.response.headers.iterator.map(_.headerName.toLowerCase).toSet
+      yield assertTrue(
+        response.response.headers.get("x-answer").contains("kept"),
+        Set("x-forwarded-for", "forwarded", "x-real-ip", "proxy-authenticate").intersect(answered).isEmpty,
+      )
     },
     test("the upstream's status is handed back to the caller") {
       for

@@ -85,4 +85,42 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
           second <- tokenService.getToken
         yield assertTrue(first == second)
     },
+    test("after a switch the token is signed with the new key at once, and what central encrypted for either key can be decrypted") {
+      ZIO.scoped:
+        for
+          tokenService <- service
+          before <- tokenService.getToken
+          generator = KeyPairGenerator.getInstance("RSA").nn
+          _ = generator.initialize(2048)
+          fresh = generator.generateKeyPair().nn
+          _ <- tokenService.switchKey("kid-2", fresh.getPrivate)
+          after <- tokenService.getToken
+          header <- ZIO.attempt(com.nimbusds.jwt.SignedJWT.parse(after).getHeader.nn)
+          keys <- tokenService.decryptionKeys(config.privateKey)
+        yield assertTrue(
+          before != after,
+          header.getKeyID == "kid-2",
+          keys == List(fresh.getPrivate, config.privateKey),
+        )
+    },
+    test("a first-party edge decrypts with the key of its configuration") {
+      ZIO.scoped:
+        for
+          tokenService <- service
+          keys <- tokenService.decryptionKeys(config.privateKey)
+        yield assertTrue(keys == List(config.privateKey))
+    },
+    test("a secret is decrypted with the key before the switch when the newest does not fit, and fails with the newest's error otherwise") {
+      val newest = new java.security.PrivateKey { def getAlgorithm = "RSA"; def getFormat = "PKCS#8"; def getEncoded = Array.emptyByteArray }
+      val older = new java.security.PrivateKey { def getAlgorithm = "RSA"; def getFormat = "PKCS#8"; def getEncoded = Array.emptyByteArray }
+      for
+        viaOlder <- CentralSyncTokenService.firstDecrypting(List(newest, older))(key =>
+          if key.eq(older) then ZIO.succeed("plain") else ZIO.fail(RuntimeException("newest")),
+        )
+        failed <- CentralSyncTokenService.firstDecrypting(List(newest, older))(key =>
+          ZIO.fail(RuntimeException(if key.eq(newest) then "newest" else "older")),
+        ).flip
+        none <- CentralSyncTokenService.firstDecrypting(Nil)(_ => ZIO.succeed("never")).flip
+      yield assertTrue(viaOlder == "plain", failed.getMessage == "newest", none.isInstanceOf[IllegalStateException])
+    },
   ) @@ TestAspect.silentLogging

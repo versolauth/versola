@@ -21,7 +21,7 @@ import './record-card';
 import './record-header';
 import './role-picker';
 
-export type SecurityGroup = 'methods' | 'codes' | 'passkeys' | 'registration' | 'stepup' | 'sessions' | 'tokens' | 'logout' | 'limits' | 'branding';
+export type SecurityGroup = 'methods' | 'codes' | 'passkeys' | 'registration' | 'stepup' | 'sessions' | 'tokens' | 'logout' | 'limits' | 'audit' | 'branding';
 
 /** The cards of the page in reading order, under the three headings of the rail. */
 const SECTIONS: Array<{ heading: string; groups: Array<{ id: SecurityGroup; label: string; title: string }> }> = [
@@ -40,6 +40,7 @@ const SECTIONS: Array<{ heading: string; groups: Array<{ id: SecurityGroup; labe
   ] },
   { heading: 'Protection', groups: [
     { id: 'limits', label: 'Submission limits', title: 'Submission limits' },
+    { id: 'audit', label: 'Audit log', title: 'Audit log' },
   ] },
 ];
 const GROUPS = SECTIONS.flatMap(section => section.groups);
@@ -86,6 +87,7 @@ function defaultSettings(tenantId: string): ChallengeSettingsRecord {
     clientAssertionMaxLifetimeSeconds: 300,
     logoLight: null,
     logoDark: null,
+    auditSettings: { log: true, tokenRefresh: false },
   };
 }
 
@@ -314,6 +316,12 @@ export class VersolaSecuritySettings extends LitElement {
         height: 1rem;
         margin: 0;
         accent-color: var(--accent);
+      }
+
+      /* A choice that does not apply is a colour state, never opacity. */
+      .check-row:has(input:disabled) {
+        color: var(--text-muted);
+        cursor: default;
       }
 
       .check-row input:focus-visible {
@@ -816,6 +824,10 @@ export class VersolaSecuritySettings extends LitElement {
         changes.submissionLimits = submissionLimits;
         break;
       }
+      case 'audit': {
+        changes.auditSettings = { log: draft.auditSettings?.log ?? true, tokenRefresh: draft.auditSettings?.tokenRefresh ?? false };
+        break;
+      }
       case 'branding': {
         const light = (draft.logoLight ?? '').trim();
         const dark = (draft.logoDark ?? '').trim();
@@ -965,6 +977,12 @@ export class VersolaSecuritySettings extends LitElement {
           ? stepUp[action.id].map((limit, index) => html`${index ? ', ' : ''}${limit.maxAttempts} per ${formatDurationShort(limit.windowSeconds)}`)
           : html`<span class="muted">No limit</span>`))}
         ${this.row('Step-up ban duration', stepUp.banDurationSeconds > 0 ? this.duration(stepUp.banDurationSeconds) : html`<span class="muted">No ban</span>`)}
+      `)}
+
+      ${this.card('audit', 'What is recorded in the audit log for this tenant.', html`
+        ${this.row('Audit log', settings.auditSettings?.log === false ? 'Off: nothing is recorded' : 'On')}
+        ${this.row('Token refreshes', settings.auditSettings?.log === false ? html`<span class="muted">Not recorded: the audit log is off</span>`
+          : settings.auditSettings?.tokenRefresh ? 'Recorded' : 'Not recorded')}
       `)}
 
       <versola-record-card id="profile" heading="Security profile" fixedLabel="Fixed" .body=${html`
@@ -1432,6 +1450,24 @@ export class VersolaSecuritySettings extends LitElement {
     `;
   }
 
+  private renderAuditEditor() {
+    const draft = this.draft!;
+    const audit = { log: draft.auditSettings?.log ?? true, tokenRefresh: draft.auditSettings?.tokenRefresh ?? false };
+    const logOn = audit.log;
+    return html`
+      <div class="editor-box">
+        <h3>Audit log</h3>
+        <p class="editor-sub">Records what happens in this tenant: sign-ins, tokens, consent, account changes and what administrators change. Off, nothing is recorded for this tenant. Events that belong to no tenant are recorded either way. A change reaches the authorization server within its configuration refresh interval.</p>
+        <label class="check-row"><input type="checkbox" .checked=${logOn} @change=${(e: Event) => this.patch({ auditSettings: { ...audit, log: (e.target as HTMLInputElement).checked } })} /> Record this tenant's events in the audit log</label>
+      </div>
+      <div class="editor-box">
+        <h3>Token refreshes</h3>
+        <p class="editor-sub">A refresh_token grant is the most frequent event there is, so it is off unless you need it. Refused refreshes and the reuse of a refresh token are recorded either way.${logOn ? '' : ' It has no effect while the audit log is off.'}</p>
+        <label class="check-row"><input type="checkbox" .checked=${audit.tokenRefresh} ?disabled=${!logOn} @change=${(e: Event) => this.patch({ auditSettings: { ...audit, tokenRefresh: (e.target as HTMLInputElement).checked } })} /> Record token refreshes</label>
+      </div>
+    `;
+  }
+
   private renderBrandingEditor() {
     const draft = this.draft!;
     return html`
@@ -1458,6 +1494,7 @@ export class VersolaSecuritySettings extends LitElement {
       tokens: () => this.renderTokensEditor(),
       logout: () => this.renderLogoutEditor(),
       limits: () => this.renderLimitsEditor(),
+      audit: () => this.renderAuditEditor(),
       branding: () => this.renderBrandingEditor(),
     };
     const blocked = this.passkeysMissing;

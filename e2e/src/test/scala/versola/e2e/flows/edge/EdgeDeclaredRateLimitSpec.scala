@@ -62,6 +62,7 @@ object EdgeDeclaredRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & Edge
     nativeApp = false,
     issuedCertificate = false,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   override val bootstrap

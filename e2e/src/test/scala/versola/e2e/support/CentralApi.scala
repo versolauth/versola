@@ -154,9 +154,11 @@ final class CentralApi(
 
   /** What edge does to a `GET`: puts the caller in the query, replacing a parameter of the same name, and the tenant of the
     * token on a tenant route of the lists. */
-  /** What edge adds to every call (`BootstrapService.actorInjects`), besides the field or parameter that the antifraud routes read. */
+  /** What edge adds to every call (`BootstrapService.actorInjects`), besides the field or parameter that the antifraud routes read: the
+    * admin, or, for a spec that has none, the client these specs call central as. Central refuses a call that names no actor. */
   private def actorQuery: List[(String, String)] =
-    admin.toList.flatMap(userId => List("actorId" -> userId) ++ callerTenant.map("actorTenantId" -> _))
+    if extraQuery.exists((name, _) => name == "actorId") then Nil // the spec says who it is
+    else admin.fold(E2EActor.query)(userId => List("actorId" -> userId) ++ callerTenant.map("actorTenantId" -> _))
 
   private def callerQuery(method: Method, path: String, query: List[(String, String)]): List[(String, String)] =
     val named = admin.filter(_ => method == Method.GET).fold(query): userId =>

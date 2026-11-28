@@ -101,3 +101,8 @@ trait ClientEstRepository:
   def chainStartedAt(clientId: ClientId): Task[Option[Instant]]
 
   def findCertificate(thumbprint: String): Task[Option[EstCertificate]]
+
+  /** How many clients hold a certificate (the latest of their current generation) that is past the middle of its renewal window at `now`:
+    * a client may renew in the last `renewWindow` of its certificate's life, so less than half of that share of the life is left. An
+    * expired one is included. */
+  def pastRenewalMidpoint(now: Instant, renewWindow: Double): Task[Long]

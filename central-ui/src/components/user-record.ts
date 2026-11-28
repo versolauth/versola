@@ -6,8 +6,15 @@ import { bannerStyles, buttonStyles, cardStyles, chipStyles, formStyles, recordS
 import type { OAuthClient, PasskeyInfo, Role, User, UserDevice, UserRefreshToken, UserSession } from '../types';
 import { fetchAllClients, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { formatDate, formatDateTime, formatShortDateTime, localZone, offsetLabel, wallClock } from '../utils/date-format';
 import { copyToClipboard, getLocalizedDescription } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
+import {
+  MAX_TEMPORARY_PASSWORD_TTL_HOURS,
+  MIN_TEMPORARY_PASSWORD_TTL_HOURS,
+  parseTemporaryPasswordTtlHours,
+  TEMPORARY_PASSWORD_TTL_HINT,
+} from '../utils/temporary-password-ttl';
 import { buildDevices, deviceLabel, platformLabel, relativeTime, userDisplayName, userLabel, type Device } from '../utils/user-display';
 import {
   DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS,
@@ -70,17 +77,18 @@ function failed<T>(data: T, error: unknown, fallback: string): Part<T> {
   return { status: 'error', data, error: error instanceof Error ? error.message : fallback };
 }
 
+/** An instant in the browser's own time zone, in the same English text in every browser, and with the offset it was read under
+ *  (`Nov 4, 14:50 (UTC+5)`, `Nov 4, 04:50 (UTC-5)`, `Nov 4, 09:50 UTC`), so a time is never ambiguous. A date alone (`withTime` off) has no offset. */
 function when(value: string | undefined | null, withTime = true): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    ...(sameYear && withTime ? {} : { year: 'numeric' }),
-    ...(withTime ? { hour: '2-digit', minute: '2-digit' } : {}),
-  });
+  const zone = localZone();
+  if (!withTime) return formatDate(date, zone);
+  const sameYear = wallClock(date, zone).year === wallClock(new Date(), zone).year;
+  const text = sameYear ? formatShortDateTime(date, zone, { seconds: false }) : formatDateTime(date, zone, { seconds: false });
+  const label = offsetLabel(date, zone);
+  return label === 'UTC' ? `${text} UTC` : `${text} (${label})`;
 }
 
 /**
@@ -128,7 +136,8 @@ export class VersolaUserRecord extends LitElement {
   @state() private passwordDone = false;
   @state() private pendingReset = false;
   @state() private resetChannel: 'email' | 'sms' | 'show' | null = null;
-  @state() private resetTtlHours = DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS;
+  /** What is typed in the lifetime field, as typed: a number would turn an emptied field into 0 and put that back under the cursor. */
+  @state() private resetTtlInput = String(DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS);
   @state() private revealed: { password: string; ttlHours: number } | null = null;
   @state() private copyFeedback = '';
 
@@ -1138,7 +1147,7 @@ export class VersolaUserRecord extends LitElement {
     const user = this.user;
     if (!user) return;
     this.resetChannel = user.email ? 'email' : user.phone ? 'sms' : this.canRevealPassword ? 'show' : null;
-    this.resetTtlHours = DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS;
+    this.resetTtlInput = String(DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS);
     this.revealed = null;
     this.copyFeedback = '';
     this.passwordDone = false;
@@ -1148,8 +1157,9 @@ export class VersolaUserRecord extends LitElement {
   private async confirmResetPassword() {
     const user = this.user;
     const channel = this.resetChannel;
-    const ttlHours = this.resetTtlHours;
-    if (!user || !channel || !Number.isInteger(ttlHours) || ttlHours <= 0) return;
+    const ttl = parseTemporaryPasswordTtlHours(this.resetTtlInput);
+    if (!user || !channel || !ttl.ok) return;
+    const ttlHours = ttl.hours;
     this.pendingReset = false;
     await this.run('password', 'Failed to reset password', async () => {
       const password = await resetPassword(user.id, channel, ttlHours * 60 * 60);
@@ -1473,19 +1483,22 @@ export class VersolaUserRecord extends LitElement {
     const user = this.user;
     if (!this.pendingReset || !user) return nothing;
     const channels = user.email || user.phone || this.canRevealPassword;
-    const valid = this.resetChannel !== null && Number.isInteger(this.resetTtlHours) && this.resetTtlHours > 0;
+    const ttl = parseTemporaryPasswordTtlHours(this.resetTtlInput);
+    const valid = this.resetChannel !== null && ttl.ok;
     return html`
       <dialog class="modal" aria-labelledby="reset-title"
         @close=${() => { this.pendingReset = false; }}>
         <h2 id="reset-title">Reset password</h2>
         <div class="form-group" style="margin-bottom:var(--spacing-lg)">
           <label for="temporary-password-ttl">Temporary password lifetime (hours)</label>
-          <input id="temporary-password-ttl" class="ttl-input" type="number" min="1" step="1"
-            .value=${String(this.resetTtlHours)}
-            @input=${(e: Event) => {
-              const value = Number((e.target as HTMLInputElement).value);
-              this.resetTtlHours = Number.isFinite(value) ? value : 0;
-            }} />
+          <input id="temporary-password-ttl" class="ttl-input ${ttl.ok ? '' : 'input-error'}" type="number" inputmode="numeric"
+            min=${MIN_TEMPORARY_PASSWORD_TTL_HOURS} max=${MAX_TEMPORARY_PASSWORD_TTL_HOURS} step="1"
+            aria-invalid=${ttl.ok ? 'false' : 'true'}
+            aria-describedby=${ttl.ok ? 'temporary-password-ttl-hint' : 'temporary-password-ttl-hint temporary-password-ttl-error'}
+            .value=${this.resetTtlInput}
+            @input=${(e: Event) => { this.resetTtlInput = (e.target as HTMLInputElement).value; }} />
+          <div id="temporary-password-ttl-hint" class="hint">${TEMPORARY_PASSWORD_TTL_HINT}</div>
+          ${ttl.ok ? nothing : html`<div id="temporary-password-ttl-error" class="error-message" role="alert">${ttl.message}</div>`}
         </div>
         ${channels ? html`
           <fieldset>

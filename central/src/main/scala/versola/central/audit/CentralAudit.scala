@@ -1,8 +1,10 @@
 package versola.central.audit
 
-import versola.util.audit.{ActorType, AuditCatalog, AuditDetails, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource}
+import versola.util.audit.{ActorType, AuditCatalog, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource, CertAuditDetails}
 import zio.metrics.{Metric, MetricLabel}
 import zio.{UIO, ZIO}
+
+import javax.security.auth.x500.X500Principal
 
 /** What central says about its own audit events (#469): the source it records as, the actors that act through it, the kinds it
   * emits and how serious each is. The core (`versola.util.audit`) takes this as the service's [[AuditCatalog]] and rates and
@@ -29,6 +31,10 @@ object CentralAudit:
     /** An edge that asked central for a certificate on the mutual-TLS listener or for one of its clients. */
     val Edge: ActorType = ActorType("edge")
 
+    /** A member of a partner's staff, acting through the partner's edge (#549 decision 4): the `sub` of the access token the
+      * edge forwarded in `Versola-Principal`, verified against the partner's console client. */
+    val PartnerStaff: ActorType = ActorType("partner-staff")
+
   // explicit events: the ones that are not `admin.<resource>.<operation>`
   val AdminUserViewed: AuditKind = AuditKind("admin.user.viewed")
   val AdminSecretRevealed: AuditKind = AuditKind("admin.secret.revealed")
@@ -41,27 +47,109 @@ object CentralAudit:
   val CertRenewed: AuditKind = AuditKind("cert.renewed")
   val CertRevoked: AuditKind = AuditKind("cert.revoked")
 
+  /** Why a certificate was not issued, as the `reason` of a `denied` or `failure` event: a closed set of codes, never the text of an
+    * error, a token, a request or what the CA answered. A refusal (`denied`) is a rule saying no, which retrying does not change; a
+    * failure is something that did not work, which may. */
+  object CertReasons:
+    // denied
+    val TokenInvalid = "token_invalid"
+    val EdgeUnknown = "edge_unknown"
+    val RequestMismatch = "request_mismatch"
+    val NotEnrolled = "not_enrolled"
+    val NotServed = "not_served"
+    val NoMtlsAuth = "no_mtls_auth"
+    val InvalidSubject = "invalid_subject"
+    val InvalidCredentials = "invalid_credentials"
+    val BadRequest = "bad_request"
+    val Forbidden = "forbidden"
+    val ChainFork = "chain_fork"
+
+    // failure
+    val CaNotConfigured = "ca_not_configured"
+    val CaExpired = "ca_expired"
+    val IssuerUnreachable = "issuer_unreachable"
+    val IssuerRefused = "issuer_refused"
+    val IssuerTimeout = "issuer_timeout"
+    val IssuerInvalidAnswer = "issuer_invalid_answer"
+    val IssuerError = "issuer_error"
+    val CertificateRejected = "certificate_rejected"
+    val ClientMissing = "client_missing"
+    val ClientWithoutMtlsAuth = "client_without_mtls_auth"
+    val Unexpected = "unexpected"
+
+    val all: Set[String] = Set(
+      TokenInvalid,
+      EdgeUnknown,
+      RequestMismatch,
+      NotEnrolled,
+      NotServed,
+      NoMtlsAuth,
+      InvalidSubject,
+      InvalidCredentials,
+      BadRequest,
+      Forbidden,
+      ChainFork,
+      CaNotConfigured,
+      CaExpired,
+      IssuerUnreachable,
+      IssuerRefused,
+      IssuerTimeout,
+      IssuerInvalidAnswer,
+      IssuerError,
+      CertificateRejected,
+      ClientMissing,
+      ClientWithoutMtlsAuth,
+      Unexpected,
+    )
+
+  /** Why a certificate was not issued: `outcome` is `denied` for a rule that said no and `failure` for something that did not work,
+    * `reason` one of [[CertReasons]], `error` what the caller is answered with (which is not the audit reason) and `subject` the one
+    * the attempt was for, where it got that far. */
+  case class CertFailure[+E](outcome: AuditOutcome, reason: String, error: E, subject: Option[X500Principal])
+
+  object CertFailure:
+    /** A failure nothing classified: the caller is answered with the error itself. */
+    def unexpected[E](error: E): CertFailure[E] = CertFailure(AuditOutcome.failure, CertReasons.Unexpected, error, None)
+
   /** An event of a certificate flow: no administrator's request starts it, its actor is the holder of the certificate (a client, an
-    * edge) or the system, and its target is the client or the edge the certificate is of. */
-  def certificate(events: AuditEvents, kind: AuditKind, actor: ActorType, actorId: Option[String], target: (String, String)): UIO[Unit] =
+    * edge) or the system, and its target is the client or the edge the certificate is of. `details` says which certificate it is: the
+    * serial, the end of the validity and the subject (see [[CertAuditDetails]]); for an attempt that issued nothing, `outcome` is
+    * `denied` or `failure` and `reason` one of [[CertReasons]]. */
+  def certificate(
+      events: AuditEvents,
+      kind: AuditKind,
+      actor: ActorType,
+      actorId: Option[String],
+      target: (String, String),
+      outcome: AuditOutcome,
+      reason: Option[String],
+      details: CertAuditDetails,
+  ): UIO[Unit] =
     events.recordBestEffort(
       AuditDraft(
         kind = kind,
-        outcome = AuditOutcome.success,
-        reason = None,
+        outcome = outcome,
+        reason = reason,
         actor = Some((actor, actorId)),
         userId = None,
         target = Some(target),
-        details = AuditDetails.empty,
+        details = details,
       ),
     )
 
   private val actorMissing = Metric.counter("audit_actor_missing_total")
 
   /** A call of an administrator's API that edge did not say the caller of (`absent`), or whose caller it named is no user or client
-    * (`invalid`): recorded as a service's. Nothing is counted for a call that has an actor. */
+    * (`invalid`): recorded as a service's. Nothing is counted for a call that has an actor. A call whose address is none is counted
+    * (`invalid_ip`) and recorded without one. */
   def actorMissing(reason: Option[String]): UIO[Unit] =
     ZIO.foreachDiscard(reason)(reason => actorMissing.tagged(Set(MetricLabel("reason", reason))).increment)
+
+  private val actorRefused = Metric.counter("audit_actor_refused_total")
+
+  /** A call of an administrator's route refused because it named no valid actor: `absent` (edge added
+    * none) or `invalid` (what it named is no user and no client). */
+  def actorRefused(reason: String): UIO[Unit] = actorRefused.tagged(Set(MetricLabel("reason", reason))).increment
 
   private val targetMissingCounter = Metric.counter("audit_event_without_target_total")
 
@@ -107,6 +195,11 @@ object CentralAudit:
     "antifraud-list",
     "antifraud-settings",
     "antifraud-counters",
+    "partner",
+    "partner-approval",
+    "partner-client",
+    "partner-resource",
+    "partner-edge",
   )
 
   val AdminCreate = "create"
@@ -131,7 +224,8 @@ object CentralAudit:
 
   /** An action on these is `high` whatever its outcome: each is a way to take over an account or a client, or to change the keys of
     * the system. */
-  private val highResources = Set("jwks", "client-secret", "resource-secret", "role", "permission", "edge-key", "user-password", "user-roles")
+  private val highResources =
+    Set("jwks", "client-secret", "resource-secret", "role", "permission", "edge-key", "user-password", "user-roles")
 
   private val explicit = Set(AdminUserViewed, AdminSecretRevealed, AdminAuditQueried, SystemBootstrap, CertEnrolled, CertRenewed, CertRevoked)
 

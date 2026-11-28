@@ -45,6 +45,7 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     estEnrollment = false,
+    partnerId = None,
   )
 
   private val native = CreateNativeClientRequest(
@@ -74,6 +75,7 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     dpopMinRsaKeySize = None,
     mtlsAuth = None,
     edgeClientCertificate = None,
+    partnerId = None,
   )
 
   private val service = CreateServiceClientRequest(
@@ -134,6 +136,8 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       createdAt = java.time.Instant.EPOCH,
       applicationType = request.applicationType.getOrElse(ApplicationType.web),
       themeOverrides = None,
+      partnerId = None,
+      approval = ClientApproval.Approved,
     )
 
   def spec = suite("typed client registration rules")(

@@ -5,6 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.resources.{
   AudienceRateLimit,
   ResourceEndpointId,
@@ -25,6 +26,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
   given DbCodec[ResourceUri] = DbCodec.StringCodec.biMap(ResourceUri(_), identity[String])
   given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
+  given DbCodec[PartnerId] = DbCodec.StringCodec.biMap(PartnerId(_), identity[String])
   given DbCodec[List[ClientId]] =
     PgCodec.SeqCodec[String].biMap(_.map(ClientId(_)).toList, _.map(identity[String]))
 
@@ -38,14 +40,14 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
 
   private def findResourceQuery(resourceId: ResourceId) =
     sql"""
-      SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits FROM resources
+      SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits, partner_id FROM resources
       WHERE resource_id = $resourceId
     """.query[ResourceRecord]
 
   override def getAll: Task[Vector[ResourceRecord]] =
     xa.connectMeasured("get-all-resources"):
       sql"""
-        SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits FROM resources
+        SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits, partner_id FROM resources
       """.query[ResourceRecord].run()
 
   override def findResource(
@@ -61,11 +63,12 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
       audience: List[ClientId],
       endpoints: Vector[ResourceEndpointRecord],
       secret: Option[Array[Byte]],
+      partnerId: Option[PartnerId],
   ): Task[Unit] =
     xa.connectMeasured("create-resource"):
       sql"""
-        INSERT INTO resources (resource_id, tenant_id, resource, audience, endpoints, secret)
-        VALUES ($resourceId, $tenantId, $resource, $audience, $endpoints, ${secret.map(Secret(_))})
+        INSERT INTO resources (resource_id, tenant_id, resource, audience, endpoints, secret, partner_id)
+        VALUES ($resourceId, $tenantId, $resource, $audience, $endpoints, ${secret.map(Secret(_))}, $partnerId)
       """.update.run()
     .unit
 
@@ -79,7 +82,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
     xa.transactMeasured("update-resource"):
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       sql"""
-        SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits FROM resources
+        SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret, audience_rate_limits, partner_id FROM resources
         WHERE resource_id = $resourceId
         FOR UPDATE
       """.query[ResourceRecord].run().headOption match

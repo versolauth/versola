@@ -110,6 +110,12 @@ object Observability:
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
   }
 
+  /** Set on the first attempt of a call that [[OutboundGuard.repeatingOnClosedConnection]] will send again if it fails on a closed connection: the
+    * failure of that attempt is logged as a warning, since the caller never sees it when the repeat succeeds. */
+  private[http] val repeatable: FiberRef[Boolean] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(false)
+  }
+
   val clientRoute: FiberRef[Option[String]] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(Option.empty[String])
   }
@@ -249,7 +255,12 @@ object Observability:
       case i => s"${value.substring(0, i)} ***"
 
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
-    routes.handleErrorZIO {
+    routes.handleErrorZIO(errorResponse)
+
+  /** What a failure of a route is answered with, and recorded as: the mapping [[handleErrors]] applies. For a handler that has to
+    * answer a failure itself because the response carries something of its own (edge's proxy and a rotated session cookie). */
+  def errorResponse(error: Throwable): UIO[Response] =
+    error match
       case Unauthorized => ZIO.succeed(Response.unauthorized)
       case Forbidden => ZIO.succeed(Response.forbidden)
       case ex: BadRequest => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
@@ -258,12 +269,11 @@ object Observability:
       case ex: OutboundOverloaded =>
         ZIO.succeed(Response.status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
       case ex: OutboundTimedOut => ZIO.succeed(Response.status(Status.GatewayTimeout))
-      // The audit log is the gate: an event it could not take in time is a request that does not happen (`audit.overflow = block`).
+      // The audit log is the gate: an event it could not take in time is a request that does not happen (a writer that blocks on a full queue, see `AuditEvents.Overflow`).
       case AuditUnavailableException =>
         setError("audit_unavailable") *>
           ZIO.succeed(Response.status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
-    }
 
   private def toLog(request: Request, masking: HttpObservabilityConfig.Server): UIO[HttpRequestLog] = {
     val query = request.url.queryParams.map
@@ -595,7 +605,8 @@ object Observability:
                   masking <- clientLogging.get
                   route <- clientRoute.get.map(_.getOrElse(url.path.encode.stripPrefix("/")))
                   internal <- internalCall.get
-                  _ <- clientLog(method, url, route, tracedHeaders, body, startTime, duration, masking, exit, internal)
+                  repeated <- repeatable.get
+                  _ <- clientLog(method, url, route, tracedHeaders, body, startTime, duration, masking, exit, internal, repeated)
                   response <- exit.unsandbox
                 yield response
 
@@ -618,6 +629,7 @@ object Observability:
       masking: HttpObservabilityConfig.Client,
       exit: Exit[Cause[Any], Response],
       internalCall: Boolean,
+      repeatable: Boolean,
   ): UIO[Unit] =
     val baseUri = url.kind match
       case loc: URL.Location.Absolute => s"${loc.scheme.encode}://${loc.host}:${loc.port}"
@@ -665,7 +677,13 @@ object Observability:
           requestLog.flatMap: requestLog =>
             val responseLog = HttpClientResponseLog(code = 500, body = None, headers = Seq.empty)
             val log = SendHttpLog(requestLog, responseLog, startTime, elapsedMillis = duration.toMillis)
-            ZIO.logErrorCause("send-http", cause) @@ sendHttp(log) @@ loggerName
+            // A closed connection on the first attempt of a call that is sent again: the caller sees nothing of it if the repeat succeeds.
+            // (`cause` holds the failure of the call as a cause of its own: the call was sandboxed)
+            val failures = cause.failures.flatMap:
+              case inner: Cause[?] => inner.failures
+              case failure => List(failure)
+            val closed = repeatable && failures.exists(OutboundGuard.isClosedConnection)
+            (if closed then ZIO.logWarningCause("send-http", cause) else ZIO.logErrorCause("send-http", cause)) @@ sendHttp(log) @@ loggerName
       case Exit.Success(response) =>
         val status = response.status.code
         val statusClass = s"${status / 100}xx"

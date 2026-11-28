@@ -18,7 +18,7 @@ fail() { echo "FAIL $1" >&2; failures=$((failures + 1)); }
 # The bundle input the image has in its working directory, with the real templates and scripts.
 mkdir -p "$work/app/central-ui" "$work/bin"
 for f in entrypoint.sh compose.fragment.vps.yml.template compose.fragment.yml.template openbao.hcl.vps.template openbao.hcl.template \
-  nginx.conf.template proxy_params.conf.template mtls-init.sh step-ca-intermediates.sh postgres-init-schemas.sh release.json; do
+  nginx.conf.template proxy_params.conf.template mtls-init.sh step-ca-init.sh step-ca-intermediates.sh postgres-init-schemas.sh release.json; do
   cp "$tools/$f" "$work/app/$f"
 done
 # gen-env's output, as the entrypoint copies it; the stub leaves what the domains were in its environment.
@@ -83,7 +83,7 @@ grep -qF 'CENTRAL_MTLS_DOMAIN: "central-mtls.example.com"' "$frag" && pass "the 
 [ "$(cat "$work/java.env")" = "id-mtls.example.com|central-mtls.example.com" ] && pass "gen-env gets both names in its environment" || fail "gen-env gets both names in its environment"
 [ "$(tail -1 "$work/java.args")" = "--some-flag=1" ] && pass "the entrypoint's own arguments still reach gen-env" || fail "the entrypoint's own arguments still reach gen-env"
 cmp -s "$tools/mtls-init.sh" "$work/out.d/mtls-init.sh" && cmp -s "$tools/step-ca-intermediates.sh" "$work/out.d/step-ca-intermediates.sh" \
-  && pass "the scripts are in the bundle" || fail "the scripts are in the bundle"
+  && cmp -s "$tools/step-ca-init.sh" "$work/out.d/step-ca-init.sh" && pass "the scripts are in the bundle" || fail "the scripts are in the bundle"
 [ "$(stat -c %a "$work/out.d/mtls-init.sh" 2>/dev/null || stat -f %Lp "$work/out.d/mtls-init.sh")" = 644 ] && pass "the scripts are world-readable" || fail "the scripts are world-readable"
 run_entrypoint vps
 grep -qF 'MTLS_DOMAIN: ""' "$frag" && grep -qF 'CENTRAL_MTLS_DOMAIN: ""' "$frag" && pass "without names the environment is empty" || fail "without names the environment is empty"
@@ -101,6 +101,30 @@ if run_entrypoint docker-local MTLS_CERT_DAYS=90; then fail "refused lifetime fo
 run_entrypoint docker-local
 cmp -s "$work/out.d/compose.fragment.yml" "$tools/compose.fragment.yml.template" && fail "docker-local: version not substituted" || pass "docker-local fragment is the plain template with the version"
 [ ! -e "$work/out.d/mtls-init.sh" ] && pass "docker-local gets no vps scripts" || fail "docker-local gets no vps scripts"
+# Both fragments create the CA through the bundled script, never through the image's own entrypoint,
+# which prints a password to the log (versolauth/versola#890).
+cmp -s "$tools/step-ca-init.sh" "$work/out.d/step-ca-init.sh" && pass "docker-local gets step-ca-init.sh" || fail "docker-local gets step-ca-init.sh"
+[ "$(stat -c %a "$work/out.d/step-ca-init.sh" 2>/dev/null || stat -f %Lp "$work/out.d/step-ca-init.sh")" = 644 ] \
+  && pass "step-ca-init.sh is world-readable" || fail "step-ca-init.sh is world-readable"
+for t in "$tools/compose.fragment.yml.template" "$tools/compose.fragment.vps.yml.template"; do
+  name=$(basename "$t")
+  sed -n '/^  step-ca:$/,/^  mtls-init:$/p' "$t" > "$work/step-ca.svc"
+  if grep -qF 'entrypoint: ["/bin/sh", "-ec"]' "$work/step-ca.svc" && grep -qF 'sh /usr/local/bin/step-ca-init.sh' "$work/step-ca.svc" \
+    && grep -qF -- '- ./step-ca-init.sh:/usr/local/bin/step-ca-init.sh:ro' "$work/step-ca.svc" && ! grep -q 'PASSWORD' "$work/step-ca.svc"; then
+    pass "$name: step-ca runs step-ca-init.sh, not the image's entrypoint"
+  else
+    fail "$name: step-ca runs step-ca-init.sh, not the image's entrypoint"
+  fi
+  # The unused `versola` provisioner goes, and only once central's is in: removing it first would
+  # leave a CA with no provisioner at all if the start were cut off in between.
+  add=$(grep -n 'step ca provisioner add central' "$work/step-ca.svc" | cut -d: -f1)
+  rm_=$(grep -n 'step ca provisioner remove versola' "$work/step-ca.svc" | cut -d: -f1)
+  if [ -n "$add" ] && [ -n "$rm_" ] && [ "$rm_" -gt "$add" ]; then
+    pass "$name: step-ca removes the versola provisioner after adding central's"
+  else
+    fail "$name: step-ca removes the versola provisioner after adding central's"
+  fi
+done
 
 rm -rf "${work:?}"
 if [ "$failures" -ne 0 ]; then echo "$failures check(s) failed" >&2; exit 1; fi

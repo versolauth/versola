@@ -242,7 +242,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
           versionBefore <- env.rowVersion(refreshToken1)
 
-          renewed <- env.repository.renewBoundToken(refreshToken1, None)
+          renewed <- env.repository.renewBoundToken(refreshToken1, None, None)
           found <- env.repository.findToken(refreshToken1)
           versionAfter <- env.rowVersion(refreshToken1)
         yield assertTrue(
@@ -266,8 +266,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
           // The no-write path still has to refuse: revocation is an `expires_at` write, and the
           // caller's own read can be older than it.
-          renewedWithoutScope <- env.repository.renewBoundToken(refreshToken1, None)
-          renewedNarrowing <- env.repository.renewBoundToken(refreshToken1, Some(record1.scope.take(1)))
+          renewedWithoutScope <- env.repository.renewBoundToken(refreshToken1, None, None)
+          renewedNarrowing <- env.repository.renewBoundToken(refreshToken1, Some(record1.scope.take(1)), None)
         yield assertTrue(!renewedWithoutScope, !renewedNarrowing)
       },
       test("renewing reports failure once the token has passed its fixed expiry") {
@@ -278,8 +278,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- TestClock.adjust(refreshTtl + 1.second)
 
           foundAfterExpiry <- env.repository.findToken(refreshToken1)
-          renewedWithoutScope <- env.repository.renewBoundToken(refreshToken1, None)
-          renewedNarrowing <- env.repository.renewBoundToken(refreshToken1, Some(record1.scope.take(1)))
+          renewedWithoutScope <- env.repository.renewBoundToken(refreshToken1, None, None)
+          renewedNarrowing <- env.repository.renewBoundToken(refreshToken1, Some(record1.scope.take(1)), None)
         yield assertTrue(foundAfterExpiry.isEmpty, !renewedWithoutScope, !renewedNarrowing)
       },
       test("renewing a bound token in place persists a narrowed scope and nothing else") {
@@ -292,7 +292,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           // rotates: the next refresh names no scope, so an unpersisted narrowing would be
           // silently undone and hand back what the client dropped.
           narrowed = record1.scope.take(1)
-          renewed <- env.repository.renewBoundToken(refreshToken1, Some(narrowed))
+          renewed <- env.repository.renewBoundToken(refreshToken1, Some(narrowed), None)
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           renewed,
@@ -309,12 +309,90 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
 
           // RFC 6749 §6: a refresh naming no scope means "unchanged", so the row is already right.
-          renewed <- env.repository.renewBoundToken(refreshToken1, None)
+          renewed <- env.repository.renewBoundToken(refreshToken1, None, None)
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           renewed,
           found.exists(_.scope == record1.scope),
         )
+      },
+      test("renewing a bound token with a new confirmation re-binds the row and nothing else") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf(jkt = Some("key-1"), x5tS256 = Some("certificate-1"))))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+
+          // RFC 8705 §7.1: the grant of a client registered by an edge-group name follows the certificate
+          // it was refreshed with. The whole confirmation is written, so the key half is what the caller says.
+          rebound = Cnf(jkt = Some("key-1"), x5tS256 = Some("certificate-2"))
+          renewed <- env.repository.renewBoundToken(refreshToken1, None, Some(rebound))
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(
+          renewed,
+          found.flatMap(_.cnf) == Some(rebound),
+          // Only `cnf` changes: the scope and the expiry stay what the row had.
+          found.exists(_.scope == record1.scope),
+          found.exists(_.expiresAt == record1.expiresAt),
+          found.exists(_.familyId == record1.familyId),
+        )
+      },
+      test("renewing a bound token with a narrowed scope and a new confirmation writes both") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.certificate("certificate-1")))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+
+          narrowed = record1.scope.take(1)
+          renewed <- env.repository.renewBoundToken(refreshToken1, Some(narrowed), Some(Cnf.certificate("certificate-2")))
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(
+          renewed,
+          narrowed.size < record1.scope.size,
+          found.exists(_.scope == narrowed),
+          found.flatMap(_.cnf) == Some(Cnf.certificate("certificate-2")),
+        )
+      },
+      test("renewing without a new confirmation leaves the stored one alone, whether or not the scope narrows") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.certificate("certificate-1")))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+
+          _ <- env.repository.renewBoundToken(refreshToken1, None, None)
+          afterPlain <- env.repository.findToken(refreshToken1)
+          _ <- env.repository.renewBoundToken(refreshToken1, Some(record1.scope.take(1)), None)
+          afterNarrowing <- env.repository.findToken(refreshToken1)
+        yield assertTrue(
+          afterPlain.flatMap(_.cnf) == Some(Cnf.certificate("certificate-1")),
+          afterNarrowing.flatMap(_.cnf) == Some(Cnf.certificate("certificate-1")),
+        )
+      },
+      test("a revoked or expired grant is not re-bound") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.certificate("certificate-1")))
+          record2 = tokenRecord2(now, refreshTtl).copy(cnf = Some(Cnf.certificate("certificate-1")))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, None, record2, None)
+          _ <- env.repository.deleteByFamily(record1.familyId, terms)
+
+          revoked <- env.repository.renewBoundToken(refreshToken1, None, Some(Cnf.certificate("certificate-2")))
+          revokedNarrowing <- env.repository.renewBoundToken(refreshToken1, Some(record1.scope.take(1)), Some(Cnf.certificate("certificate-2")))
+          _ <- TestClock.adjust(refreshTtl + 1.second)
+          expired <- env.repository.renewBoundToken(refreshToken2, None, Some(Cnf.certificate("certificate-2")))
+        yield assertTrue(!revoked, !revokedNarrowing, !expired)
+      },
+      test("re-binding one grant leaves every other grant's confirmation alone") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.certificate("certificate-1")))
+          record2 = tokenRecord2(now, refreshTtl).copy(cnf = Some(Cnf.certificate("certificate-1")))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, None, record2, None)
+
+          _ <- env.repository.renewBoundToken(refreshToken1, None, Some(Cnf.certificate("certificate-2")))
+          other <- env.repository.findToken(refreshToken2)
+        yield assertTrue(other.flatMap(_.cnf) == Some(Cnf.certificate("certificate-1")))
       },
       test("a rotated successor keeps the expiry the caller hands it, so the family's lifetime is fixed") {
         for

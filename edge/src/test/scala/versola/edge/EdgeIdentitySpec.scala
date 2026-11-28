@@ -68,14 +68,13 @@ object EdgeIdentitySpec extends ZIOSpecDefault:
           )
         yield assertTrue(identity.isInstanceOf[EdgeIdentity.Registered])
       },
-      test("partner is refused as not implemented, the same way the configuration is") {
+      test("partner presents no certificate of its own, whatever certificate it holds") {
         for
-          error <- ZIO.service[EdgeIdentity]
-            .provideLayer(
-              ZLayer.succeed(config.copy(mode = EdgeMode.Partner)) ++ ZLayer.succeed(holder(None)) >>> EdgeIdentity.live,
-            )
-            .flip
-        yield assertTrue(error == EdgeMode.NotImplemented(EdgeMode.Partner))
+          identity <- ZIO.service[EdgeIdentity].provideLayer(
+            ZLayer.succeed(config.copy(mode = EdgeMode.Partner)) ++ ZLayer.succeed(holder(Some(material))) >>> EdgeIdentity.live,
+          )
+          presented <- identity.certificate
+        yield assertTrue(identity == EdgeIdentity.Absent, presented.isEmpty)
       },
     ),
   )

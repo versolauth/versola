@@ -34,6 +34,13 @@ object EdgeCertificateIssuer:
           else ZIO.succeed(shared)
       yield EdgeCertificateIssuer(issuer)
 
-  /** The lifetime asked of the CA: `edge-certificates.validity` when that names a CA, else the clients'. */
-  def validity(config: CentralConfig): Duration =
-    config.edgeCertificateBackends.orElse(config.certificateBackends).getOrElse(CentralConfig.ClientCertificatesConfig()).validity
+  /** The lifetime asked of the CA for an edge of `kind`. First-party: `edge-certificates.validity` when that names a CA,
+    * else the clients'. Partner: `edge-certificates.partner-validity` (14 days unless set), whatever CA signs -- a
+    * partner's edge renews for as long as the partner is not suspended, and the short lifetime is what turns a
+    * suspension into an expired certificate within days. */
+  def validity(config: CentralConfig, kind: EdgeGroupKind): Duration =
+    kind match
+      case EdgeGroupKind.FirstParty =>
+        config.edgeCertificateBackends.orElse(config.certificateBackends).getOrElse(CentralConfig.ClientCertificatesConfig()).validity
+      case EdgeGroupKind.Partner =>
+        config.edgeCertificates.getOrElse(CentralConfig.ClientCertificatesConfig()).partnerValidity

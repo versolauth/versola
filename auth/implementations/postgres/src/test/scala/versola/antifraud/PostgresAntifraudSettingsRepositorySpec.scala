@@ -14,11 +14,25 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec, AntifraudSe
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
 
+  private class PostgresFixtures(xa: TransactorZIO) extends Fixtures:
+    override def store(settings: String, updatedBy: String, updatedAt: Instant): Task[Unit] =
+      xa.connect(
+        sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, $settings::jsonb, $updatedBy, $updatedAt)""".update.run(),
+      ).unit
+
+    override def replace(settings: String): Task[Unit] =
+      xa.connect(sql"""UPDATE af_settings SET settings = $settings::jsonb WHERE id = 1""".update.run()).unit
+
+    override def stored: Task[String] =
+      xa.connect(sql"SELECT settings::text FROM af_settings WHERE id = 1".query[String].run().head)
+
+    override def isReadFailure(failure: Throwable): Boolean = failure.isInstanceOf[SqlException]
+
   override lazy val environment =
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield Env(PostgresAntifraudSettingsRepository(xa))
+      yield Env(PostgresAntifraudSettingsRepository(xa), PostgresFixtures(xa))
 
   /** Empty, as the migration leaves it; the version row is kept, since a change creates it. */
   override def beforeEach(env: Env) =
@@ -30,43 +44,6 @@ object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec, AntifraudSe
 
   override def implementationCases(env: Env) =
     List(
-      test("a value that is not a Tuning fails the read the way the codec reports it, and the row is left as it is") {
-        for
-          xa <- ZIO.service[TransactorZIO]
-          _ <- xa.connect(
-            sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"challengeAt": "many"}'::jsonb, 'hand', $at)""".update.run(),
-          )
-          failure <- env.repository.find.flip
-          raw <- xa.connect(sql"SELECT settings::text FROM af_settings WHERE id = 1".query[String].run().head)
-        yield assertTrue(failure.isInstanceOf[SqlException], failure.getMessage.contains("challengeAt(expected an Int)"), raw.contains("many"))
-      },
-      test("a row written before a key existed reads with the key's default: shadow for the mode, off for the rest") {
-        for
-          xa <- ZIO.service[TransactorZIO]
-          _ <- xa.connect(
-            sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"blockAt": 80, "shadowRules": ["velocity_ip_1m"]}'::jsonb, 'old', $at)""".update.run(),
-          )
-          stored <- env.repository.find
-        yield assertTrue(
-          stored.map(_.tuning).contains(Tuning.off.copy(blockAt = 80, shadowRules = Set("velocity_ip_1m"))),
-          stored.exists(_.tuning.mode == TuningMode.shadow),
-        )
-      },
-      test("a row that names a key retired by an earlier build still reads; one that names a key nothing knows fails the read") {
-        for
-          xa <- ZIO.service[TransactorZIO]
-          _ <- xa.connect(
-            sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"blockAt": 80, "delayAt": 3, "delayMillis": 2000}'::jsonb, 'old', $at)""".update.run(),
-          )
-          retired <- env.repository.find
-          _ <- xa.connect(sql"""UPDATE af_settings SET settings = '{"blokAt": 80}'::jsonb WHERE id = 1""".update.run())
-          unknown <- env.repository.find.flip
-        yield assertTrue(
-          retired.map(_.tuning).contains(Tuning.off.copy(blockAt = 80)),
-          unknown.isInstanceOf[SqlException],
-          unknown.getMessage.contains("invalid extra field"),
-        )
-      },
       test("every method fails on its statement timeout instead of waiting for a lock") {
         for
           xa <- ZIO.service[TransactorZIO]

@@ -17,13 +17,14 @@ data:
       mutual-tls {
         trusted-certificates = [{{ range $i, $_ := $c.pins }}{{ if $i }}, {{ end }}"/app/remote-edge/central-pin-{{ $i }}.crt"{{ end }}]
       }
-      enrollment {
-        url = {{ $c.enrollment.url | quote }}
-        token-file = "/app/enrollment/token"
+      identity {
+        directory = "/var/lib/versola-edge"
+        group = {{ $c.group | default "default" | quote }}
+        enrollment {
+          url = {{ $c.enrollment.url | quote }}
+          token-file = "/app/enrollment/token"
+        }
       }
-    }
-    identity {
-      directory = "/var/lib/versola-edge"
     }
     {{- if $a.mtlsUrl }}
     native {

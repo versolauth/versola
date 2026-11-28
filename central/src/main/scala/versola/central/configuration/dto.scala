@@ -6,6 +6,7 @@ import versola.central.configuration.clients.{
   ApplicationType,
   AuthFlow,
   AuthMethod,
+  ClientApproval,
   ClientId,
   ClientKind,
   ClientTemplate,
@@ -15,6 +16,7 @@ import versola.central.configuration.clients.{
   ResponseType,
 }
 import versola.central.configuration.details.AuthorizationDetailType
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{AudienceRateLimit, ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
@@ -148,6 +150,8 @@ case class ResourceResponse(
     secretRotation: Boolean,
     /** The limits the resource sets for its audience clients; empty when there are none. */
     audienceRateLimits: List[AudienceRateLimit],
+    /** The partner that owns the resource (#549); absent for a first-party one. */
+    partnerId: Option[PartnerId],
 ) derives Schema, JsonCodec
 
 case class ResourceEndpointResponse(
@@ -190,6 +194,8 @@ case class CreateResourceRequest(
     internal: Boolean,
     /** The limits the resource sets for clients of `audience`: at most one per client. */
     audienceRateLimits: List[AudienceRateLimit],
+    /** The partner that owns the resource (#549); absent registers a first-party one. */
+    partnerId: Option[PartnerId],
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
@@ -422,6 +428,10 @@ case class OAuthClientResponse(
     themeOverrides: Option[ThemeOverrides],
     /** Where the client stands when it obtains its certificate through EST (`estEnrollment`); absent when it does not. */
     est: Option[ClientEstService.State],
+    /** The partner that owns the client (#549); absent for a first-party client. */
+    partnerId: Option[PartnerId],
+    /** Where a partner-owned client stands with the operator; `approved` for a first-party client. */
+    approval: ClientApproval,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -547,6 +557,9 @@ case class CreateClientRequest(
       * client is registered by [[mtlsAuth]] or, where it names none, by `CN=<client>,OU=<tenant>,O=Versola`. Mutually
       * exclusive with [[issueEdgeClientCertificate]], [[enrollEdgeClientCertificate]] and supplying a certificate. */
     estEnrollment: Boolean,
+    /** The partner that owns the client (#549): the client is held to the partner's limits and served by the partner's
+      * edges. Absent registers a first-party client. A `service` client is never a partner's. */
+    partnerId: Option[PartnerId],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
