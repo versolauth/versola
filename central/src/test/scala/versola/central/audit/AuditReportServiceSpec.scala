@@ -58,7 +58,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val repository = stub[CentralAuditRepository]
     val authClient = stub[AuthClient]
     val places = Unsafe.unsafe(Semaphore.unsafe.make(AuditReportService.MaxConcurrentReports)(using _))
-    val service = AuditReportService.Impl(repository, authClient, TestCentralConfig.config, places)
+    val service = AuditReportService.Impl(repository, authClient, places)
 
   /** The two logs as lists, with fakes that answer as the real ones do: newest first by `(at, id)`, `to` inclusive, a limit, and a next
     * cursor for auth when there is more. */

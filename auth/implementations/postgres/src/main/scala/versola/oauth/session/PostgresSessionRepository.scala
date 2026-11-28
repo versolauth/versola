@@ -675,6 +675,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
   override def renewBoundToken(
       token: MAC.Of[RefreshToken],
       scope: Option[Set[ScopeToken]],
+      cnf: Option[Cnf],
   ): Task[Boolean] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("renew-bound-refresh-token"):
@@ -696,15 +697,36 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // FOR SHARE/FOR UPDATE, which would dirty the page and WAL-log a lock. What remains is
         // the instant between this read and the response, which no check can close and which
         // only affects an access token that is short-lived and denied by family on revocation.
-        scope match
-          case Some(narrowed) =>
+        //
+        // `cnf` is carried only when this refresh re-bound the grant to another certificate (a
+        // client registered by an edge-group name, RFC 8705 §7.1). It is written by the same
+        // statement, under the same predicate, so a grant revoked since the read is not re-bound.
+        // Not compared with the thumbprint the caller read: two edges of a group refreshing at once
+        // both authenticate the client, the later write stands, and failing the earlier one would
+        // end a session for a race neither edge can avoid.
+        (scope, cnf) match
+          case (Some(narrowed), Some(rebound)) =>
+            sql"""
+              UPDATE refresh_tokens
+              SET scope = $narrowed, cnf = $rebound
+              WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
+            """.update.run() > 0
+
+          case (Some(narrowed), None) =>
             sql"""
               UPDATE refresh_tokens
               SET scope = $narrowed
               WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
             """.update.run() > 0
 
-          case None =>
+          case (None, Some(rebound)) =>
+            sql"""
+              UPDATE refresh_tokens
+              SET cnf = $rebound
+              WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
+            """.update.run() > 0
+
+          case (None, None) =>
             sql"""
               SELECT 1 FROM refresh_tokens
               WHERE id = $token AND rotated_at IS NULL AND expires_at > $now

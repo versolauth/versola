@@ -71,6 +71,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     internal = false,
     audienceRateLimits = Nil,
+    partnerId = None,
   )
 
   private val createRequestBodyWithNumericRule = CreateResourceRequest(
@@ -94,6 +95,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     internal = false,
     audienceRateLimits = Nil,
+    partnerId = None,
   )
 
   private val updateRequestBody = UpdateResourceRequest(
@@ -131,6 +133,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       secret = None,
       previousSecret = None,
       audienceRateLimits = Nil,
+      partnerId = None,
     ),
   )
   private val limit = DeclaredRateLimit(
@@ -153,7 +156,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     )
   private val edgeRecord = EdgeRecord(
     edgeId,
-    edgeKeyPair.toPublicJwk,
+    Some(edgeKeyPair.toPublicJwk),
     None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -162,6 +165,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     policyMeta = None,
     groupId = EdgeGroup.DefaultId,
     groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
   )
 
   private val config = TestCentralConfig.config
@@ -255,6 +259,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 internal = false,
                 secretRotation = false,
                 audienceRateLimits = Nil,
+                partnerId = None,
               ),
             ),
           ),

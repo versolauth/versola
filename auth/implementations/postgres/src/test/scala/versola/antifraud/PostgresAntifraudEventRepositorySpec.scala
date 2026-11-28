@@ -91,6 +91,10 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec, AntifraudEvent
     override def clearStats: Task[Unit] =
       xa.connect(sql"DELETE FROM af_dest_stats".update.run()).unit
 
+    // The transaction that wrote the row's current version: an UPDATE that stores the same values still changes it.
+    override def statWrites: Task[List[String]] =
+      xa.connect(sql"SELECT xmin::text FROM af_dest_stats".query[String].run().toList)
+
     override def clearRollupState: Task[Unit] =
       xa.connect(sql"DELETE FROM af_rollup_state".update.run()).unit
 
@@ -394,22 +398,6 @@ object PostgresAntifraudEventRepositorySpec extends PostgresSpec, AntifraudEvent
           changed.role == own.role,
           changed.mayAlter,
         )
-      },
-      test("a minute that did not change is not rewritten, and one that did is") {
-        val minute = Instant.parse("2026-10-21T10:05:00Z")
-        def rollup = repository.rollupStats(from = minute, to = minute.plusSeconds(60), prefixLength = 4, interval = Duration.Zero)
-        for
-          xa <- ZIO.service[TransactorZIO]
-          _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
-          _ <- repository.insertBatch(List(event(minute.plusSeconds(1)), event(minute.plusSeconds(2), AntifraudOutcome.throttled)))
-          _ <- rollup
-          first <- xa.connect(sql"SELECT xmin::text FROM af_dest_stats".query[String].run().toList)
-          _ <- rollup
-          unchanged <- xa.connect(sql"SELECT xmin::text FROM af_dest_stats".query[String].run().toList)
-          _ <- repository.insertBatch(List(event(minute.plusSeconds(3))))
-          _ <- rollup
-          changed <- xa.connect(sql"SELECT xmin::text, requests FROM af_dest_stats".query[(String, Int)].run().toList)
-        yield assertTrue(first.size == 1, unchanged == first, changed.map(_._1) != first, changed.map(_._2) == List(3))
       },
       test("names and reads partitions by day") {
         assertTrue(

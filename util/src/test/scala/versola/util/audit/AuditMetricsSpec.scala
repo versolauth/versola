@@ -66,6 +66,7 @@ object AuditMetricsSpec extends ZIOSpecDefault:
             .provideSome[PrometheusPublisher & Scope](
               ZLayer.succeed(repository),
               ZLayer.succeed(settings),
+              ZLayer.succeed[AuditTenants](AuditTenants.none),
               tracingLayer,
               SecureRandom.live,
             )

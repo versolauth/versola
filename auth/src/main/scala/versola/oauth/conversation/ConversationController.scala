@@ -43,6 +43,9 @@ object ConversationController extends Controller:
           formService <- ZIO.service[ConversationRenderService]
           cookie <- extractCookie(request)
           _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
+          // A client that is gone from the sync (a suspended partner's) ends the conversations of its users cleanly, as an expired one,
+          // instead of reaching the steps that assume the client is there.
+          _ <- ZIO.serviceWithZIO[OAuthConfigurationService](_.find(cookie.clientId)).someOrFail(Error.ConversationExpired)
           record <- router.getConversation(cookie.authId)
           response <- record match
             case None =>
@@ -143,6 +146,8 @@ object ConversationController extends Controller:
         conversationRenderService <- ZIO.service[ConversationRenderService]
         cookie <- extractCookie(request)
         _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
+        // as for the read of the step: a client that is gone ends the conversation as an expired one, not as a failure
+        _ <- ZIO.serviceWithZIO[OAuthConfigurationService](_.find(cookie.clientId)).someOrFail(Error.ConversationExpired)
         ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
         ip = ClientIp.fromRequest(request, ipHeader)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)

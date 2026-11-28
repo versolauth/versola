@@ -1,0 +1,34 @@
+{
+  "staff": [
+    {
+      "id": "01a1d01f-4b72-768b-ab76-a96e51b6fc8d",
+      "level": "admin",
+      "state": "member",
+      "addedBy": "config",
+      "addedAt": "2026-11-12T14:18:22.725804Z",
+      "subject": "01a1d01f-4b72-768b-ab76-a96e51b6fc8d",
+      "display": "s•••@partner.example"
+    },
+    {
+      "id": "01a1d01f-bd11-7745-b7bc-d1115072660a",
+      "level": "viewer",
+      "state": "member",
+      "addedBy": "01a1d01f-4b72-768b-ab76-a96e51b6fc8d",
+      "addedAt": "2026-11-12T14:18:23.604108Z",
+      "subject": "01a1d01f-bd11-7745-b7bc-d1115072660a",
+      "display": "s•••@partner.example"
+    },
+    {
+      "id": "e13cc1a5-38c3-41f7-8809-a8ed3ff1de1d",
+      "level": "viewer",
+      "state": "invited",
+      "addedBy": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+      "addedAt": "2026-11-12T15:21:35.640185Z",
+      "identifier": {
+        "kind": "email",
+        "masked": "w•••@partner.example"
+      },
+      "expiresAt": "2026-11-19T15:21:35.640185Z"
+    }
+  ]
+}

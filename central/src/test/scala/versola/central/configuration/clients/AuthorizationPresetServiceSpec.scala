@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsRecord,
   ChallengeSettingsService,
   EmailRegistration,
@@ -69,6 +70,8 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     createdAt = Instant.EPOCH,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(
@@ -129,6 +132,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     securityProfile = SecurityProfile.fapi2,
     logoLight = None,
     logoDark = None,
+    auditSettings = AuditSettings.default,
   )
 
   override def spec = suite("AuthorizationPresetService")(
@@ -136,11 +140,23 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         _ <- env.presetRepo.replace.succeedsWith(())
         _ <- env.presetRepo.getAll.succeedsWith(Vector(preset1))
 
         result <- env.service.savePresets(validRequest)
       yield assertTrue(result.isRight)
+    },
+    test("save presets of a client that was stored a moment ago and has not reached the cache yet") {
+      val env = Env()
+      for
+        // the cache has not heard of the client; the repository has it
+        _ <- env.clientService.getAllClients.succeedsWith(Vector.empty)
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
+        _ <- env.presetRepo.replace.succeedsWith(())
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(preset1))
+        result <- env.service.savePresets(validRequest)
+      yield assertTrue(result.isRight, env.clientService.findClientFresh.calls == List(validRequest.clientId), env.presetRepo.replace.calls.size == 1)
     },
     test("registers preset's postLogoutRedirectUri in the tenant's challenge settings whitelist") {
       val uri = "https://example.com/logged-out"
@@ -151,6 +167,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         _ <- env.presetRepo.replace.succeedsWith(())
         _ <- env.presetRepo.getAll.succeedsWith(Vector(savedPreset))
         _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(challengeSettings))
@@ -174,6 +191,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         _ <- env.presetRepo.replace.succeedsWith(())
         _ <- env.presetRepo.getAll.succeedsWith(Vector(savedPreset))
         _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(settings))
@@ -185,6 +203,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         _ <- env.presetRepo.replace.succeedsWith(())
         _ <- env.presetRepo.getAll.succeedsWith(Vector(preset1))
 
@@ -204,6 +223,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         _ <- env.presetRepo.replace.succeedsWith(())
         _ <- env.presetRepo.getAll.succeedsWith(Vector(savedPreset))
         _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
@@ -215,6 +235,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector.empty)
+        _ <- env.clientService.findClientFresh.succeedsWith(None)
 
         result <- env.service.savePresets(validRequest)
       yield assertTrue(
@@ -243,6 +264,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         result <- env.service.savePresets(invalidRequest)
       yield assertTrue(
         result.isLeft,
@@ -270,6 +292,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         result <- env.service.savePresets(invalidRequest)
       yield assertTrue(
         result.isLeft,
@@ -281,6 +304,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         _ <- env.presetRepo.getAll.succeedsWith(Vector(existingPreset))
         result <- env.service.savePresets(validRequest)
       yield assertTrue(
@@ -294,6 +318,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.clientService.findClientFresh.succeedsWith(Some(client))
         result <- env.service.savePresets(request)
       yield assertTrue(
         result.isLeft,

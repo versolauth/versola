@@ -2,7 +2,16 @@ package versola.central.configuration.edges
 
 import versola.util.http.GuardMode
 import versola.util.http.RateLimitScope
-import versola.util.http.{AccessLogPolicy, InboundPolicy, OverloadPolicy, RateLimitDimension, RateLimitPolicies, RateLimitPolicy, RateLimitWindow}
+import versola.util.http.{
+  AccessLogPolicy,
+  InboundPolicy,
+  NativeStartRateLimit,
+  OverloadPolicy,
+  RateLimitDimension,
+  RateLimitPolicies,
+  RateLimitPolicy,
+  RateLimitWindow,
+}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -17,7 +26,7 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
 
   private val record = EdgeRecord(
     EdgeId("edge-1"),
-    Json.Obj(),
+    Some(Json.Obj()),
     None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -26,6 +35,7 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
     policyMeta = None,
     groupId = EdgeGroup.DefaultId,
     groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
   )
 
   private val perClient = RateLimitPolicy(
@@ -123,6 +133,19 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
           emptied.toOption.flatMap(_.policyMeta).exists(m => m("overload").revision == 2 && m("rateLimits").revision == 2),
           removed.map(_.overloadPolicy) == Right(None),
           removed.map(_.rateLimitPolicies) == Right(Some(sets)),
+        )
+      },
+      test("rate limits that only set the limit on /native/start are stored, not read as an empty section") {
+        val only = RateLimitPolicies(Nil, replicas = 1, nativeStart = Some(NativeStartRateLimit.default(GuardMode.Enforce)))
+        val stored = EdgePoliciesPatch(record, EdgePoliciesPatch(rateLimits = Change.Replace(only)), t1)
+        val invalid = EdgePoliciesPatch(
+          record,
+          EdgePoliciesPatch(rateLimits = Change.Replace(only.copy(nativeStart = Some(NativeStartRateLimit(60, 60, 61, GuardMode.Enforce))))),
+          t1,
+        )
+        assertTrue(
+          stored.map(_.rateLimitPolicies) == Right(Some(only)),
+          invalid.left.exists(_.message.contains("nativeStart")),
         )
       },
       test("an invalid section names the section and the rule, and changes nothing") {

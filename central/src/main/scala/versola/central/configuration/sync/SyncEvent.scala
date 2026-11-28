@@ -4,6 +4,7 @@ import versola.central.configuration.challenges.{ChallengeSettingsRecord, OtpTem
 import versola.central.configuration.clients.{AuthorizationPreset, ClientId, OAuthClientRecord, PresetId}
 import versola.central.configuration.details.{AuthorizationDetailType, AuthorizationDetailTypeRecord}
 import versola.central.configuration.forms.{FormId, FormRecord}
+import versola.central.configuration.partners.{PartnerId, PartnerRecord}
 import versola.central.configuration.permissions.{Permission, PermissionRecord}
 import versola.central.configuration.resources.{ResourceId, ResourceRecord}
 import versola.central.configuration.roles.{RoleId, RoleRecord}
@@ -38,6 +39,19 @@ object SyncEvent:
       id == record.id
 
     def sort(records: Vector[OAuthClientRecord]): Vector[OAuthClientRecord] =
+      records.sortBy(_.id)
+
+  case class PartnersUpdated(
+      id: PartnerId,
+      op: Op,
+  ) extends ModifyCache:
+    type ID = PartnerId
+    type Record = PartnerRecord
+
+    def matches(record: PartnerRecord): Boolean =
+      id == record.id
+
+    def sort(records: Vector[PartnerRecord]): Vector[PartnerRecord] =
       records.sortBy(_.id)
 
   case class ScopesUpdated(

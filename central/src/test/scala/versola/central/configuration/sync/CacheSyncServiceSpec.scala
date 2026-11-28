@@ -8,6 +8,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.{FormId, FormService}
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
+import versola.central.configuration.partners.{PartnerId, PartnerRegistry}
 import versola.central.configuration.permissions.{Permission, PermissionService}
 import versola.central.configuration.resources.{ResourceId, ResourceService}
 import versola.central.configuration.roles.{RoleId, RoleService}
@@ -42,6 +43,7 @@ object CacheSyncServiceSpec extends UnitSpecBase:
     val jwksService = stub[JwksService]
     val themeService = stub[ThemeService]
     val serverMetadataService = stub[ServerMetadataService]
+    val partnerRegistry = stub[PartnerRegistry]
     val service = CacheSyncService.Impl(
       repository,
       tenantService,
@@ -61,6 +63,7 @@ object CacheSyncServiceSpec extends UnitSpecBase:
       jwksService,
       themeService,
       serverMetadataService,
+      partnerRegistry,
     )
 
   def spec = suite("CacheSyncService")(
@@ -71,6 +74,14 @@ object CacheSyncServiceSpec extends UnitSpecBase:
         _ <- env.clientService.sync.succeedsWith(())
         _ <- env.service.sync()
       yield assertTrue(env.clientService.sync.calls.nonEmpty)
+    },
+    test("routes PartnersUpdated to PartnerRegistry.sync") {
+      val event = SyncEvent.PartnersUpdated(PartnerId("acme"), SyncEvent.Op.UPDATE)
+      val env = Env(event)
+      for
+        _ <- env.partnerRegistry.sync.succeedsWith(())
+        _ <- env.service.sync()
+      yield assertTrue(env.partnerRegistry.sync.calls == List(event))
     },
     test("routes ScopesUpdated UPDATE to OAuthScopeService.sync") {
       val event = SyncEvent.ScopesUpdated(

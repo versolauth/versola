@@ -1,0 +1,17 @@
+{
+  "edge": {
+    "id": "edge-walk-edge-mwdoyyuq",
+    "publicUrl": "https://login-mwdoyyuq.e2e-partner-faf53869a4.example",
+    "status": "waiting",
+    "certificateNotAfter": null,
+    "lastRenewedAt": null,
+    "replicas": 0,
+    "policies": {
+      "overload": {},
+      "accessLog": {},
+      "rateLimits": {}
+    }
+  },
+  "token": "REDACTED-ENROLLMENT-TOKEN",
+  "expiresAt": "2026-11-13T15:18:29.344551Z"
+}

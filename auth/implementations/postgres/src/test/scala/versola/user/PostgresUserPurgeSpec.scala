@@ -2,29 +2,17 @@ package versola.user
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
-import versola.user.model.UserId
 import versola.util.postgres.PostgresSpec
-import zio.ZIO
-import zio.test.*
+import zio.{Task, ZIO, ZLayer}
 
 import java.util.UUID
 
-/** `UserRepository.delete` has to reach every table keyed by the user, and nothing but a leftover
-  * row -- a refresh token that still redeems, a passkey that still signs in -- would notice one
-  * it missed. The rows are seeded raw rather than through the owning repositories: what is
-  * asserted is which tables the purge reaches, not how those repositories write.
-  */
-object PostgresUserPurgeSpec extends PostgresSpec:
+/** Runs [[UserPurgeSpec]] against the tables of `auth`: the seed and the count of every table keyed by the user. */
+object PostgresUserPurgeSpec extends PostgresSpec, UserPurgeSpec:
 
-  private val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
-  private val userId2 = UserId(UUID.fromString("58c5fe37-6c39-43d1-ae8c-3fab32e1ed72"))
+  import UserPurgeSpec.*
 
-  private case class Identity(userId: UserId, email: String, phone: String, tag: String)
-
-  private val one = Identity(userId1, "purge1@example.com", "+12025550001", "one")
-  private val two = Identity(userId2, "purge2@example.com", "+12025550002", "two")
-
-  private def seed(xa: TransactorZIO, identity: Identity) =
+  private def seed(xa: TransactorZIO, identity: Identity): Task[Unit] =
     val id: UUID = identity.userId
     val email = identity.email
     val phone = identity.phone
@@ -61,9 +49,10 @@ object PostgresUserPurgeSpec extends PostgresSpec:
             VALUES (${id.toString}, 'default', 'otp', '[]'::jsonb, NOW() + INTERVAL '1 hour'),
                    ($email, 'default', 'otp', '[]'::jsonb, NOW() + INTERVAL '1 hour'),
                    ($phone, 'default', 'password', '[]'::jsonb, NOW() + INTERVAL '1 hour')""".update.run()
+    .unit
 
   /** Rows the tables still hold for the identity, keyed by table. */
-  private def rowsOf(xa: TransactorZIO, identity: Identity) =
+  private def rowsOf(xa: TransactorZIO, identity: Identity): Task[Map[String, Long]] =
     val id: UUID = identity.userId
     val email = identity.email
     val phone = identity.phone
@@ -84,36 +73,20 @@ object PostgresUserPurgeSpec extends PostgresSpec:
           sql"SELECT count(*) FROM challenge_throttle WHERE subject IN (${id.toString}, $email, $phone)".query[Long].run().head,
       )
 
-  private val seededRows = Map(
-    "users" -> 1L,
-    "user_roles" -> 1L,
-    "user_consents" -> 1L,
-    "user_agents" -> 1L,
-    "sso_sessions" -> 1L,
-    "refresh_tokens" -> 1L,
-    "authorization_codes" -> 1L,
-    "auth_conversations" -> 2L,
-    "passkeys" -> 1L,
-    "user_passwords" -> 1L,
-    "challenge_throttle" -> 3L,
-  )
+  private class PostgresFixtures(xa: TransactorZIO) extends Fixtures:
+    override def seed(identity: Identity): Task[Unit] = PostgresUserPurgeSpec.seed(xa, identity)
 
-  override def spec =
-    suite("PostgresUserPurgeSpec")(
-      test("delete takes the sessions, tokens, codes, conversations, passkeys, passwords, roles, consents and throttling with the account") {
-        for
-          xa <- ZIO.service[TransactorZIO]
-          _ <- xa.connect:
-            sql"""TRUNCATE TABLE users, user_agents, sso_sessions, refresh_tokens, authorization_codes, auth_conversations,
-                  passkeys, user_passwords, challenge_throttle CASCADE""".update.run()
-          _ <- seed(xa, one)
-          _ <- seed(xa, two)
-          before <- rowsOf(xa, one)
-          _ <- PostgresUserRepository(xa).delete(one.userId)
-          after <- rowsOf(xa, one)
-          other <- rowsOf(xa, two)
-        yield assertTrue(before == seededRows).label("the seed has to cover every table or the purge is not being tested") &&
-          assertTrue(after.values.forall(_ == 0L)).label(s"rows left after the purge: ${after.filter(_._2 > 0)}") &&
-          assertTrue(other == seededRows).label("the other account's rows are not for this purge to touch")
-      },
-    ) @@ TestAspect.sequential
+    override def rowsOf(identity: Identity): Task[Map[String, Long]] = PostgresUserPurgeSpec.rowsOf(xa, identity)
+
+  override lazy val environment =
+    ZLayer:
+      for xa <- ZIO.service[TransactorZIO]
+      yield Env(PostgresUserRepository(xa), PostgresFixtures(xa))
+
+  override def beforeEach(env: Env) =
+    for
+      xa <- ZIO.service[TransactorZIO]
+      _ <- xa.connect:
+        sql"""TRUNCATE TABLE users, user_agents, sso_sessions, refresh_tokens, authorization_codes, auth_conversations,
+              passkeys, user_passwords, challenge_throttle CASCADE""".update.run()
+    yield ()

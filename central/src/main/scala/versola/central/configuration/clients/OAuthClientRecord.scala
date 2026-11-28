@@ -1,5 +1,6 @@
 package versola.central.configuration.clients
 
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
@@ -120,6 +121,13 @@ case class OAuthClientRecord(
     /** What this client changes in the theme it uses, laid over it on its sign-in pages (a partner app that
       * brings its own brand colour). `None`, never an empty value, when it changes nothing. */
     themeOverrides: Option[ThemeOverrides],
+    /** The partner that owns this client (#549): it was registered by the partner through its edge, or by the operator
+      * for the partner, and is served by the partner's edges. `None` is a first-party client, as every client before
+      * partners was. Fixed at registration. */
+    partnerId: Option[PartnerId],
+    /** Where the client stands with the operator; always `Approved` for a first-party client. A client that is not
+      * approved is synced to nobody and issues no token. */
+    approval: ClientApproval,
 ) derives Schema, CanEqual, Equal:
 
   /** A native app whose client authentication is done by the edge fronting it (#420/#421):
@@ -146,9 +154,17 @@ case class OAuthClientRecord(
     * An edge-fronted native client is the one exception: the certificate is edge's, shared
     * by every installation of the app, so binding a token to it would bind it to nothing the
     * device holds -- its tokens are bound to the device's DPoP key (`cnf.jkt`) instead.
+    *
+    * A partner's client is not an exception (#549, #962): it authenticates with the certificate of its edge group, and its
+    * tokens are bound to the certificate of the edge that asked for them like any `tls_client_auth` client's. Every edge of the
+    * group holds a certificate of its own, so auth re-binds the token when a refresh comes with another edge's certificate
+    * (`authenticatesByEdgeGroup`), which is how a session continues through every edge of the group.
     */
   def bindsAccessTokens: Boolean =
     (mtlsAuth.nonEmpty && !isEdgeFrontedNative) || certificateBoundAccessTokens
+
+  /** Whether this client is served at all: a first-party client always, a partner's once the operator approved it. */
+  def isApproved: Boolean = approval == ClientApproval.Approved
 
   def isPublic: Boolean = !isConfidential
 

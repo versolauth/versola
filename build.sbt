@@ -106,6 +106,9 @@ lazy val central = project
     commonSettings,
     libraryDependencies ++= Dependencies.core,
     libraryDependencies ++= Dependencies.http,
+    // `certificate_renewals_total` and the `certificates_*` gauges are process-wide, and the specs that assert on what they add
+    // would read each other's renewals if two ran at once.
+    Test / parallelExecution := false,
   )
   .dependsOn(
     util % CompileTest,

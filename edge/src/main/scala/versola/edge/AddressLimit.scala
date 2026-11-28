@@ -18,16 +18,29 @@ object ClientAddress:
     case Socket extends Origin("socket")
     case ForwardedMissing extends Origin("forwarded_missing")
 
-  final case class Resolved(address: Option[String], origin: Origin)
+  /** @param address the rate-limit key ([[normalize]]: an IPv6 address is cut to its /64)
+    * @param literal  the same address as text, for what records it rather than counts it ([[IpAddress.literal]])
+    */
+  final case class Resolved(address: Option[String], literal: Option[String], origin: Origin)
 
   def resolve(request: Request, source: ClientIpSource, header: String): Resolved =
     val socket = request.remoteAddress.flatMap(normalize)
+    val socketLiteral = request.remoteAddress.flatMap(address => IpAddress.literal(address.getHostAddress.takeWhile(_ != '%')))
     source match
-      case ClientIpSource.Socket => Resolved(socket, Origin.Socket)
+      case ClientIpSource.Socket => Resolved(socket, socketLiteral, Origin.Socket)
       case ClientIpSource.Forwarded =>
-        request.headers.get(header).map(_.trim).flatMap(normalize) match
-          case Some(address) => Resolved(Some(address), Origin.Forwarded)
-          case None => Resolved(socket, Origin.ForwardedMissing)
+        val forwarded = request.headers.get(header).map(_.trim)
+        forwarded.flatMap(normalize) match
+          case Some(address) => Resolved(Some(address), forwarded.flatMap(IpAddress.literal), Origin.Forwarded)
+          case None => Resolved(socket, socketLiteral, Origin.ForwardedMissing)
+
+  /** The address of the caller as text, for the audit log of the services behind edge, when the deployment says it is the caller's:
+    * the connection's peer under `client-ip = socket`, the configured header under `forwarded`. Not the peer that stands in for a
+    * header that was missing (`forwarded_missing`): that is the proxy's own address, and recording it as the caller's would put a
+    * wrong address in a log. */
+  def trustedLiteral(request: Request, source: ClientIpSource, header: String): Option[String] =
+    val resolved = resolve(request, source, header)
+    Option.unless(resolved.origin == Origin.ForwardedMissing)(resolved.literal).flatten
 
   def normalize(literal: String): Option[String] = IpAddress.normalize(literal)
 

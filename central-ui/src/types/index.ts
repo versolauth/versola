@@ -168,9 +168,15 @@ export interface OAuthClient {
   /** What this client changes in the theme it uses (a partner app with its own brand); absent or
    *  null when it changes nothing. */
   themeOverrides?: ThemeOverrides | null;
+  /** The partner that owns the client (#549); absent or null for a first-party client. */
+  partnerId?: string | null;
+  /** Where a partner-owned client stands with the operator; absent for a first-party client. */
+  approval?: ClientApproval;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }
+
+export type ClientApproval = 'pending' | 'approved' | 'rejected';
 
 /** A client that obtains its certificate through EST: `pending` until its first certificate is
  *  issued, then when the latest one expires and, where chains end, when the chain does (renewing is
@@ -277,6 +283,16 @@ export interface ChallengeSettingsRecord {
    * dark scheme (light artwork). Both or neither. */
   logoLight?: string | null;
   logoDark?: string | null;
+  /** What the tenant's audit log records; central answers the defaults for a tenant that has not chosen. */
+  auditSettings?: AuditSettings;
+}
+
+/** The two switches of a tenant's audit log, sent and stored as one object. */
+export interface AuditSettings {
+  /** Off, none of the tenant's events is recorded. Events that belong to no tenant are recorded either way. */
+  log: boolean;
+  /** Whether a refresh_token grant is an event of the log. Refusals and the reuse of a refresh token are recorded either way. */
+  tokenRefresh: boolean;
 }
 
 /** The members of a challenge-settings record a PATCH names: absent keeps the stored value, a value replaces it, `null`
@@ -396,6 +412,8 @@ export interface Resource {
   hasPreviousSecret: boolean;
   /** What the resource lets each of its audience clients take, one per client; absent when it sets none. */
   audienceRateLimits?: AudienceRateLimit[];
+  /** The partner that owns the resource; absent or null for a first-party one. */
+  partnerId?: string | null;
 }
 
 // Pagination
@@ -429,6 +447,94 @@ export interface Edge {
   accessLogPolicy?: AccessLogPolicy;  // absent when none is set: the edge uses its built-in defaults
   rateLimitPolicies?: RateLimitPolicies;  // absent when none are set: the edge applies no rate limit
   policyRevisions?: Record<string, number>;  // how often each policy section changed, for the compare-and-set of the policies patch
+  /** The edge group the edge belongs to; `first_party` edges serve the operator, `partner` edges a partner (#549). */
+  groupId: string;
+  groupKind: EdgeGroupKind;
+  partnerId?: string | null;
+  /** The partner's name and tenant, so the global Edges view can name and open a partner of another tenant. */
+  partnerDisplayName?: string | null;
+  partnerTenantId?: string | null;
+  publicUrl?: string;
+  /** The not-after of the edge's current certificate and when it was last renewed; absent until enrolled. */
+  certificateNotAfter?: string;
+  lastRenewedAt?: string;
+}
+
+export type EdgeGroupKind = 'first_party' | 'partner';
+
+// Partners (#549): an organisation that runs its own edge and owns clients inside the operator's tenant.
+export type PartnerStatus = 'onboarding' | 'active' | 'suspended';
+
+export type PartnerAuthMethod = 'tls_client_auth' | 'private_key_jwt';
+
+export interface PartnerLimits {
+  /** What a partner client may request; `openid` is always in. */
+  scopes: string[];
+  /** Redirect URIs must be https and under one of these. */
+  redirectDomains: string[];
+  maxClients: number;
+  maxEdges: number;
+  /** Seconds. */
+  accessTokenTtlMax: number;
+  refreshTokenTtlMax: number;
+  clientAuthMethods: PartnerAuthMethod[];
+}
+
+export interface Partner {
+  id: string;
+  /** Sent back on every update: central refuses a write made on a stale copy. */
+  version: number;
+  tenantId: string;
+  displayName: string;
+  logoUri?: string | null;
+  contact: { email: string; phone?: string | null };
+  status: PartnerStatus;
+  limits: PartnerLimits;
+  groupId: string;
+  consoleClientId: string;
+  reviewAt?: string | null;
+  createdAt: string;
+}
+
+export type PartnerApprovalKind = 'client_create' | 'client_change' | 'profile_change' | 'rate_limits_change';
+export type PartnerApprovalStatus = 'waiting' | 'approved' | 'rejected' | 'withdrawn';
+
+export interface PartnerApproval {
+  id: string;
+  partnerId: string;
+  kind: PartnerApprovalKind;
+  /** The client id or the partner id. */
+  targetId: string;
+  /** The fields as requested. */
+  requested: Record<string, unknown>;
+  /** The fields as registered; absent for `client_create`. */
+  current?: Record<string, unknown>;
+  /** The field names that need the operator. */
+  outsideLimits: string[];
+  /** What the operator registered when they approved with overrides; `requested` is never rewritten. Absent when approved as asked. */
+  applied?: Record<string, unknown>;
+  requestedBy: string;
+  requestedAt: string;
+  status: PartnerApprovalStatus;
+  decidedBy?: string;
+  decidedAt?: string;
+  note?: string;
+}
+
+/** What `POST /configuration/partners` creates in one go. */
+export interface CreatePartnerRequest {
+  partner: Omit<Partner, 'version' | 'tenantId' | 'status' | 'groupId' | 'consoleClientId' | 'createdAt'> & { tenantId: string };
+  consoleClient: { redirectUri: string };
+  firstEdge: { id: string; publicUrl: string };
+}
+
+export interface CreatedPartner {
+  partner: Partner;
+  edge: Edge;
+  /** `vtk1.<enroll address>.<secret>`: the one thing the operator copies, shown once. */
+  enrollmentToken: string;
+  /** When the token stops working, as central answered it. */
+  expiresAt: string;
 }
 
 export interface ServiceKey {

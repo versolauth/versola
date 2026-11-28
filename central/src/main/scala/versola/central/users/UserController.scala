@@ -8,7 +8,7 @@ import versola.central.configuration.roles.{RoleGrantGuard, RoleService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Observability
-import versola.util.{Email, EnvName, PageLimit, Phone}
+import versola.util.{Email, EnvName, PageLimit, Phone, TemporaryPasswordTtl}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
@@ -355,6 +355,8 @@ object UserController extends AuditedController:
         response <-
           if body.channel.contains(DeliveryChannel.show) && env.isProd then
             ZIO.succeed(Response.status(Status.NotFound))
+          else if !TemporaryPasswordTtl.isValid(body.expiresInSeconds) then
+            Observability.setError("invalid_expires_in").as(Response.text(TemporaryPasswordTtl.violation).status(Status.BadRequest))
           else
             service.resetPassword(body).map:
               case Some(password) => Response.json(ResetPasswordResponse(password).toJson)

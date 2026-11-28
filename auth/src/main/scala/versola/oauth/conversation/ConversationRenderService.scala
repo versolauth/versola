@@ -454,7 +454,8 @@ object ConversationRenderService:
             idToken <- idTokenData match
               case Some(data) =>
                 for
-                  client <- configuration.get(record.clientId)
+                  // gone between the last step and this one (a suspended partner's client): the conversation is over
+                  client <- configuration.find(record.clientId).someOrFail(versola.oauth.conversation.model.Error.ConversationExpired)
                   signingKey <- jwksService.signingKey(client.tenantId)
                   cHash = JWT.leftHalfHash(encodedCode, signingKey.algorithm)
                   // FAPI 1.0 Advanced §5.2.2-4: `s_hash` binds the id_token to the `state`
@@ -569,7 +570,9 @@ object ConversationRenderService:
             ),
             value.version,
           )
+          // The page carries the token that authorizes the logout; it is not kept by the browser or a shared cache.
           htmlResponse(logoutConfirmPage(info, css, logo))
+            .addHeader(Header.Custom("Cache-Control", "no-cache, no-store"))
 
     private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.Signature.Asymmetric): Task[String] =
       val claims = data.claims + ("sid" -> Json.Str(data.sessionId))

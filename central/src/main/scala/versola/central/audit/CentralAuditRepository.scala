@@ -19,6 +19,17 @@ trait CentralAuditRepository extends AuditEventRepository:
     * answer. */
   def adminActions(userId: UUID, from: Instant, until: Instant, limit: Int): Task[List[AuditEvent]]
 
+  /** The rows about a partner (#962: `partner_id`, generated from `details.partnerId`), newest first, continued after `before` as
+    * [[userEvents]] is; narrowed to one actor (`actor_id`), one kind, and rows whose target, actor or kind contains `q`. */
+  def partnerEvents(
+      partnerId: String,
+      before: Option[CentralAuditRepository.Key],
+      actor: Option[String],
+      kind: Option[String],
+      q: Option[String],
+      limit: Int,
+  ): Task[List[AuditEvent]]
+
 object CentralAuditRepository:
   /** A position in the order of the log: where the previous page ended. */
   case class Key(at: Instant, id: UUID)

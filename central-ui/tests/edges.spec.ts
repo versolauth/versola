@@ -26,7 +26,7 @@ test('lists edges with their tenants, key state and DPoP nonce, filters and sear
   await loadAdminApp(page, { path: edgesPath, state: { edges: [alphaEdge, bravoEdge], tenants } });
 
   const table = page.locator('versola-data-table');
-  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Tenants', 'Key', 'DPoP nonce', 'Actions']);
+  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Group', 'Serves', 'Key', 'Certificate', 'DPoP nonce', 'Actions']);
   const alpha = table.getByRole('row').filter({ hasText: 'edge-alpha' });
   await expect(alpha).toContainText('tenant-alpha');
   await expect(alpha).toContainText('Key current');
@@ -609,6 +609,44 @@ test('rate limits: the number of edge pods is saved with the set and shown on th
   await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('3 (each pod enforces 1/3 of a limit)');
 });
 
+test('rate limits: the limit on /native/start shows its default, is set on its own, validated, and returns to the default', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge] } });
+  const card = sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
+  await expect(card).toContainText('Default: shadow · 60 / 60 s per address · burst 20 (only with client-ip = forwarded)');
+
+  await card.getByRole('button', { name: /Edit/ }).click();
+  const dialog = sidePanel(page, 'Edit rate limits');
+  await expect(dialog.getByText('Not set: the edge applies the default')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Set a limit' }).click();
+  await expect(dialog.getByLabel('Native start: calls')).toHaveValue('60');
+  await dialog.getByLabel('Native start: calls').fill('10');
+  await expect(dialog.getByText('burst must not exceed the limit')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+  await expect(dialog.getByLabel('Native start: burst')).toBeFocused();
+  expect(api.requests.filter(request => request.method === 'PATCH')).toHaveLength(0);
+
+  await dialog.getByLabel('Native start: calls').fill('120');
+  await dialog.getByLabel('Native start: burst').fill('30');
+  // The warning about the address is shown only while the limit refuses; an operator needs nobody's approval.
+  await expect(dialog.getByText('Check how this edge reads the caller’s address before enforcing')).toHaveCount(0);
+  await dialog.getByRole('group', { name: 'Mode' }).getByRole('button', { name: 'Enforce' }).click();
+  await expect(dialog.getByText('Check how this edge reads the caller’s address before enforcing')).toBeVisible();
+  await expect(dialog.getByText('This limit needs the operator’s approval')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+  expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toEqual({
+    rateLimits: { replicas: 1, policies: [], nativeStart: { limit: 120, windowSeconds: 60, burst: 30, mode: 'enforce' } },
+    expectedRevisions: { rateLimits: 0 },
+  });
+  await expect(card).toContainText('Enforce · 120 / 60 s per address · burst 30');
+  await expect(card).toContainText('None: only the limit on /native/start applies');
+
+  await card.getByRole('button', { name: /Edit/ }).click();
+  await sidePanel(page, 'Edit rate limits').getByRole('button', { name: 'Use the default' }).click();
+  await sidePanel(page, 'Edit rate limits').getByRole('button', { name: 'Save rate limits' }).click();
+  await expect(card).toContainText('Default: shadow');
+  expect(api.requests.filter(request => request.method === 'PATCH').at(-1)?.body).toMatchObject({ rateLimits: null });
+});
+
 test.describe('policies are one endpoint, with revisions', () => {
   const alpha = { ...alphaEdge, accessLogPolicy: { mode: 'sampled' }, policyRevisions: { accessLog: 4 } };
 
@@ -645,4 +683,72 @@ test.describe('policies are one endpoint, with revisions', () => {
     expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
     await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' })).toContainText('Enforce (set here)');
   });
+});
+
+// ── Edge groups (#549): first-party and partner edges ──────────────────────────────────────────
+
+const partnerOfEdges = {
+  id: 'pilot-pay', tenantId: 'tenant-alpha', displayName: 'Pilot Pay', logoUri: null, contact: { email: 'security@pilotpay.example' },
+  status: 'active' as const, groupId: 'pilot-pay', consoleClientId: 'pilot-pay-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
+  limits: { scopes: ['openid'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const] },
+};
+const partnerEdge = { id: 'edge-pilot-eu-1', hasOldKey: false, requireDpopNonce: true, groupId: 'pilot-pay', groupKind: 'partner' as const, partnerId: 'pilot-pay', publicUrl: 'https://login.pilotpay.example', certificateNotAfter: '2026-11-17T00:00:00Z', lastRenewedAt: '2026-11-03T02:00:00Z' };
+const waitingEdge = { id: 'edge-pilot-kz-1', hasOldKey: false, requireDpopNonce: true, groupId: 'pilot-pay', groupKind: 'partner' as const, partnerId: 'pilot-pay', publicUrl: 'https://login-kz.pilotpay.example' };
+const groupedPath = `${edgesPath}&tenant=tenant-alpha`;
+
+test('shows the group, the kind and the certificate of every edge, and filters first-party from partner', async ({ page }) => {
+  await loadAdminApp(page, { path: groupedPath, state: { edges: [alphaEdge, partnerEdge, waitingEdge], tenants, partners: [partnerOfEdges] } });
+  const table = page.locator('versola-data-table');
+  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Group', 'Serves', 'Key', 'Certificate', 'DPoP nonce', 'Actions']);
+  const alpha = table.getByRole('row').filter({ hasText: 'edge-alpha' });
+  await expect(alpha).toContainText('default');
+  await expect(alpha).toContainText('First-party');
+  await expect(alpha).toContainText('tenant-alpha');
+  const pilot = table.getByRole('row').filter({ hasText: 'edge-pilot-eu-1' });
+  await expect(pilot).toContainText('pilot-pay');
+  await expect(pilot).toContainText('Partner');
+  await expect(pilot).toContainText('Clients of Pilot Pay');
+  await expect(pilot).toContainText('Group certificate');
+  await expect(pilot).toContainText('to Nov 17, 2026');
+  await expect(pilot).toContainText('Renews by itself');
+  await expect(table.getByRole('row').filter({ hasText: 'edge-pilot-kz-1' })).toContainText('Waiting for enrollment');
+
+  await page.getByRole('button', { name: 'Partner', exact: true }).click();
+  await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-pilot-eu-1/, /edge-pilot-kz-1/]);
+  await page.getByRole('button', { name: 'First-party', exact: true }).click();
+  await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-alpha/]);
+
+  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+});
+
+test('a partner edge has a group card with its partner and certificate, no signing key and no tenants; the partner opens from it', async ({ page }) => {
+  await loadAdminApp(page, { path: `${groupedPath}&id=edge-pilot-eu-1`, state: { edges: [alphaEdge, partnerEdge], tenants, partners: [partnerOfEdges] } });
+  const dialog = panel(page, 'edge-pilot-eu-1');
+  await expect(dialog.getByRole('dialog')).toBeVisible();
+  const group = dialog.getByRole('region', { name: 'Group and certificate' });
+  await expect(group).toContainText('pilot-pay · partner');
+  await expect(group).toContainText('valid to Nov 17, 2026 · last renewed Nov 3, 2026');
+  await expect(group).toContainText('Renews by itself');
+  await expect(dialog.getByRole('region', { name: 'Signing key' })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Linked tenants' })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Overload protection' })).toBeVisible();
+  // The rate limits are the partner's, one setting for the group: shown here, not editable (the operator's PATCH is refused for them).
+  const limits = dialog.getByRole('region', { name: 'Rate limits' });
+  await expect(limits).toContainText('Set by the partner');
+  await expect(limits.getByRole('button', { name: 'Edit rate limits' })).toHaveCount(0);
+  await expect(limits.getByRole('button', { name: 'Remove all policies' })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Overload protection' }).getByRole('button', { name: /Edit/ })).toBeVisible();
+  await group.getByRole('button', { name: 'Pilot Pay' }).click();
+  await expect(page).toHaveURL(/view=partners/);
+  await expect(page).toHaveURL(/id=pilot-pay/);
+});
+
+test('says the renewal is refused when the partner is suspended', async ({ page }) => {
+  await loadAdminApp(page, { path: `${groupedPath}&id=edge-pilot-eu-1`, state: { edges: [partnerEdge], tenants, partners: [{ ...partnerOfEdges, status: 'suspended' as const }] } });
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-pilot-eu-1' })).toContainText('Renewal refused');
+  const group = panel(page, 'edge-pilot-eu-1').getByRole('region', { name: 'Group and certificate' });
+  await expect(group).toContainText('Renewal refused');
+  await expect(group).toContainText('The partner is suspended: central refuses the renewal');
+  await expect(group).toContainText('suspended');
 });

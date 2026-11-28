@@ -305,6 +305,13 @@ versola migrate    # applies central's, auth's and edge's migrations from one th
 versola up         # central → auth, edge → versola-proxy, then checks a request reaches auth
 ```
 
+`versola migrate` runs Flyway in version order, without `outOfOrder`: a migration that was never applied and whose version is below
+one already applied is refused, not applied silently. Releases only add higher versions (CI refuses a pull request that does otherwise),
+so this does not trigger on an upgrade; if it does, a database ran an unreleased build or its schema
+history was changed by hand.
+Flyway used to warn `outOfOrder mode is active` on every `versola migrate`; that warning is gone. (The services' own startup
+Flyway, used by `RUN_MIGRATIONS=true` in development, is unchanged.)
+
 Services never migrate on their own startup ([`RUN_MIGRATIONS`](#run_migrations)). `versola up` ends
 by printing where the admin's bootstrap password is ([First admin login](#first-admin-login)).
 `versola bootstrap vps <version> --auth-url … --postgres-host …` runs configure, migrate and up in
@@ -366,7 +373,10 @@ nothing.
 1. **Cut a release.** GitHub → Releases → new tag (no `v`), target `main` → *Generate release notes*
    → *Publish*.
 2. **Wait for the images:** `docker-tools`, `docker-auth`, `docker-central`, `docker-edge` green.
-3. **Check the release does not *edit* an applied migration** — only adding is safe. On a clone with
+3. **Check the release does not *edit* an applied migration** — only adding is safe. CI already enforces this on
+   every pull request (`.github/scripts/check-migrations-immutable.sh`: a migration of the latest release must stay
+   byte for byte, and a new one must have a version above `main`'s), so this is the check of what is about to be
+   published, for a release cut from something other than a green `main`. On a clone with
    both tags: `git diff --name-status <old>..<new> -- '*/postgres/migrations/*'` must show only `A`
    lines (or check *Files changed* at `…/versola/compare/<old>...<new>`). Keep the trailing `/*`:
    migrations live deeper (for example `auth/implementations/postgres/migrations/V0015__….sql`), and
@@ -503,6 +513,23 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
 
+#### Behaviour change: edge sends a resource its own view of the caller, not the forwarding fields the caller wrote
+
+On `/resources/*`, edge no longer passes these request fields to the resource: `Forwarded`, every `X-Forwarded-*`, `X-Real-IP`,
+`Proxy-Authorization`, and the connection-specific ones, which are `Connection` (and each field it names), `Proxy-Connection`,
+`Keep-Alive`, `TE`, `Transfer-Encoding` and `Upgrade` (RFC 9110 §7.6.1). Instead it sets `X-Forwarded-For` and `X-Real-IP` to one
+address, the one it uses for the address rate limit (`client-ip`, see [Rate limits](#rate-limits)): the peer of the connection by
+default, or the value of `client-ip-header` when `client-ip = "forwarded"`. The address is written as an address (an IPv6 one whole, an IPv4-mapped one as IPv4), not as the key of the address rate limit. When edge has no address it can vouch for, it sets neither: the peer of a connection that stands in for a missing or malformed `client-ip-header`, and the mutual-TLS listener, where the caller is a certificate. The same fields
+(and `Proxy-Authenticate`) are dropped from what the resource answers. `Forwarded` is never set (RFC 7239 §4: off by default).
+Before, all of them went through as the caller sent them, so a caller could choose the identity a resource read from them.
+
+- **Who can notice.** A resource that reads the client address from `X-Forwarded-For` / `X-Real-IP` set by a proxy in front of edge:
+  with the default `client-ip = "socket"` it now gets the address of that proxy. Set `client-ip = "forwarded"` (only when edge is reachable
+  *only* through that proxy, as already required for the address limit) and the resource gets the address the proxy set.
+  A resource that reads `X-Forwarded-Proto` or `X-Forwarded-Host` no longer gets them and has to be configured with its public origin.
+- **CEL.** `request.headers` still shows the fields as the caller sent them; a rule must not read an identity from them.
+- **No setting, no migration.**
+
 #### Behaviour change: a one-time code is good for 10 minutes after it was sent
 
 A code used to be accepted for as long as its sign-in lived (`authConversationTtlSeconds` of the tenant, 15 minutes by default, more where
@@ -513,6 +540,22 @@ no longer stops at the first digit that differs. The 10 minutes is fixed, not a 
 - **Migration.** None: no schema or setting; the code is still kept in the sign-in as before. A sign-in in progress at the upgrade whose code
   was sent more than 10 minutes ago needs a new code.
 - **What to check.** A tenant whose conversation TTL is below 10 minutes is unaffected; one above it now has the shorter limit for codes.
+
+#### Behaviour change: what `request.query`, `request.headers` and a JSON body mean to a rule when a name occurs more than once
+
+A rule reads one value and the resource may read another, so where a name occurs more than once the rule no longer guesses:
+
+- **`request.query['x']`** is the value only when the parameter occurs exactly once. A parameter that occurs twice is absent there, and a
+  rule that reads it is unsatisfied (`403`, like any rule that reads missing data). Before, it was the first value, while some resources read
+  the last. `request.queryAll['x']` is unchanged and has every value; a rule that needs repeated parameters reads that.
+- **`request.headers['x']`** joins the lines of a field that was sent more than once with `, ` in the order they came (RFC 9110 §5.3), which is
+  how a resource reads them. Before, a repeated field showed one of its lines. Names are lower case, as before. `request.headersAll` is unchanged.
+- **A JSON body** in which a name occurs twice in one object (at any depth), or that claims `application/json` and is not JSON, is answered
+  `400` with no body and is not sent on. Before, the rules read the last of the two values and the body was forwarded with both; an unreadable
+  body was a `500`.
+
+- **Who can notice.** A rule that reads `request.query` of a parameter clients repeat, and a client that sends duplicate names in a JSON body.
+- **No setting, no migration.**
 
 #### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
 
@@ -527,6 +570,34 @@ in a compose file or a Helm `env` block is ignored. See [Access log](#access-log
   upgrading if you want the lines back.
 - Schema: migration `V1028` adds the nullable `edges.access_log_policy` column; additive, the previous release runs on it.
   `LOG_LEVEL` is unchanged.
+
+#### Behaviour change: edge refuses a state-changing call with the session cookie that a browser says comes from another origin
+
+`SameSite=Strict` keeps a cross-**site** page from using the `EDGE_SESSION` cookie, but not another subdomain of the same site: that is the
+same site. So on `/resources/*`, a call that is authenticated by the cookie and whose method is not `GET`, `HEAD`, `OPTIONS` or `TRACE` is
+now answered `403` (error code `cross_origin_rejected`, nothing is sent on) when the browser says where it comes from and that is not an
+origin of ours:
+
+- `Origin` present: it decides. It has to be the origin of `edge-url`, or of the `redirect-uri`, `post-login-redirect-uri` or
+  `post-logout-redirect-uri` of the preset the session was made for. `null` and anything else is refused.
+- No `Origin`, `Sec-Fetch-Site` present: `same-site` and `cross-site` are refused; `same-origin`, `none` and an unknown value go on.
+- Neither: goes on. A script, a test or an old client is not a browser holding someone else's cookie.
+
+A call with a bearer or DPoP token, and every read, is not checked. Nothing else changes: no setting, no migration.
+
+- **How to see it.** Every refusal is counted in `edge_cookie_origin_decisions_total{surface="resources",result}` (`refused_origin`,
+  `refused_fetch_site`), and a call with neither header, which goes on, as `result="no_headers"`; an origin is never a label. The log
+  has a `WARN` line for a refusal that names the origin and the preset (`cookie call on resources refused (refused_origin): POST
+  origin='https://app.example.com' preset=web`), at most once a minute for each origin and preset (when more than 256 different origins are refused within a minute, further ones are counted and not named, and one line a minute says so): that origin is what goes into the
+  preset's post-login redirect URI, if the app is yours. After an upgrade, a count above zero that you cannot explain from your own apps is
+  a page on another origin using someone's cookie.
+- **The partner console** (`/partner/api/*`, same cookie) is checked by the same rule, with `surface="partner"`: a state-changing request
+  with `Sec-Fetch-Site: same-site` or `cross-site` and no `Origin` is refused `403 origin_mismatch` as one with a foreign `Origin` was.
+
+- **Who can notice.** A browser app that calls `/resources/*` with the cookie from an origin that is not `edge-url` and not one of its
+  preset's URIs, for example a single-page app on `app.example.com` whose preset sends the user back to `edge.example.com`. Put the app's
+  origin in the preset (its post-login redirect URI) and the call goes on. A session whose preset was removed accepts only `edge-url`'s origin
+  until the user signs in again.
 
 #### Behaviour change: `auth` keeps its own list of revoked access tokens (migration `V0032`)
 
@@ -796,7 +867,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Central's audit log.** `central_audit_event` (V1034) holds what administrators did through central's API (`admin.<resource>.<operation>`,
   a look at a user, a query of the audit report, every response that hands a secret back) and what bootstrap created
   (`system.bootstrap`). It is partitioned by day like the antifraud event log, and the service keeps the partitions: it creates
-  14 days ahead and drops a day once the whole day is older than `audit.retention`. Dropping a partition is the retention; nothing is
+  14 days ahead and drops a day once the whole day is older than 7 days. Dropping a partition is the retention; nothing is
   vacuumed. A row whose day had no partition lands in `central_audit_event_default`; those rows are **never moved** into the day's partition
   (an insert-only logical replication of the table would see them twice), a day that has rows in the default is not attached and
   central reports it (`audit_events_in_default`), and the rows leave the default when they age out of the retention. A trigger
@@ -805,35 +876,36 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   table (or be a member of the owner); otherwise central logs that the partitions are not maintained and `audit_partition_owner_mismatch`
   is set. Long-term keeping is the operator's logical replication of `central_audit_event` (a publication with `publish_via_partition_root = true`
   and `publish = 'insert'`, an unpartitioned table on the subscriber; the publisher needs PostgreSQL 13 or later).
-  The `audit` block of central's `env.conf` is optional, every key has a default, and a deployment that sets none records admin actions
-  for 7 days:
+  The log is kept 7 days and no key of `env.conf` changes that. What is recorded is set per tenant, with the two switches on the Security
+  page of the console (below, "Audit log (`auth_audit_event`...)"). An `audit` block in an `env.conf` is ignored.
 
-  ```hocon
-  audit {
-    retention     = "7 days"      # 1 to 14 days, any other value stops the start; about 37 GB a day per 1 000 events a second (see below)
-    overflow      = "drop"        # drop | block: what a full writer queue does to an event (drop does not wait, block waits up to block-timeout for room)
-    block-timeout = "2 seconds"
-    events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
-  }
-  ```
-
-  **Disk.** `audit.retention` is from 1 to 14 days, and central refuses to start with another value. A row is about 430 bytes on disk,
-  indexes included, so at 1 000 events a second the log takes about 37 GB a day: about 260 GB for 7 days and about 520 GB for 14 days;
-  at 100 events a second a tenth of that. Events a second equal requests a second only if every request records an event, and
-  `audit.events.admin-user-viewed` changes that. The per-user report asks auth, which keeps its log as long, for the same window. This is a
+  **Disk.** A row is about 430 bytes on disk, indexes included, so at 1 000 events a second the log takes about 37 GB a day: about
+  260 GB for 7 days; at 100 events a second a tenth of that. Events a second equal requests a second only if every request records an
+  event, and a tenant's `auditSettings.log` switch changes that. The per-user report asks auth, which keeps its log as long, for the same window. This is a
   design estimate, to be replaced with the figure measured under load.
 
-  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`) is
-  not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
-  `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
-  bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
-  an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
-  alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
-  default).
+  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`,
+  and `actorIp`, the address of the caller) names no actor and is refused (below); it is counted in `audit_actor_missing_total{reason}`
+  (an alert is in `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and
+  central's bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to
+  endpoints an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an
+  operator added alone); until edge has synced them (its sync is the refresh interval, 5 minutes by default), admin calls through it are
+  refused for want of an actor.
 
-  The `ip` of an `admin.*` row is empty: the address of the administrator's browser is not passed on to central yet, so an empty `ip`
-  there means "not recorded", not an unknown source. The log is the hot window of 7 days; keeping it as the record of what was done
-  needs the replication described above.
+  A call of an administrator's route that names no valid actor is refused with `401` and the handler does not run: every route of the
+  admin API except the ones that are not an administrator's call (auth's syncs, the certificate flows `/est/*` and
+  `/users/registrations`, the `/service/*` tooling) needs a valid `actorId` (a user, or the client a client-credentials token was
+  issued to). The refusal is counted in `audit_actor_missing_total{reason}` (`absent`, `invalid`) and in `audit_actor_refused_total{reason}`
+  and, for a change, recorded as a denial with the reason `actor_required`. So a script that holds the central resource secret and calls
+  central directly is refused; it goes through edge, which states who it is.
+
+  The `ip` of an `admin.*` row is the address edge found for the caller by its own `client-ip` setting (`socket`, the peer of the
+  connection, or `forwarded`, the header named by `client-ip-header`), so it is only as right as that setting: with `socket` behind a
+  proxy or load balancer it is the proxy's address. Edge sends none on its mutual-TLS listener, and none under `forwarded` when the
+  header is missing or not an address; an empty `ip` there means "not recorded". An `actorIp` that is not an address is not recorded and
+  is counted in `audit_actor_missing_total{reason="invalid_ip"}`. Central passes the address on to auth, which records it in the rows of
+  the changes it makes for the call. The log is the hot window of 7 days; keeping it as the record of what was done needs the
+  replication described above.
 
   `audit:read` is not tenant-scoped, like `users:read`: a holder reads the report of any user.
 
@@ -1102,22 +1174,18 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Audit log (`auth_audit_event`, migration `V0031`; #469).** `auth` records every authentication, token, consent,
   account, antifraud administration and refused certificate enrolment event (the kinds are the closed vocabulary `AuthAuditKinds` of `auth`; the per-user report
   reads them through `central`) into `auth_audit_event`, partitioned by day like `af_event` and maintained by the service
-  the same way (today and 14 days ahead, at start-up and every hour; a day older than `audit.retention` is dropped,
-  which is the retention: nothing is deleted row by row except from the default partition). Its keys are the `audit`
-  block of `auth`'s `env.conf`, **every key required**, written by `scripts/gen-env.scala` (a config written before
-  the block existed makes `auth` refuse to start naming the missing key, as for `antifraud`):
+  the same way (today and 14 days ahead, at start-up and every hour; a day older than 7 days is dropped,
+  which is the retention: nothing is deleted row by row except from the default partition). No key of `env.conf` configures the log:
+  the 7 days are fixed, and an `audit` block left in the `env.conf` of `auth` or `central` is ignored.
 
-  ```hocon
-  audit {
-    retention     = "7 days"      # the hot window, 1 to 14 days, any other value stops the start; the long-term copy is the replication below
-    overflow      = "drop"        # drop: an event that finds no room in the writer's queue is counted in audit_events_dropped_total
-                                  #   and the request goes on;
-                                  # block: the event waits up to block-timeout for room first, then it is counted as dropped
-                                  #   (the request goes on in both cases)
-    block-timeout = "2 seconds"
-    events { token-refresh = false, authorize-success = true, par-success = true }   # the high-volume kinds; refusals, reuse detection and failures are always recorded
-  }
-  ```
+  **Switches.** Each tenant has two, on the Security page of the console (Audit log) and as `auditSettings` (`log` and `tokenRefresh`) of the
+  tenant's challenge settings (`PUT` and `PATCH /configuration/challenges/challenge-settings`, with the permission of the other
+  Security settings; one JSON column, `challenge_settings.audit_settings`, migration `V1035`, additive). **Audit log** (on by default): off, nothing is recorded for the tenant's events, in `auth` and in `central`.
+  **Record token refreshes** (off by default): whether a `refresh_token` grant is a `token.issued` event; a refused refresh and the
+  reuse of a refresh token are recorded either way. `auth` takes the tenant of an event from the client it names, so a row
+  carries `tenant_id`; central takes it from the tenant a change is made to, else from the administrator's token. An event that belongs
+  to no tenant (a client that is not registered, the first run of central) is always recorded, and so is that of a tenant with no
+  settings. A change reaches central at once and `auth` within `configuration-cache-refresh-interval`.
 
   **What the trigger covers.** `auth_audit_event_immutable` is a row trigger on the table and every partition, and a
   `BEFORE TRUNCATE` statement trigger on the parent table. It refuses an `UPDATE` or `DELETE` of a row of any partition and a
@@ -1132,12 +1200,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the service's role, as for `af_event` (`audit_partition_owner_mismatch`).
 
   **Disk.** A row is about 430 bytes on disk, indexes included, so at 1 000 events a second `auth_audit_event` takes about 37 GB a day:
-  about 260 GB for the 7 days of the default and about 520 GB for the 14 days that are the most `audit.retention` takes; at 100 events a
-  second a tenth of that. Events a second equal requests a second only if every request writes an event: `audit.events.token-refresh`
-  (off by default), `authorize-success` and `par-success` are what changes it. This is a design estimate, to be replaced with the figure
+  about 260 GB for the 7 days; at 100 events a
+  second a tenth of that. Events a second equal requests a second only if every request writes an event: a tenant's `auditSettings.log` and
+  `auditSettings.tokenRefresh` (off by default) are what changes it. This is a design estimate, to be replaced with the figure
   measured under load.
 
-  **Facts to plan for.** The hot window is 7 days (`audit.retention`) unless you change it. A replication slot that is
+  **Facts to plan for.** The hot window is 7 days. A replication slot that is
   not read keeps the WAL it has not sent on the primary's disk until the slot is read or dropped; the alert
   `AuditReplicationSlotRetainsWal` watches the WAL each slot holds back (there is no metric of whether the subscription
   exists). `auth_audit_event.at` is the clock of the node that records the event, so the nodes need synchronised clocks (NTP
@@ -1148,8 +1216,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **What is recorded, and how often.** Refusals reachable without signing in (`client.auth_failed`, `token.refused`, a
   failed `authorize.request`, a refused `par.request`) are counted in memory per (kind, client, address, reason) and written
   as one row a minute with `details.count`; the table of keys holds at most 10 000, past which new keys are counted
-  together in one more row. The `token.issued` of a refresh-token grant is off by default (`events.token-refresh = false`); `token.refused` and
-  `token.reuse_detected` are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
+  together in one more row. The `token.issued` of a refresh-token grant is off by default (the tenant's `auditSettings.tokenRefresh`); `token.refused`,
+  `token.reuse_detected` and `token.rebound` (a grant of a client registered by an edge-group name bound to another certificate of
+  the group) are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
   names `email`, `phone` or `login` and never a value, only when one changed); `DELETE /users` ends the user's sessions with
   `session.ended` and the cause `user_deleted`.
 
@@ -1323,13 +1392,19 @@ the certificate relationships are described in
 
 - `step-ca` — the internal CA (state in `versola-step-ca-*`): one root and **three intermediates**, so
   each listener trusts exactly the roles it should (a trust anchor that is the root would accept all
-  of them). **client** ("Versola Client CA", created by the image) is what `step-ca` signs with and
+  of them). **client** ("Versola Client CA", created with the root) is what `step-ca` signs with and
   what edge-fronted clients' certificates come from, through a `central` JWK provisioner (14-day
   maximum lifetime); to get one, register the client with `issueEdgeClientCertificate: true` and any
   `mtlsAuth`. **server** signs the listener certificates of `auth` and `central`, **edge** signs the
   identity of an edge. The two extra intermediates are created once, when missing, and only ever used
-  offline by `mtls-init`. Its first start prints the generated password of an unused `versola`
-  provisioner once to `docker logs versola-step-ca`; keep that log private or remove the provisioner.
+  offline by `mtls-init`. The CA is created at the first start by `step-ca-init.sh` (in the bundle)
+  rather than the image's own init, which prints the password of an unused `versola` provisioner to
+  `docker logs versola-step-ca`; nothing secret reaches that log now, and a CA created this way keeps
+  its password in the volume at `0600` (`secrets/password`). Every start then removes the `versola`
+  provisioner when it is there, once `central`'s is in, so on a CA created before, whose log printed
+  that password, the password no longer opens anything. Such a CA keeps its keys, its password and
+  `central`'s provisioner; the old line stays in its container's log until the container is
+  recreated, which the first `versola up` or `versola rollout` with such a bundle does.
 - `mtls-init` — one-shot (`mtls-init.sh` in the bundle; its header is the contract). It writes into
   `versola-mtls-*`:
 
@@ -1471,8 +1546,8 @@ in `central` (`outcome`: `issued`, `unauthorized`, `bad_request`, `forbidden`, `
 
 > **Design for the next release.** This section describes what that release contains, so a deployment
 > can be planned. Nothing here is released yet and nothing is certified. The user-facing version, with
-> the same facts, is "Network, domains and certificates" and "Partner edge" in the documentation
-> (versolauth/versola-website, in the pull request versolauth/versola-website#144).
+> the same facts, is in the documentation: "Network, domains and certificates", "Partners" and
+> "Running an edge in partner mode".
 
 Ports, to avoid mixing them up: `central` has `PORT` (internal), `MPORT` (the edges' mutual TLS) and `APORT` (public; there it serves the enrollment route `POST /edge/enroll` behind a TLS terminator, and it binds only where `APORT` is set). `auth` has its own `APORT`, a different service and a different port.
 
@@ -1508,18 +1583,17 @@ certificate expiry.
    `central.<domain>` URL) and a persistent `identity { directory }`. The edge makes its key locally,
    sends a CSR with exactly `urn:versola:edge:<id>` and `urn:versola:edge-group:<group>` to
    `POST /edge/enroll`, and renews with `POST /edge/certificate/renew` at a third of its lifetime left,
-   with a new key each time. The certificate lives 30 days; an outage of `central` of about twenty days is survived. Renewals form a chain from the enrollment; `central`'s `edge-identity { max-age = 365d, auto-extend = true }` extends it itself at `max-age`, so no edge stops for want of a new enrollment. `auto-extend = false` applies only to partners' edges: `central` then stops at `max-age` until `POST /configuration/edges/extend?edgeId=<id>` or a new enrollment (token up to 24 hours). The edge is told the end date in every answer and warns daily from 30 days before; `GET /configuration/edges` shows `identityChainEndsAt`. First-party edges are always extended. Without the volume it must enroll again on every restart.
+   with a new key each time. The certificate lives 30 days (`edge-certificates.validity`); an outage of `central` of about twenty days is survived. An edge of a `partner` group gets `edge-certificates.partner-validity` (14 days unless set). Renewal is always on for as long as the edge is registered; a partner's edge is stopped by suspending the partner (`POST /configuration/partners/suspend`), which refuses it on `/edge/partner/*`, renewal included, so its certificate expires within `partner-validity`. Without the volume it must enroll again on every restart.
 4. Set `central.url` to `https://central-mtls.<domain>` and `native.auth-mutual-tls-url` to
    `https://id-mtls.<domain>`, and pin the server leaves (documentation page "Edge configuration"). In this release the operator updates a remote edge's pins (0.8.0 is planned to publish them from `central`).
 
-**Partner edge.** The operator decides, in `central`: an edge group has a `kind` of `first_party` or
-`partner`, set at creation and never changed by the edge. The `mode` key in an edge's own configuration
-is only a declaration: at start the edge compares it with the group in its credentials and refuses to
-start on a mismatch. A partner group never reaches `/edge/sync/*`, so a partner edge cannot read
-`central`'s configuration; a client of a partner group needs standard client authentication (`private_key_jwt` or
-`tls_client_auth`). Planned, not in this release: `auth` accepting an edge's certificate for the clients of its group. Onboarding: create a `partner` group and its edge, register the partner's clients
-bound to that group, publish `id.<domain>` (and `id-mtls.<domain>` for `tls_client_auth`). A partner
-never gets `central-mtls.<domain>`.
+**Partner edges.** A partner runs its own `edge` in its own network and owns clients inside one of your tenants. What
+you do at deploy time: set `public-urls { enroll, mtls }` in `central`'s configuration (the public names of its enrollment
+and mutual-TLS listeners; the first is written into every enrollment token, and no partner can be created without it) and
+`auth.mtls-url` (the public name of `auth`'s mutual-TLS listener), route those names as in the table above, and hand each
+partner the one enrollment token `POST /configuration/partners` answers. How a partner is onboarded, limited, approved
+and suspended is in the documentation page "Partners" (operations section); the partner's side is "Running an edge in
+partner mode".
 
 **Behaviour change and breaking items** (read before upgrading; `central`, `auth` and every `edge`
 move together and `configure` is re-run)
@@ -1533,7 +1607,7 @@ move together and `configure` is re-run)
   stay with the client CA.
 - The edge identity is 30 days (`vps`) and renewed by the edge itself, not by `versola certs renew`;
   it needs a persistent `identity.directory`. Revocation: deleting the edge, or rotating its signing
-  key (`POST /configuration/edges/rotate-key`), cuts it off at once, because `central` needs both the
+  key (`POST /configuration/edges/rotate-key`, first-party edges only: a partner's edge makes its own), cuts it off at once, because `central` needs both the
   certificate and the edge's signed token. A list of revoked serials comes later.
 - **Not in this release:** `auth` accepting an edge's certificate for a client served by an edge
   (such clients still need their own certificate or `issueEdgeClientCertificate`), and `central`
@@ -1937,6 +2011,7 @@ Nothing changes while the database is up: a drain takes the time it takes.
 | `CONFIG_PATH` | `/app/config/env.conf` | the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | see below |
 | `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images | `accp` (native if it works, else JDK), `accp-required` (refuse to start without it), `jdk`; jar in `VERSOLA_ACCP_JAR` |
+| `VERSOLA_TLS_CIPHER_POLICY` | `bcp195` | `bcp195` refuses the TLS 1.2 AES-CBC cipher suites on the mutual-TLS listeners and on every connection the process opens (RFC 9325 §4.2 recommends only AES-GCM suites; FAPI 2.0 requires BCP 195), and the service does not start when the JDK still offers one; gauge `tls_cbc_refused` is 1 then. `jdk` keeps the JDK's own list (gauge 0). The setting is process-wide: a peer that offers only CBC in TLS 1.2 fails the handshake (`handshake_failure`), whether it is a client of a listener or a server the process connects to. In a `versola`-generated compose file the value is read from the environment of the `versola` command that starts the containers (`export VERSOLA_TLS_CIPHER_POLICY=jdk`; set it in every shell that runs `versola up` or a rollout, or the next start returns to `bcp195`) and defaults to `bcp195`; the chart takes it through `extraEnv` |
 | `LOG_LEVEL` | `info` | lowest level written: `trace`, `debug`, `info`, `warn`, `error`; successful `send-http` lines to our own services are `debug` |
 | `JAVA_OPTS` | fixed budget in the images | overriding replaces the whole string: the images set `-Xms512m -Xmx512m`, `MaxDirectMemorySize` 64m (96m for edge), `MaxMetaspaceSize` 128m, `ReservedCodeCacheSize` 64m, `-Xss512k`, a heap dump and rotating GC log in `/diagnostics` |
 
@@ -1989,8 +2064,10 @@ notification and refuses to start, naming this setting, if it cannot.
     that and worked will now fail.
   - A `PUT /configuration/delivery-settings` with an `otpProvider.url` that the HTTP client cannot parse is refused with `400`.
   - A block saved in central that `auth` cannot read (a password that does not decrypt under the shared secret, a sender
-    or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
-    starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
+    or an address that is not valid) fails the refresh. A running `auth` keeps the senders it has and logs the failure at
+    `ERROR` level on every periodic refresh (every `configuration-cache-refresh-interval`), so an alert on `ERROR` catches it.
+    Only the non-prod `POST /service/configuration/sync` logs it as a `WARN` instead, and it still answers `200`; in prod
+    that endpoint is not served. An `auth` that starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
     remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
   - An SMTP block with `startTls` on now **requires** the upgrade and verifies the server's certificate against
     `host`: a server that does not offer STARTTLS, or whose certificate is not for its name or not signed by a CA

@@ -4,10 +4,10 @@ import { repeat } from 'lit/directives/repeat.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, editorStyles, formStyles, segmentedStyles } from '../styles/components';
 import {
-  BEFORE_TOKEN, DIMENSIONS, MAX_POLICIES, MAX_WINDOWS, MODES, MODE_TEXT, SCOPES, draftFromPolicy, newPolicyDraft, validateDraft,
-  type PolicyDraft, type RateLimitDimension, type RateLimitDraft, type RateLimitMode, type WindowDraft,
+  BEFORE_TOKEN, DIMENSIONS, MAX_POLICIES, MAX_WINDOWS, MODES, MODE_TEXT, NATIVE_START_DEFAULT, SCOPES, draftFromPolicy, nativeStartWeakerThanDefault, newNativeStartDraft, newPolicyDraft, validateDraft,
+  type NativeStartDraft,
+  type PolicyDraft, type RateLimitDimension, type RateLimitDraft, type RateLimitMode, type RateLimitPolicies, type WindowDraft,
 } from '../utils/rate-limit-policies';
-import { fetchRecommendedRateLimitPolicies } from '../utils/central-api';
 import { statusIcon } from './status-icon';
 
 /**
@@ -20,8 +20,12 @@ import { statusIcon } from './status-icon';
  */
 @customElement('versola-rate-limit-policies-editor')
 export class VersolaRateLimitPoliciesEditor extends LitElement {
-  @property({ attribute: false }) draft: RateLimitDraft = { policies: [], replicas: '' };
+  @property({ attribute: false }) draft: RateLimitDraft = { policies: [], replicas: '', nativeStart: null };
   /** The inputs are inert while the host saves. */
+  /** Loads the starting set for "Add recommended policies": the host's API, so this element ships in either console. */
+  @property({ attribute: false }) loadRecommended: (() => Promise<RateLimitPolicies>) | null = null;
+  /** These are the limits of a partner's edges: the default on `/native/start` refuses there, and counts on an edge of the operator. */
+  @property({ type: Boolean }) partner = false;
   @property({ type: Boolean }) disabled = false;
   /** Set by the host on a submit: empty fields are errors from then on. */
   @property({ type: Boolean }) submitted = false;
@@ -124,6 +128,31 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
         gap: 0.5rem;
       }
 
+      /* The three numbers of the limit on /native/start: they wrap instead of shrinking until a value cannot be read. */
+      .native-window {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 0.5rem;
+      }
+
+      .native-window .form-group {
+        flex: 1 1 4.5rem;
+        min-width: 4.5rem;
+      }
+
+      .native-window .between {
+        padding-top: 0.625rem;
+        font-size: var(--text-sm);
+        color: var(--text-secondary);
+        white-space: nowrap;
+      }
+
+      /* The base input is as wide as its box plus its padding: kept inside the card. */
+      .editor-box > .form-group input[type='text'] {
+        box-sizing: border-box;
+      }
+
       .window .between {
         padding-top: 0.625rem;
         font-size: var(--text-sm);
@@ -217,7 +246,8 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
     this.loadingRecommended = true;
     this.recommendedError = '';
     try {
-      const recommended = await fetchRecommendedRateLimitPolicies();
+      if (!this.loadRecommended) throw new Error('Could not load the recommended policies');
+      const recommended = await this.loadRecommended();
       const have = new Set(this.draft.policies.map(policy => policy.name.trim()));
       const added = recommended.policies.filter(policy => !have.has(policy.name)).map(draftFromPolicy);
       this.change({ ...this.draft, policies: [...this.draft.policies, ...added] });
@@ -256,6 +286,10 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
     const first = Object.keys(validateDraft(this.draft))[0];
     if (!first) return;
     const [n, field, j] = first.split('.');
+    if (n === 'nativeStart') {
+      this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>(`[id="rl-native-start-${field}"]`)?.focus());
+      return;
+    }
     const policy = this.draft.policies[Number(n)];
     if (!policy) return;
     if (field === 'burst' || field === 'cost') {
@@ -265,6 +299,79 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
     const id = field === 'by' ? `rl-${policy.key}-by` : field === 'limit' ? `rl-${policy.key}-limit-${j}` : field === 'window' ? `rl-${policy.key}-window-${j}`
       : field === 'limits' ? `rl-${policy.key}-limit-0` : `rl-${policy.key}-${field}`;
     this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>(`[id="${id}"]`)?.focus());
+  }
+
+  private patchNativeStart(patch: Partial<NativeStartDraft>) {
+    if (this.draft.nativeStart) this.change({ ...this.draft, nativeStart: { ...this.draft.nativeStart, ...patch } });
+  }
+
+  private renderNativeStartField(field: 'limit' | 'window' | 'burst', label: string, value: string, placeholder: string, error: string | undefined, set: (value: string) => void) {
+    const id = `rl-native-start-${field}`;
+    return html`
+      <div class="form-group">
+        <input type="text" id=${id} class=${error ? 'input-error' : ''} inputmode="numeric" autocomplete="off" spellcheck="false" placeholder=${placeholder}
+          aria-label=${label} .value=${value} aria-invalid=${error ? 'true' : nothing} aria-describedby=${`${id}-error`}
+          @input=${(e: Event) => set((e.target as HTMLInputElement).value)} />
+        ${error ? html`<div class="error-message" id="${id}-error" role="alert">${error}</div>` : html`<span id="${id}-error"></span>`}
+      </div>`;
+  }
+
+  /** The limit on `/native/start`: the default until a limit is set, then the mode and the numbers. */
+  private renderNativeStart(errors: Record<string, string>) {
+    const start = this.draft.nativeStart;
+    const d = NATIVE_START_DEFAULT;
+    const numbers = start ? { limit: Number(start.limit.trim()), windowSeconds: Number(start.windowSeconds.trim()), burst: Number(start.burst.trim()) } : null;
+    // Only for numbers that can be read: a field in error says its own thing.
+    const looser = !!start && !!numbers && !errors['nativeStart.limit'] && !errors['nativeStart.window'] && !errors['nativeStart.burst']
+      && nativeStartWeakerThanDefault({ ...numbers, mode: start.mode });
+    return html`
+      <div class="editor-box" id="rl-native-start">
+        <h3>Native app sign-in start</h3>
+        <p class="editor-sub"><code>/native/start</code> takes no client credential and every call makes auth store a request, so it has a limit per source address of its own (IPv4 per address, IPv6 per /64), checked before anything else.${this.partner ? '' : html` Counted in <code>edge_native_start_rate_limit_decisions_total</code>.`}</p>
+        ${start === null ? html`
+          <p class="text-line">Not set: the edge applies the default, ${d.limit} calls per ${d.windowSeconds} seconds with bursts of ${d.burst}, ${this.partner ? 'in enforce (calls over it get 429)' : 'in shadow (it counts and refuses nothing)'}, and only when it reads the caller’s address from a header (<code>client-ip = forwarded</code>).</p>
+          <div class="add-row"><button type="button" class="btn btn-secondary btn-sm" @click=${() => this.change({ ...this.draft, nativeStart: newNativeStartDraft(this.partner ? 'enforce' : 'shadow') })}>Set a limit</button></div>
+        ` : html`
+          <div class="block">
+            <span class="ctrl-label" id="rl-native-start-mode-label">Mode</span>
+            <div class="seg-control" role="group" aria-labelledby="rl-native-start-mode-label">
+              ${MODES.map(option => html`
+                <button type="button" class="seg-btn ${start.mode === option.id ? 'seg-active' : ''}" aria-pressed=${start.mode === option.id ? 'true' : 'false'}
+                  @click=${() => this.patchNativeStart({ mode: option.id })}>${option.label}</button>`)}
+            </div>
+            <p class="text-line">${start.mode === 'off' ? 'No limit on /native/start, the default included.'
+              : start.mode === 'shadow' ? (this.partner ? 'Counts what would be refused and refuses nothing. The counts are in the operator’s metrics: ask the operator for them.' : 'Counts what would be refused (result would_limit) and refuses nothing.')
+                : 'Refuses calls over the limit with 429 and Retry-After, before the client is looked up or auth is called.'}</p>
+          </div>
+          <div class="block">
+            <span class="ctrl-label">Limit per address</span>
+            <div class="native-window">
+              ${this.renderNativeStartField('limit', 'Native start: calls', start.limit, String(d.limit), errors['nativeStart.limit'], value => this.patchNativeStart({ limit: value }))}
+              <span class="between">calls per</span>
+              ${this.renderNativeStartField('window', 'Native start: seconds', start.windowSeconds, String(d.windowSeconds), errors['nativeStart.window'], value => this.patchNativeStart({ windowSeconds: value }))}
+              <span class="between">seconds, bursts of</span>
+              ${this.renderNativeStartField('burst', 'Native start: burst', start.burst, String(d.burst), errors['nativeStart.burst'], value => this.patchNativeStart({ burst: value }))}
+            </div>
+            <p class="text-line">Divided by the number of pods.</p>
+          </div>
+          ${start.mode === 'enforce' ? html`
+            <div class="banner warn" role="note" id="rl-native-start-socket">
+              <div class="banner-text">
+                <div class="banner-title">${statusIcon('alert')}Check how ${this.partner ? 'your edges read' : 'this edge reads'} the caller’s address before enforcing</div>
+                <div>A limit that is set applies whatever <code>client-ip</code> is. Behind a proxy with <code>client-ip = socket</code> every caller has the proxy’s address and shares one bucket, so all native sign-ins together get ${start.limit.trim() || d.limit} calls per ${start.windowSeconds.trim() || d.windowSeconds} seconds. Set <code>client-ip = forwarded</code> on an edge behind a proxy.</div>
+              </div>
+            </div>` : nothing}
+          ${this.partner && looser ? html`
+            <div class="banner info" role="note" id="rl-native-start-approval">
+              <div class="banner-text">
+                <div class="banner-title">${statusIcon('info')}This limit needs the operator’s approval</div>
+                <div>It lets through more than the default (${d.limit} calls per ${d.windowSeconds} seconds, bursts of ${d.burst}, in enforce), and every call that passes reaches the operator. On save it is sent for approval and your edges keep the current limit until then; everything else on this page is saved at once.</div>
+              </div>
+            </div>` : nothing}
+          <div class="add-row"><button type="button" class="btn btn-secondary btn-sm" @click=${() => this.change({ ...this.draft, nativeStart: null })}>Use the default</button></div>
+        `}
+      </div>
+    `;
   }
 
   private renderMode(policy: PolicyDraft) {
@@ -278,7 +385,7 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
             <button type="button" class="seg-btn ${policy.mode === option.id ? 'seg-active' : ''}" aria-pressed=${policy.mode === option.id ? 'true' : 'false'}
               @click=${() => this.patch(policy.key, { mode: option.id as RateLimitMode })}>${option.label}</button>`)}
         </div>
-        <p class="text-line">${MODE_TEXT[policy.mode]}</p>
+        <p class="text-line">${this.partner && policy.mode === 'shadow' ? 'Counts what would be refused and refuses nothing. The counts are in the operator’s metrics: ask the operator for them.' : MODE_TEXT[policy.mode]}</p>
       </div>
     `;
   }
@@ -417,12 +524,12 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
         <div class="banner info" role="note">
           <div class="banner-text">
             <div class="banner-title">${statusIcon('info')}Start in shadow, then enforce</div>
-            <div>A policy in shadow mode is checked on every proxied call and the edge counts what it would refuse (<code>edge_rate_limit_decisions_total</code>, result <code>would_limit</code>); nothing is refused. Read it for a while, then switch a policy to enforce: calls over the limit get <code>429</code> with <code>Retry-After</code>. The limit is per edge pod: with several pods the edge as a whole allows up to the limit times the number of pods.</div>
+            <div>A policy in shadow mode is checked on every proxied call and the edge counts what it would refuse${this.partner ? html` (the counts are in the operator’s metrics)` : html` (<code>edge_rate_limit_decisions_total</code>, result <code>would_limit</code>)`}; nothing is refused. Read it for a while, then switch a policy to enforce: calls over the limit get <code>429</code> with <code>Retry-After</code>. The limit is per edge pod: with several pods the edge as a whole allows up to the limit times the number of pods.</div>
           </div>
         </div>
         <div class="editor-box">
           <h3>Edge pods</h3>
-          <p class="editor-sub">A limit is counted in each pod separately. Set how many pods this edge runs and each enforces its share, so the edge as a whole allows about the limit you write.</p>
+          <p class="editor-sub">A limit is counted in each pod separately. Set how many pods ${this.partner ? 'each of your edges runs' : 'this edge runs'} and each enforces its share, so the edge as a whole allows about the limit you write.</p>
           <div class="form-group">
             <label for="rl-replicas">Pods</label>
             <input type="text" id="rl-replicas" class=${errors.replicas ? 'input-error' : ''} inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="1"
@@ -432,10 +539,11 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
             <div class="hint" id="rl-replicas-hint">Empty: 1, the full limit applies to each pod. As even as the balancer: there is no shared counter.</div>
           </div>
         </div>
+        ${this.renderNativeStart(errors)}
         ${policies.length === 0 ? html`
           <div class="editor-box">
             <h3>No policies yet</h3>
-            <p class="editor-sub">This edge applies no rate limit. Start from the recommended set: three generous policies, all in shadow, that only count until you enforce them.</p>
+            <p class="editor-sub">${this.partner ? 'Your edges apply' : 'This edge applies'} no rate limit policy. Start from the recommended set: three generous policies, all in shadow, that only count until you enforce them.</p>
             <button type="button" class="btn btn-primary" ?disabled=${this.loadingRecommended} @click=${() => this.addRecommended()}>${this.loadingRecommended ? 'Loading…' : 'Add recommended policies'}</button>
             ${this.recommendedError ? html`<div class="error-message" role="alert">${this.recommendedError}</div>` : nothing}
           </div>` : nothing}

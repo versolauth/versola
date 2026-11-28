@@ -1,8 +1,9 @@
 package versola.central
 
-import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupKind, EdgeId, EdgeService}
+import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupKind, EdgeId, EdgeRecord, EdgeService}
+import versola.central.configuration.partners.{PartnerRecord, PartnerRegistry, PartnerStatus}
 import versola.central.configuration.resources.ResourceService
-import versola.util.http.{Observability, Unauthorized}
+import versola.util.http.{Forbidden, Observability, Unauthorized}
 import versola.util.{JWT, Secret}
 import zio.ZIO
 import zio.http.{Handler, Header, Middleware, Request, Response, Routes}
@@ -58,15 +59,63 @@ def authorizeInternal(request: Request): ZIO[CentralConfig & EdgeService, Unauth
   */
 def authorizeEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeId] =
   for
+    edge <- authorizeAnyEdge(request)
+    // What a partner's edge may do is decided by the operator's registration of its group, not by anything the edge
+    // presents: it gets a certificate that names its group and nothing from central's configuration. Its own surface is
+    // `/edge/partner` ([[authorizePartnerEdge]]).
+    _ <- (Observability.setError("edge_group_partner") *> ZIO.fail(Unauthorized))
+      .when(edge.groupKind != EdgeGroupKind.FirstParty)
+  yield edge.id
+
+/** The two checks of [[authorizeEdge]] without the kind check: the caller is a registered edge of either kind, proven by
+  * its token and by the certificate the handshake presented. For the one route both kinds reach, `POST
+  * /edge/certificate/renew`: a partner's edge renews its certificate for as long as it is registered (#549 decision 8),
+  * and what else it may do is decided by the surface, not here.
+  */
+def authorizeAnyEdge(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, EdgeRecord] =
+  for
     edgeId <- authorizeInternal(request).someOrFail(Unauthorized)
     edge <- ZIO.serviceWithZIO[EdgeService](_.find(edgeId)).someOrFail(Unauthorized)
     presented <- ZIO.fromOption(request.remoteCertificate).orElseFail(Unauthorized)
     _ <- ZIO.fail(Unauthorized).unless(EdgeCertificate.isIssuedTo(presented, edgeId, edge.groupId))
-    // What a partner's edge may do is decided by the operator's registration of its group, not by anything the edge
-    // presents: it gets a certificate that names its group and nothing from central's configuration.
-    _ <- (Observability.setError("edge_group_partner") *> ZIO.fail(Unauthorized))
-      .when(edge.groupKind != EdgeGroupKind.FirstParty)
-  yield edgeId
+  yield edge
+
+/** The partner-edge surface's check (#549, #962), for `/edge/partner/...`: the two checks of [[authorizeAnyEdge]], and the
+  * caller is an edge of a `partner` group (else 401 `edge_group_first_party`: the operator's own edges read `/edge/sync`)
+  * whose partner exists (`edge -> group -> partner`, else 401) and is not suspended (else 403 `partner_suspended`, on every
+  * call, certificate renewal included -- the kill switch). An `onboarding` partner is served: its first edge calling is what
+  * makes it `active`, which `/edge/partner/me` does.
+  */
+def authorizePartnerEdge(request: Request): ZIO[CentralConfig & EdgeService & PartnerRegistry, Unauthorized.type | Forbidden.type, PartnerCaller] =
+  for
+    edge <- authorizeAnyEdge(request)
+    _ <- (Observability.setError("edge_group_first_party") *> ZIO.fail(Unauthorized)).when(edge.groupKind != EdgeGroupKind.Partner)
+    // a partner's edge presents a certificate that names its group: one that names only the edge says nothing of who it speaks for
+    _ <- (Observability.setError("edge_certificate_without_group") *> ZIO.fail(Unauthorized)).unless(
+      request.remoteCertificate.exists(EdgeCertificate.isIssuedToMemberOf(_, edge.id, edge.groupId)),
+    )
+    partner <- unsuspendedPartnerOf(edge)
+  yield PartnerCaller(edge, partner)
+
+/** The route both kinds of edge reach, `POST /edge/certificate/renew`: [[authorizeAnyEdge]], and an edge of a partner group is
+  * refused with 403 `partner_suspended` while its partner is suspended, as on every route of `/edge/partner` (#962: the kill
+  * switch stops the certificate from being renewed too). An edge of a first-party group is not looked at beyond the first.
+  */
+def authorizeRenewal(request: Request): ZIO[CentralConfig & EdgeService & PartnerRegistry, Unauthorized.type | Forbidden.type, EdgeRecord] =
+  for
+    edge <- authorizeAnyEdge(request)
+    _ <- unsuspendedPartnerOf(edge).when(edge.groupKind == EdgeGroupKind.Partner)
+  yield edge
+
+private def unsuspendedPartnerOf(edge: EdgeRecord): ZIO[PartnerRegistry, Unauthorized.type | Forbidden.type, PartnerRecord] =
+  for
+    partner <- ZIO.serviceWithZIO[PartnerRegistry](_.findByGroup(edge.groupId))
+      .someOrElseZIO(Observability.setError("partner_unknown") *> ZIO.fail(Unauthorized))
+    _ <- (Observability.setError("partner_suspended") *> ZIO.fail(Forbidden)).when(partner.status == PartnerStatus.Suspended)
+  yield partner
+
+/** An edge of a partner, as `authorizePartnerEdge` proved it: the edge that called and the partner it belongs to. */
+case class PartnerCaller(edge: EdgeRecord, partner: PartnerRecord)
 
 /** Refuses an edge token on every route it wraps (#554). The edge-facing surface is
   * `EdgeSyncController` alone; everything else central serves belongs to auth or to the admin

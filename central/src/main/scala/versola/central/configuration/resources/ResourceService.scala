@@ -90,7 +90,9 @@ object ResourceService:
   ) extends ResourceService:
     export resourceRepository.deleteResource
 
-    private val edgeResourceId = ResourceId("edge")
+    /** The ids the platform's own resources have: `central` and `auth` are the resources that guard central and auth themselves, `edge` is
+      * the edge's. Nobody registers a resource of these names, whether or not a row of that name happens to exist. */
+    private val reservedResourceIds = Set(ResourceId("edge"), ResourceId("central"), ResourceId("auth"))
 
     override def getTenantResources(
         tenantId: TenantId,
@@ -111,7 +113,9 @@ object ResourceService:
             resources <- cache.get
             tenants <- tenantRepository.getAll
             allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
-          yield resources.filter(r => allowedTenantIds.contains(r.tenantId))
+          // A partner's resource is served to the partner's own edge (`/edge/partner/sync/resources`) and to auth, never to the
+          // operator's edges: it carries the upstream secret and endpoint rules of another organisation.
+          yield resources.filter(r => r.partnerId.isEmpty && allowedTenantIds.contains(r.tenantId))
 
     override def verifySecret(provided: Secret): Task[Boolean] =
       cache.get.map: resources =>
@@ -121,7 +125,7 @@ object ResourceService:
 
     override def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, (ResourceId, Option[Secret])]] =
       if !ResourceId.isValid(request.resourceId) then ZIO.left(ResourceValidationError.InvalidResourceId)
-      else if request.resourceId == edgeResourceId then ZIO.left(ResourceValidationError.ReservedResourceId)
+      else if reservedResourceIds.contains(request.resourceId) then ZIO.left(ResourceValidationError.ReservedResourceId)
       else
         validateEndpoints(request.endpoints).flatMap:
           case Some(error) => ZIO.left(error)
@@ -141,6 +145,7 @@ object ResourceService:
                     audience = request.audience,
                     endpoints = request.endpoints.map(asRecord),
                     secret = encryptedSecret,
+                    partnerId = request.partnerId,
                   )
                   _ <- ZIO.when(request.audienceRateLimits.nonEmpty)(
                     resourceRepository.updateAudienceRateLimits(request.resourceId, request.audienceRateLimits),

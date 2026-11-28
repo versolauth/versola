@@ -44,9 +44,9 @@ object AuthorizationPresetService:
 
     override def savePresets(request: SaveAuthorizationPresetsRequest): Task[Either[PresetValidationError, Unit]] =
       (for
-        client <- clientService.getAllClients
-          .map(_.find(_.id == request.clientId))
-          .someOrFail(PresetValidationError.ClientNotFound)
+        // as stored, not as cached: a preset is saved right after its client was registered or approved, before the `client_change`
+        // notification of that write has reached the cache
+        client <- clientService.findClientFresh(request.clientId).someOrFail(PresetValidationError.ClientNotFound)
 
         _ <- ZIO.foreachDiscard(request.presets) {
           presetRequest =>

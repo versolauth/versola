@@ -23,7 +23,12 @@ Name: `V<next number in that range>__snake_case_description.sql`. One schema per
   migration file.
 - The October 2026 squash (`ALTER TABLE` folded into the `CREATE TABLE` migrations) was a one-off,
   deliberate, breaking operation. Do not squash, fold or renumber migrations unless asked to.
-- Check: `git diff --name-status <old>..<new> -- '*/postgres/migrations'` shows only `A` lines.
+- Check: `git diff --name-status <old>..<new> -- '*/postgres/migrations/*'` shows only `A` lines. CI runs it on
+  every PR (`.github/workflows/migrations-guard.yml`, against the latest release tag). The same job requires
+  a new migration's version to be above everything on `main` (`versola migrate` runs without `outOfOrder`),
+  so when `main` moves under your PR, rename yours to the next free number. The `allow-migration-edit` label,
+  set by a maintainer, lets an edit of a migration that never ran anywhere through; the maintainer removes it again
+  after the review (it stays on the PR for later pushes), and you do not ask for it to get green.
 
 ## Writing a migration
 

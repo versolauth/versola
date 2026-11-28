@@ -1,0 +1,25 @@
+# Alert rules for the limit on `/native/start` of `edge` (the `nativeStart` of an edge's rate limits). Prometheus rule-group format:
+# loaded as it is by Prometheus (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
+#
+# The limit keeps one bucket per source address (IPv4 per address, IPv6 per /64) and holds at most 100,000 of them per pod; past that every
+# new address is counted in one shared bucket. The board `versola` draws the same signals in "edge — Rate limits".
+groups:
+  - name: versola-edge-rate-limits
+    rules:
+      - alert: NativeStartLimitOverflow
+        expr: sum by (namespace, policy) (increase(edge_native_start_rate_limit_overflow_hits_total[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The /native/start limit of edge is past its address cap in {{ $labels.namespace }}"
+          description: "edge_native_start_rate_limit_overflow_hits_total grew for {{ $labels.policy }}: a pod already holds 100,000 addresses for the limit on /native/start, so the callers past the cap share one bucket of the limit and real sign-ins among them are refused with the flood. That many addresses is a caller that changes its address per call (an IPv6 /48 has 65,536 /64s), not users. Find the source prefix in the edge's access log and block it in front of the edge; do not raise the limit."
+      - alert: NativeStartRefusedByDefault
+        expr: |
+          sum by (namespace) (rate(edge_native_start_rate_limit_decisions_total{policy="native-start-default", result="limited"}[10m]))
+            / clamp_min(sum by (namespace) (rate(edge_native_start_rate_limit_decisions_total{policy="native-start-default"}[10m])), 0.001) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The default /native/start limit refuses more than 1% of starts in {{ $labels.namespace }}"
+          description: "An edge that enforces the default limit on /native/start (a partner's edge with client-ip = forwarded: 60 calls a minute per address, bursts of 20) has refused more than 1% of the starts it counted for 15 minutes. Either a flood, or real users behind one address (a carrier's shared IPv4 address, or an edge that reads the proxy's address). Look at the caller addresses in the edge's access log: for real users the partner sets a higher rateLimits.nativeStart (the operator approves it), for a flood nothing is to be changed."

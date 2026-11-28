@@ -84,6 +84,7 @@ matter most:
 | Auth internal URL | defaults to the public URL you just typed | central's cluster-DNS address, e.g. `http://versola-auth:8080` |
 | Postgres URL (×3, one per service) | defaults to `localhost` | each service's real JDBC URL. Verified TLS (`sslmode=verify-full`) is the default and prod refuses to start without it; mount the database's CA bundle with the service's `extraVolumes`/`extraVolumeMounts` and set `postgres.ssl-root-cert` to its path (see [deploy.md](../deploy.md#postgres-tls)) |
 | Postgres password (×3) | a placeholder default (`1234`) | the password that database actually has — this tool never talks to a database, so a made-up value here just disagrees with it silently later |
+| Admin bootstrap password | the fixed development password `Admin1234!` (the `--admin-password` flag takes the same default when you leave it out) | a password only you know. It is the first admin login on a cluster that serves users, and the default is public in this repository |
 | Environment name | defaults to `prod`, right for a deployment that serves users | `prod`, or any name ending in it, keeps production behaviour. Any other name (a campaign stand, `qa`) is a **test environment**: one-time codes are fixed and nothing is delivered, `/service/` is served. Never that for real users |
 
 Every prompt above also accepts a `--flag=value` on the command line instead — give it and the
@@ -421,7 +422,12 @@ Which to pick (provisional: this is reasoning from how pools behave, to be repla
 
 - Edge to many resource backends, long-lived keep-alive (reverse-proxy shape): `fixed 128` opens 128 connections to every backend it touches, idle or not. With many backends that is a lot of sockets, and memory in the pod and on the backends, and a rarely used backend holds them indefinitely. `dynamic` with a low `MIN` and a `SIZE` at the ceiling you would have used for `fixed` pays only for the backends in use. It costs a connection set-up when a burst arrives.
 - Service-to-service (edge to auth, auth to central): few targets, steady traffic, usually in-cluster and often plain HTTP. `fixed` keeps warm connections ready for a burst, with no handshake on the request path; with so few targets the idle-socket cost is small. A TLS handshake (or mTLS through a mesh) makes a connection expensive to open, which favours a high `MIN` or `fixed` here.
-- Stale idle connections: a backend, load balancer or mesh sidecar that closes idle connections after its own timeout leaves the client with dead sockets. zio-http only discovers this on checkout, and retries on another. A `fixed` pool under low traffic holds idle connections the longest, so it is more exposed. `dynamic` only helps once the whole pool has been idle for `TTL`, so keep `TTL` below the shortest idle timeout on the path.
+- Stale idle connections: a backend, load balancer or mesh sidecar that closes idle connections after its own timeout leaves the client with dead sockets.
+  - What zio-http does: it finds a closed pooled connection on checkout and takes another, so a connection that went stale while idle costs nothing. A `fixed` pool under low traffic holds idle connections the longest, so it is more exposed to the rest of this list. `dynamic` only helps once the whole pool has been idle for `TTL`, so keep `TTL` below the shortest idle timeout on the path.
+  - What it cannot see: a connection the far side closes while the request is being written to it. That request fails once (`PrematureChannelClosureException`, or `Connection reset by peer` / `Broken pipe` when the far side's RST arrived first), and the next one is fine.
+  - What the shared client does: it sends `GET`, `HEAD` and `OPTIONS` again once when that happens, if the body is known in full. Any other method, and a request whose body is a stream, is reported to the caller, since the far side may have acted on it or the first attempt may have consumed the body. What bounds the repeat is the guard's mode (`HTTP_CLIENT_GUARD_MODE`), as for every other retry: in `enforce` the peer's retry budget, so a peer that is down is not sent every `GET` twice, and a denial is counted in `http_client_retry_budget_denied_total`; in `shadow`, the default, the repeat is always made and a denial is only counted; with `off` there is no repeat. A peer exempt from the guard, and the time before the service is up, are read as `shadow`. Each repeat is counted in `http_client_closed_connection_retries_total{peer}`; a peer above zero is a connection closed under the client: raise the far side's idle timeout above the client's 50 s (which is not configurable); with a `dynamic` pool, a `HTTP_CLIENT_POOL_TTL` below it also closes an idle pool before the far side does.
+  - What the log shows: the failed first attempt is logged as a `send-http` **warning**, since the caller never sees it when the repeat succeeds (it still counts in `http_client_requests_total` as an error: the call did fail). When the budget refuses the repeat the caller sees the failure, the line is an error and a second error line says the call was not sent again.
+  - The order that keeps it rare: the client's idle timeout (50 s, zio-http's `idleTimeout`) below the load balancer or ingress (nginx: 60 s towards an upstream, 75 s towards a client) below the application.
 - Burst cost: `dynamic` with `MIN=0` turns a burst into a burst of connects (TCP, plus TLS where used), visible as a latency step at the start of the burst; raise `MIN` to the steady-state concurrency to avoid it.
 - Memory: each connection holds a socket and Netty channel buffers (and TLS state), small per connection but multiplied by targets x pods; compare pod memory and the backends' connection counts between the two kinds.
 
@@ -743,19 +749,45 @@ diagnostics port from `metricsFrom` (empty: any pod), and from `extraIngress`. E
 region, another cloud, an operator's own site. Everything about the rest of the system is reached by
 public name, so install the main chart's `exposure` first (section 9a).
 
-1. In central, create the edge (`POST /configuration/edges`, with a `groupId`) and an enrollment token
-   (`POST /configuration/edges/enrollment-tokens?edgeId=...`). The token is shown once, lives an
+1. In central, create the edge (`POST /configuration/edges`, with a `groupId`; or **Edges** in the admin console) and an
+   enrollment token (`POST /configuration/edges/enrollment-tokens?edgeId=...`). The token is shown once, lives an
    hour and works once. Put it in a Secret: `kubectl create secret generic edge-enrollment --from-literal=token=...`.
+   Central shows the edge's signing key once as well, at registration: keep the key id and the private key.
 2. Copy the leaf certificate of central's listener (the Secret `<release>-versola-central-mtls`, `tls.crt`)
    to `central.pins`; do the same for auth's if the edge calls it (`auth.pins`). Pins are a *set*: put the
    next leaf beside the current one before the listener switches, so a rotation does not cut the edge off.
-3. Generate the edge's `env.conf` (`scripts/gen-env.scala`) into a Secret and its secret vars into
-   `secrets.existingSecret`, as for the main chart, and add one line to the `env.conf`:
-   `include file("/app/remote-edge/central.conf")`.
+3. Generate the edge's `env.conf` with `scripts/gen-env.scala` (answer `k8s`) and put it into a Secret, and its secret vars into
+   `secrets.existingSecret`, as for the main chart. For a remote edge give, besides the usual flags:
+
+   | Flag | What |
+   |---|---|
+   | `--remote-edge=true` | The edge's `central` block carries no certificate (it comes from enrollment); the run ends `edge.conf` with `include file("/app/remote-edge/central.conf")`, the chart's file, so nothing is added by hand |
+   | `--edge-id` | The id from step 1 |
+   | `--edge-key-id`, `--edge-private-key-file` | The key central showed at registration (the file holds it as central showed it, base64url is fine). The run stops without them: a key generated here would not match what central holds |
+   | `--edge-postgres-url` (and `--edge-postgres-user`, `--edge-postgres-password`) | The database the remote edge reaches. The run stops without the URL: the default is a local one |
+   | `--auth-url` | Auth's public address. For a remote edge `versola-internal-url` is the same address, since the cluster's Service name is not reachable from outside; a first-party edge calls auth's mutual-TLS address (`native`) with its own certificate |
+
+   `OnMissing.GenerateOnFirstInstallOnly` on `EDGE_KEY_ID` and `EDGE_PRIVATE_KEY` is schema metadata for `versola-cli`'s OpenBao resolution
+   on `local` and `vps`; this script does not consult it, and with `--remote-edge` the two values come from the flags on every run, so a
+   second run writes the same key again and replaces nothing (a run without the flags stops).
+
+   A `--remote-edge` run writes only `edge.conf` and `edge.generated-secrets.env`: no `auth.conf`, `central.conf`, `secrets.schema.json` or
+   `utils.private-key.jwk`, because the key is not one this run generated and central's public half of it is unknown, so those files would be
+   wrong if applied.
+
+   A remote edge gets no `security.internal-secret`: the `/service/*` surface it protects is the in-cluster one. Set `central.group` when
+   the edge is not in the `default` group. `gen-env` also writes a `native` block, which needs auth's mutual-TLS address and pin: set
+   `auth.mtlsUrl` and `auth.pins` (the chart's `central.conf` then carries the matching `native` block).
+
+> **Verified how:** this procedure was verified by rendering the chart (`helm template`) and by loading the generated `edge.conf`, with the
+> rendered `central.conf`, through the edge's own configuration parser. It has **not** been run end to end against a live `central`: no
+> cluster install, no edge start, no enrollment. What an edge outside the cluster needs beyond what the flags above set (its own network
+> path to `central`'s and `auth`'s public names, TLS in front of it, the Postgres reachable from its network) is not checked by any of that.
 
 ```bash
 helm upgrade --install edge-eu k8s/versola-edge --namespace versola-edge --create-namespace \
   --set central.mtlsUrl=https://central-mtls.example.com \
+  --set central.group=default \
   --set central.enrollment.url=https://central.example.com \
   --set central.enrollment.existingSecret=edge-enrollment \
   --set-file 'central.pins[0]=central-leaf.pem' \
@@ -764,8 +796,8 @@ helm upgrade --install edge-eu k8s/versola-edge --namespace versola-edge --creat
 ```
 
 What it renders: a StatefulSet (one replica), a Service, an optional Ingress, a ConfigMap with
-`central.conf` (the `central { url, mutual-tls { trusted-certificates }, enrollment { url, token-file } }`
-and `identity { directory }` blocks of the v1 contract, plus the pins as files) and, if you pass `central.enrollment.token`
+`central.conf` (the `central { url, mutual-tls { trusted-certificates }, identity { directory, group, enrollment { url, token-file } } }`
+block the edge reads, plus the pins as files) and, if you pass `central.enrollment.token`
 instead of `existingSecret`, the token Secret. The edge generates its key locally, enrolls once, keeps the key and
 certificate chain on a PVC (`persistence`, on by default) and renews at a third of the certificate's life
 left. **Without the PVC** the identity is gone with the pod: the edge enrolls again at every restart, which

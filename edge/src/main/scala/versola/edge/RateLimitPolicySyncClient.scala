@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.util.CacheSource
-import versola.util.http.{RateLimitPolicies, RateLimitPolicy}
+import versola.util.http.{NativeStartRateLimit, RateLimitPolicies, RateLimitPolicy}
 import zio.http.{Client, Header, Request, Status}
 import zio.json.JsonCodec
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
@@ -12,7 +12,7 @@ import zio.{Task, URLayer, ZIO, ZLayer}
   *
   * Central serves this edge its own row only: which edge is asking is established by the key the sync call is signed with.
   */
-case class EdgeRateLimitPolicies(policies: List[RateLimitPolicy], replicas: Int)
+case class EdgeRateLimitPolicies(policies: List[RateLimitPolicy], replicas: Int, nativeStart: Option[NativeStartRateLimit] = None)
 
 trait RateLimitPolicySyncClient extends CacheSource[EdgeRateLimitPolicies]
 
@@ -25,7 +25,7 @@ object RateLimitPolicySyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends RateLimitPolicySyncClient:
-    private val RateLimitPolicyURL = config.central.url / "edge" / "sync" / "rate-limits"
+    private val RateLimitPolicyURL = config.syncUrl("rate-limits")
 
     override def getAll: Task[EdgeRateLimitPolicies] =
       for
@@ -40,7 +40,7 @@ object RateLimitPolicySyncClient:
             else if !response.status.isSuccess then
               ZIO.fail(RuntimeException(s"central answered ${response.status.code} to the rate limit policy sync"))
             else response.bodyAs[EdgeRateLimitSyncResponse].map(_.rateLimitPolicies)
-      yield policies.fold(EdgeRateLimitPolicies(Nil, replicas = 1))(set => EdgeRateLimitPolicies(set.policies, set.replicas))
+      yield policies.fold(EdgeRateLimitPolicies(Nil, replicas = 1))(set => EdgeRateLimitPolicies(set.policies, set.replicas, set.nativeStart))
 
   private case class EdgeRateLimitSyncResponse(
       rateLimitPolicies: Option[RateLimitPolicies],

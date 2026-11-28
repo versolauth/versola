@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { loadAdminApp } from './fixtures';
 import { consentForm, consentPreviewState, consentPreviews } from './consent-preview-fixtures';
 import type { MockConfigState } from './mocks';
+import { pilotPay } from './partners-fixtures';
 
 const clientsPath = '/?view=clients&tenant=tenant-alpha';
 
@@ -22,6 +23,7 @@ const partnerClient = {
 const stateWith = (overrides: Partial<MockConfigState> = {}, client: Record<string, unknown> = partnerClient): Partial<MockConfigState> => ({
   ...consentPreviewState,
   clients: { 'tenant-alpha': [client as never] },
+  partners: [pilotPay],
   ...overrides,
 });
 
@@ -36,16 +38,19 @@ async function openBranding(page: Page) {
   await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
 }
 
+/** Consent exists for a partner's client: the type first, then the owner under it. */
 async function startPartnerWizard(page: Page) {
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
   await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  await page.getByRole('combobox', { name: 'Partner' }).click();
+  await page.getByRole('option', { name: /Pilot Pay/ }).click();
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await page.locator('versola-client-form #client-id').fill('wizard-app');
   await page.locator('versola-client-form input#client-name').fill('Wizard App');
-  await page.locator('versola-client-form #redirect-uri').fill('https://wizard.example/callback');
+  await page.locator('versola-client-form #redirect-uri').fill('https://wizard.pilotpay.example/callback');
   await page.locator('versola-client-form #redirect-uri').press('Enter');
   await page.getByRole('button', { name: /^Continue to sign-in$/ }).click();
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
 }
 
 test('the Branding page draws the consent form for the app, with its name and logo and the typical request', async ({ page }) => {

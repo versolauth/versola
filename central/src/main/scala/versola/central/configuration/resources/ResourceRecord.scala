@@ -1,6 +1,7 @@
 package versola.central.configuration.resources
 
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{InjectRule, ResourceUri}
 import versola.util.Secret
@@ -24,6 +25,8 @@ case class ResourceRecord(
     /** The limits the resource sets for clients of its audience, at most one per client and only for clients that are in it. Last
       * and defaulted: a resource stored before the column has none. */
     audienceRateLimits: List[AudienceRateLimit],
+    /** The partner that owns this resource (#549), which serves it through its own edges; `None` is a first-party one. */
+    partnerId: Option[PartnerId],
 ):
   /** A resource with a secret is internal (edge authenticates to it with the
     * secret); one without is public (edge forwards the caller's own token). */

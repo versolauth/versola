@@ -15,6 +15,9 @@ object AuthAuditKinds:
   val TokenIssued: AuditKind = AuditKind("token.issued")
   val TokenRefused: AuditKind = AuditKind("token.refused")
   val TokenReuseDetected: AuditKind = AuditKind("token.reuse_detected")
+
+  /** A certificate-bound grant of a client registered by an edge-group name was bound to another certificate of the group. */
+  val TokenRebound: AuditKind = AuditKind("token.rebound")
   val TokenRevoked: AuditKind = AuditKind("token.revoked")
   val ClientAuthFailed: AuditKind = AuditKind("client.auth_failed")
   val SessionEnded: AuditKind = AuditKind("session.ended")
@@ -56,6 +59,7 @@ object AuthAuditKinds:
     TokenIssued,
     TokenRefused,
     TokenReuseDetected,
+    TokenRebound,
     TokenRevoked,
     ClientAuthFailed,
     SessionEnded,
@@ -112,9 +116,3 @@ object AuthAudit:
       AuthAuditKinds.AntifraudCountersReset,
     ),
   )
-
-  /** The high-volume successes a deployment may leave out (`audit.events` of the config): a failure is always recorded. */
-  case class Tiers(tokenRefresh: Boolean, authorizeSuccess: Boolean, parSuccess: Boolean)
-
-  object Tiers:
-    val all: Tiers = Tiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true)

@@ -5,7 +5,8 @@ import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
 import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
-import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
+import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService, NativeStartLimit}
+import versola.edge.partner.{PartnerEnrollment, PartnerSurface, PostgresStaffRepository, StaffRepository}
 import versola.edge.revocation.{EdgeRevocationRepository, RevocationFeedClient, RevocationFeedPuller, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
@@ -18,7 +19,9 @@ import versola.edge.{
   EdgeConfig,
   EdgeController,
   EdgeIdentity,
+  EdgeMode,
   EdgeRateLimiter,
+  EdgeReplicas,
   EdgeService,
   InternalSurface,
   JwksService,
@@ -89,7 +92,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopVerifier &
       EdgeService &
       NativeAuthClient &
-      NativeService
+      NativeService &
+      PartnerSurface
 
   override protected def admissionTiers = Some(versola.edge.EdgeAdmission.tierOf)
 
@@ -131,29 +135,35 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     * optional certificate the peer did not present). A caller with no certificate has nothing to prove here
     * that the plain listener would not serve, and is refused in the handshake. */
   override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
-    ZIO.serviceWith[EdgeConfig](
-      _.mutualTls.map(mtls =>
-        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
-          SSLConfig.fromFile(
-            behaviour = SSLConfig.HttpBehaviour.Fail,
-            certPath = mtls.certificate,
-            keyPath = mtls.privateKey,
-            clientAuth = Some(ClientAuth.Required),
-            trustCertCollectionPath = Some(mtls.trustedCertificates),
-            // Without this the handshake still validates the certificate and the handler cannot see which one.
-            includeClientCert = true,
+    ZIO.serviceWithZIO[EdgeConfig]: config =>
+      ZIO.foreach(config.mutualTls): mtls =>
+        // what the listener serves is what is read here, once, at start (#1001)
+        CertificateMetrics.listenerFromFile("edge", CertificateMetrics.MutualTlsListener, mtls.certificate).as(
+          Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
+            SSLConfig.fromFile(
+              behaviour = SSLConfig.HttpBehaviour.Fail,
+              certPath = mtls.certificate,
+              keyPath = mtls.privateKey,
+              clientAuth = Some(ClientAuth.Required),
+              trustCertCollectionPath = Some(mtls.trustedCertificates),
+              // Without this the handshake still validates the certificate and the handler cannot see which one.
+              includeClientCert = true,
+            ),
           ),
-        ),
-      ),
-    )
+        )
 
   override def mountedRoutes: ZIO[Dependencies, Throwable, Routes[Dependencies & Tracing & EnvName, Throwable]] =
-    ZIO.serviceWith[EdgeConfig](config => routes ++ InternalSurface.routes(config.mode))
+    for
+      config <- ZIO.service[EdgeConfig]
+      surface <- ZIO.service[PartnerSurface]
+    yield routes ++ InternalSurface.routes(config.mode) ++
+      // the partner console's API and files, on the plain listener like the rest of what browsers reach; absent on a first-party edge
+      AddressLimit[Dependencies & Tracing & EnvName, Throwable](surface.routes, AddressLimit.Listener.Plain)
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     // EdgeConfig.validated rejects a `versola-internal-trusted-certificates` that names a CA
     // rather than the leaf it is documented to require -- see that field's own comment.
-    (parseConfig[EdgeConfig] >>> EdgeConfig.validated) >++>
+    (edgeConfig >>> EdgeConfig.validated) >++>
       // `>++>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
       // transactor loaded, to open a connection of its own to park on LISTEN.
       (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >++>
@@ -161,6 +171,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
           PostgresEdgeRevocationRepository.live ++
           PostgresRevocationCursorRepository.live ++
+          PostgresStaffRepository.live ++
           PostgresDpopProofRepository.live ++
           PostgresCleanupManager.live ++
           PostgresWalMetrics.live())) >++>
@@ -182,6 +193,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       RateLimitPolicyService.live >++>
       DeclaredRateLimitService.live >++>
       RateLimitPolicySource.fromCentral >++>
+      EdgeReplicas.live >++>
       EdgeRateLimiter.live >++>
       PermissionService.live >++>
       JwksService.live >++>
@@ -196,8 +208,20 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopVerifier.live >++>
       EdgeService.live >++>
       NativeAuthClient.live >++>
+      NativeStartLimit.live >++>
       NativeService.live >++>
+      PartnerSurface.live >++>
       SSOClientWarmUp.live
+
+  /** The configuration of the file, and for a partner edge the values its enrollment fixed (`id`, group, central's and auth's
+    * addresses, the signing key: see [[versola.edge.partner.PartnerEnrollment]]), which enrolls first where it has to. */
+  private def edgeConfig: ZLayer[ConfigProvider & Client, Throwable, EdgeConfig] =
+    ZLayer.fromZIO:
+      for
+        base <- ZIO.service[ConfigProvider]
+        provider <- PartnerEnrollment.resolve(base)
+        config <- provider.load(deriveConfig[EdgeConfig])
+      yield config
 
   /** Keyed off this edge's private key; the records are prefixed with the edge id, so two edges
     * on one database keep their own. See [[ConfigSnapshot]].
@@ -208,7 +232,10 @@ object PostgresEdgeApp extends VersolaApp("edge"):
         for
           repository <- ZIO.service[ConfigSnapshot.Repository]
           config <- ZIO.service[EdgeConfig]
-          snapshot <- ConfigSnapshot.make(repository, config.privateKey.getEncoded, keyPrefix = s"${config.id}:")
+          // a partner edge replaces its signing key at every renewal, and a snapshot MAC'd with it would not survive one: its own
+          // secret, which is stable, is the key of the snapshot
+          material = if config.mode == EdgeMode.Partner then config.security.tokenEncryption.key else config.privateKey.getEncoded
+          snapshot <- ConfigSnapshot.make(repository, material, keyPrefix = s"${config.id}:")
         yield snapshot
 
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))

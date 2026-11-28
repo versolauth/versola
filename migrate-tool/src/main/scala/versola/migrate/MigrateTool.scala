@@ -214,18 +214,24 @@ object MigrateTool:
       .validateOnMigrate(true)
       .cleanDisabled(true)
       .validateMigrationNaming(false)
-      // No `.ignoreMigrationPatterns(...)` override here (only the dry run adds `*:pending`, below),
-      // unlike the services' own `validate()`
-      // path -- that path deliberately tolerates a database ahead of the build it's running (see
-      // its own comment: a rollback deploy must still start against a schema a newer version
-      // already migrated). This tool has no such excuse: it's the one place that actually applies
-      // migrations, always meant to run against the SAME version's own migrations, never to roll
-      // one back. Leaving Flyway's defaults in place (only `*:future` is ignored out of the box;
-      // `*:missing` is not) means an unresolvable applied migration -- e.g. this image's
-      // migrations mount pointing at the wrong thing entirely -- fails loudly here instead of
-      // being silently waved through, which is the stricter behavior this tool should have and
-      // the per-service startup check specifically should not.
-      .outOfOrder(true)
+    // No `.ignoreMigrationPatterns(...)` override here (only the dry run adds `*:pending`, below),
+    // unlike the services' own `validate()`
+    // path -- that path deliberately tolerates a database ahead of the build it's running (see
+    // its own comment: a rollback deploy must still start against a schema a newer version
+    // already migrated). This tool has no such excuse: it's the one place that actually applies
+    // migrations, always meant to run against the SAME version's own migrations, never to roll
+    // one back. Leaving Flyway's defaults in place (only `*:future` is ignored out of the box;
+    // `*:missing` is not) means an unresolvable applied migration -- e.g. this image's
+    // migrations mount pointing at the wrong thing entirely -- fails loudly here instead of
+    // being silently waved through, which is the stricter behavior this tool should have and
+    // the per-service startup check specifically should not.
+    //
+    // No `.outOfOrder(true)` (#705). It was carried over from the services' own Flyway setup with no
+    // recorded reason, and made Flyway warn on every run that the result "may not be reproducible":
+    // a migration with a version below one already applied would be applied silently, leaving a
+    // schema that differs from a fresh install. Versions only ever grow in a release (CI enforces it:
+    // `.github/scripts/check-migrations-immutable.sh`), so nothing here needs it. An unapplied migration
+    // below the latest applied one now fails the run instead, which is the point.
     // Replaces Flyway's default patterns rather than adding to them, so "*:future" (the default)
     // is listed again explicitly.
     if ignorePending then config.ignoreMigrationPatterns("*:future", "*:pending").load()
