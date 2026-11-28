@@ -14,6 +14,10 @@ import java.util.concurrent.TimeUnit
   * services alone in the database -- both write to it.
   */
 object ExtraService:
+  // Ports taken by the e2e specs, so the next one finds a free range without a grep. Staged stack: 9001-9011.
+  // Specs' upstream stubs: 9105-9120 (`UpstreamPort` of each spec). Extra services (PORT/DPORT/MPORT, APORT):
+  //   9013-9019 ConfigSnapshotColdStartSpec   9021-9030 AntifraudFixture   9035-9037 RevocationFeedFlowSpec
+  //   9045-9047 EdgeGroupCertificateSpec   9121-9123 and 9131-9133 PartnerEdgeFixture   9141-9143 EdgePlaintextInternalUrlSpec
   private val StartTimeout = 4.minutes
 
   /** @param readinessUrl the diagnostics port's `/readiness`. */
