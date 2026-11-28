@@ -29,6 +29,12 @@ info:
       `GET /configuration/cells/sync` and `GET /configuration/delivery-settings/sync`) refuse it again in the handler (`401`), so that the
       refusal does not rest on the group alone. A token that names an edge is accepted anywhere only as RS256 with `exp`, `iss` `edge`
       and `aud` `central`, which is what every edge signs.
+      `POST /users/registrations` claims the identifiers of a user a cell is registering and answers the user and the cell that holds it. A
+      cell that takes no users (state other than `open`, or weight `0`) is refused when nobody holds the address: `409` with
+      `{"error":"cell_not_taking","cell":"<the cell that takes it>"}`, or `{"error":"no_cell_takes_users"}` (no `cell`) when no cell does. The
+      cell that is refused hands the verified registration to the one named. An address claimed before answers its owner, whichever cell asks, and
+      the `auth` central is configured with, which is no registered cell, is never refused. `POST /users/home` answers an address nobody holds with
+      a cell chosen among every registered cell whatever its state, so that the answer does not say whether the address is held.
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
       `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`, `cells`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener; the one

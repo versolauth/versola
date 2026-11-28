@@ -3,6 +3,7 @@ package versola.oauth.conversation
 import versola.antifraud.Challenge
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, State, UserAgentData}
 import versola.oauth.session.model.{PublicSessionId, SessionId, UserAgentId}
 import versola.user.model.UserId
@@ -62,6 +63,14 @@ object ConversationResult:
     * @param passkeyRequest the assertion request a passkey submission answered
     */
   case class Elsewhere(home: RoutingKey.CellId, passkeyRequest: Option[String]) extends Render
+
+  /** The credential was verified in this cell, which does not take users (versolauth/versola#1052): the verified registration is
+    * handed to `home`, which does. The controller that took the submission seals it, since the seal is bound to the cookie the
+    * request came with, and then ends this cell's conversation (`ConversationRouter.end`) and answers with a redirect.
+    *
+    * @param conversation the conversation as it stands (its version is the current one, which ending it needs)
+    */
+  case class RegistrationElsewhere(home: RoutingKey.CellId, registered: CellHandoff.Registered, conversation: ConversationRecord) extends Render
 
   case class StepPassed(record: ConversationRecord) extends Decision
 

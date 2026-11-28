@@ -43,6 +43,9 @@ object UserServiceSpec extends UnitSpecBase:
     val random = new java.util.Random(seed)
     Vector.fill(count)(IdentifierMac(Array.fill(32)(random.nextInt().toByte)))
 
+  private def registration(of: Option[CellId]) =
+    RegisteredUserRequest(email = Some(email), phone = None, login = None, cell = of)
+
   class Env:
     val userRepository = stub[UserRepository]
     val authClient = stub[AuthClient]
@@ -170,6 +173,7 @@ object UserServiceSpec extends UnitSpecBase:
       val minted = UUID.fromString("00000000-0000-0000-0000-000000000009")
       for
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(minted)
+        _ <- env.topology.getCells.succeedsWith(Vector(cellRecord(cell)))
         _ <- env.userRepository.claim.returnsZIO((_, candidate) => ZIO.succeed(candidate))
         result <-
           env.service.indexRegistered(RegisteredUserRequest(email = None, phone = Some(Phone("+15551234567")), login = None, cell = Some(cell)))
@@ -187,9 +191,71 @@ object UserServiceSpec extends UnitSpecBase:
       val owner = UserDirectoryRecord(userId, Some(CellId("kz-2")))
       for
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000009"))
+        _ <- env.topology.getCells.succeedsWith(Vector(cellRecord(cell)))
         _ <- env.userRepository.claim.succeedsWith(owner)
         result <- env.service.indexRegistered(RegisteredUserRequest(email = Some(email), phone = None, login = None, cell = Some(cell)))
       yield assertTrue(result == RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-2"))))
+    },
+    test("indexRegistered refuses a cell that is closed, draining or weightless for an address nobody holds, naming the cell that takes it") {
+      val cells = Vector(
+        weighted("kz-1", 100, CellState.Closed),
+        weighted("kz-2", 100, CellState.Draining),
+        weighted("kz-3", 0),
+        weighted("kz-4", 100),
+        weighted("kz-5", 100),
+      )
+      val expected = UserService.placementCell(cells, key.email(email).mac)
+      ZIO.foreach(List("kz-1", "kz-2", "kz-3")): caller =>
+        val env = Env()
+        for
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000009"))
+          _ <- env.topology.getCells.succeedsWith(cells)
+          _ <- env.userRepository.findByIdentifier.succeedsWith(None)
+          result <- env.service.indexRegistered(registration(Some(CellId(caller)))).either
+        yield (result, env.userRepository.claim.calls.isEmpty)
+      .map: results =>
+        assertTrue(
+          expected.exists(Set("kz-4", "kz-5").map(CellId(_)).contains),
+          results.forall(_ == (Left(CellNotTaking(expected.get)), true)),
+        )
+    },
+    test("indexRegistered says that no cell takes users when none does, and claims nothing") {
+      val env = Env()
+      for
+        _ <- env.topology.getCells.succeedsWith(Vector(weighted("kz-1", 100, CellState.Closed), weighted("kz-2", 0)))
+        _ <- env.userRepository.findByIdentifier.succeedsWith(None)
+        result <- env.service.indexRegistered(registration(Some(CellId("kz-1")))).either
+      yield assertTrue(result == Left(NoCellTakesUsers), env.userRepository.claim.calls.isEmpty)
+    },
+    test("indexRegistered does not refuse a cell that takes users: open with weight above 0") {
+      val env = Env()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000009"))
+        _ <- env.topology.getCells.succeedsWith(Vector(weighted("kz-1", 1), weighted("kz-2", 100, CellState.Closed)))
+        _ <- env.userRepository.claim.returnsZIO((_, candidate) => ZIO.succeed(candidate))
+        result <- env.service.indexRegistered(registration(Some(CellId("kz-1"))))
+      yield assertTrue(result.cell == Some(CellId("kz-1")), env.userRepository.claim.calls.size == 1)
+    },
+    test("indexRegistered answers the owner to a cell that takes no users when the address is claimed already: that is no new registration") {
+      val env = Env()
+      val owner = UserDirectoryRecord(userId, Some(CellId("kz-2")))
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000009"))
+        _ <- env.topology.getCells.succeedsWith(Vector(weighted("kz-1", 100, CellState.Closed), weighted("kz-2", 100)))
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(owner))
+        _ <- env.userRepository.claim.succeedsWith(owner)
+        result <- env.service.indexRegistered(registration(Some(CellId("kz-1"))))
+      yield assertTrue(result == RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-2"))))
+    },
+    test("indexRegistered never refuses a caller that is no registered cell: the configured auth, with a cell named or none") {
+      val env = Env()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000009"))
+        _ <- env.topology.getCells.succeedsWith(Vector(weighted("kz-1", 100, CellState.Closed)))
+        _ <- env.userRepository.claim.returnsZIO((_, candidate) => ZIO.succeed(candidate))
+        named <- env.service.indexRegistered(registration(Some(CellId("kz-9"))))
+        none <- env.service.indexRegistered(registration(None))
+      yield assertTrue(named.cell == Some(CellId("kz-9")), none.cell.isEmpty, env.userRepository.claim.calls.size == 2)
     },
     test("the MAC of an identifier depends on its kind and on the key, and is the same for the same value") {
       val other = DirectoryKey.derive(Secret(Array.fill(16)(8.toByte)))
@@ -646,7 +712,7 @@ object UserServiceSpec extends UnitSpecBase:
         result <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = Some(email), phone = None))
       yield assertTrue(result.isEmpty, env.topology.getCells.calls.isEmpty)
     },
-    test("homeCell for an address nobody holds answers the cell placementCell picks among the cells that take users, the same every time") {
+    test("homeCell for an address nobody holds answers the cell observableCell picks among every registered cell, the same every time") {
       val env = Env()
       val phone = Phone("+15551234567")
       val cells = Vector(weighted("kz-1", 100), weighted("kz-2", 300), weighted("kz-3", 600), weighted("kz-4", 500, CellState.Closed))
@@ -657,25 +723,49 @@ object UserServiceSpec extends UnitSpecBase:
         again <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = Some(email), phone = None))
         byPhone <- env.service.homeCell(HomeCellRequest(login = None, userId = None, email = None, phone = Some(phone)))
       yield assertTrue(
-        byEmail == UserService.placementCell(cells, key.email(email).mac),
+        byEmail == UserService.observableCell(cells, key.email(email).mac),
         again == byEmail,
-        byPhone == UserService.placementCell(cells, key.phone(phone).mac),
-        byEmail.exists(Set("kz-1", "kz-2", "kz-3").map(CellId(_)).contains),
-        byPhone.exists(Set("kz-1", "kz-2", "kz-3").map(CellId(_)).contains),
+        byPhone == UserService.observableCell(cells, key.phone(phone).mac),
+        byEmail.exists(cells.map(_.id).contains),
+        byPhone.exists(cells.map(_.id).contains),
       )
     },
-    test("homeCell for an address nobody holds answers nothing when no cell takes users: none, closed, draining, weightless") {
+    test("homeCell for an address nobody holds answers a closed, a draining and a weightless cell too, and nothing only when no cell is registered") {
       val env = Env()
       val request = HomeCellRequest(login = None, userId = None, email = Some(email), phone = None)
+      val cells = Vector(weighted("kz-1", 100, CellState.Closed), weighted("kz-2", 100, CellState.Draining), weighted("kz-3", 0))
       for
         _ <- env.userRepository.findByIdentifier.succeedsWith(None)
         _ <- env.topology.getCells.succeedsWith(Vector.empty)
         none <- env.service.homeCell(request)
-        _ <- env.topology.getCells.succeedsWith(
-          Vector(weighted("kz-1", 100, CellState.Closed), weighted("kz-2", 100, CellState.Draining), weighted("kz-3", 0)),
-        )
+        _ <- env.topology.getCells.succeedsWith(cells)
         nonTaking <- env.service.homeCell(request)
-      yield assertTrue(none.isEmpty, nonTaking.isEmpty)
+      yield assertTrue(none.isEmpty, nonTaking == UserService.observableCell(cells, key.email(email).mac), nonTaking.isDefined)
+    },
+    test("homeCell for an address nobody holds is spread over closed, draining and weightless cells as over any other: each is answered") {
+      val cells = Vector(
+        weighted("a-open", 100),
+        weighted("b-closed", 100, CellState.Closed),
+        weighted("c-draining", 100, CellState.Draining),
+        weighted("d-zero", 0),
+      )
+      val answered = macs(2000, seed = 5).flatMap(UserService.observableCell(cells, _)).toSet
+      assertTrue(answered == cells.map(_.id).toSet)
+    },
+    test("observableCell is placementCell while every cell is open and weighted, and the same on every call whatever the order") {
+      val cells = Vector(weighted("kz-1", 100), weighted("kz-2", 300), weighted("kz-3", 600))
+      val all = macs(2000, seed = 21)
+      assertTrue(
+        all.forall(mac => UserService.observableCell(cells, mac) == UserService.placementCell(cells, mac)),
+        all.forall(mac => UserService.observableCell(cells, mac) == UserService.observableCell(cells.reverse, mac)),
+        all.forall(mac => UserService.observableCell(cells, mac) == UserService.observableCell(cells, mac)),
+        UserService.observableCell(Vector.empty, all.head).isEmpty,
+      )
+    },
+    test("observableCell gives a weightless cell the weight of 1 and no cell more than it had") {
+      val cells = Vector(weighted("kz-1", 0), weighted("kz-2", 0))
+      val all = macs(500, seed = 8)
+      assertTrue(all.flatMap(UserService.observableCell(cells, _)).toSet == Set(CellId("kz-1"), CellId("kz-2")))
     },
     test("homeCell for a login nobody holds is still the decoy over every cell, taking or not") {
       val env = Env()

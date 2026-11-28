@@ -455,6 +455,9 @@ object ConversationRenderService:
         case ConversationResult.Elsewhere(_, _) =>
           Observability.setError("illegal_state", Some("a submission for another cell was not sealed")).as(Response.internalServerError)
 
+        case _: ConversationResult.RegistrationElsewhere =>
+          Observability.setError("illegal_state", Some("a registration for another cell was not sealed")).as(Response.internalServerError)
+
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
           val encodedCode = AuthorizationCode.present(code)
           for

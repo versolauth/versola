@@ -7,7 +7,7 @@ import versola.auth.model.Password
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, PassedFactorRecord, ScopeToken, TenantId}
 import versola.oauth.clientauth.ClientAssertionRepository
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.conversation.{
@@ -22,9 +22,9 @@ import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, ConversationCookie}
 import versola.oauth.session.model.{PublicSessionId, SupersededSession}
 import versola.user.model.{Login, UserId}
-import versola.util.UnitSpecBase
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
+import versola.util.{Email, Phone, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.prelude.NonEmptySet
@@ -188,6 +188,74 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           _ = services.router.supersedes.returnsWith(ZIO.succeed(trace.add("supersedes")).unit)
           _ = services.router.submitHanded.returnsWith(
             ZIO.succeed(trace.add("submitHanded")).as(
+              (ConversationResult.RenderStep(ConversationRouterSpec.initialRecord.step), ConversationRouterSpec.initialRecord),
+            ),
+          )
+          _ <- services.renderService.renderSubmit.succeedsWith(Response.seeOther(URL.root / "challenge"))
+        yield (),
+      verify = verify,
+      verifyServices = verifyServices,
+    )
+
+  private val registeredCodeVerified = PassedFactorRecord(Instant.ofEpochSecond(500L), Set(AuthMethodRef.otp, AuthMethodRef.sms))
+  private val registeredTenant = TenantId("tenant-1")
+  private val handedRegistration =
+    CellHandoff.Registered(credential = Right(Phone("+15551234567")), verified = registeredCodeVerified, tenantId = registeredTenant)
+
+  private def registrationPayload(
+      superseded: Option[SupersededSession] = None,
+      email: Option[Email] = None,
+      phone: Option[Phone] = Some(Phone("+15551234567")),
+  ) =
+    CellHandoff.RegistrationPayload(
+      params = Map("client_id" -> List("test-client")),
+      from = "kz-2",
+      to = "kz-1",
+      expiresAt = 1000L,
+      id = "reg-1",
+      cookie = CellHandoff.cookieDigest(handedCookie),
+      email = email,
+      phone = phone,
+      verified = registeredCodeVerified,
+      tenantId = registeredTenant,
+      superseded = superseded,
+    )
+
+  /** The browser arriving at the cell that takes users, with the verified registration the first cell sealed.
+    *
+    * @param opened what opening the seal answers: the payload, or why not
+    * @param taken what the store of seals answers to this one: true the first time
+    * @param cookie the conversation cookie the browser presents
+    */
+  def registeredTestCase(
+      description: String,
+      expectedStatus: Status,
+      opened: Either[CellHandoff.Refused, CellHandoff.RegistrationPayload] = Right(registrationPayload()),
+      cookie: Option[String] = Some(handedCookie),
+      taken: Boolean = true,
+      validated: Either[Error, AuthorizeRequest] = Right(baseRequest),
+      trace: ConcurrentLinkedQueue[String] = ConcurrentLinkedQueue[String](),
+      verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      verifyServices: Services => TestResult = _ => assertCompletes,
+  ) =
+    val request = cookie.foldLeft(
+      Request.get((URL.root / "challenge" / "registration").addQueryParam(CellHandoff.RegistrationParameter, "v1.kz-1.sealed")),
+    )((request, content) => request.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(ConversationCookie.name, content)))))
+    controllerTestCase(
+      description = description,
+      request = request,
+      expectedStatus = expectedStatus,
+      setup = services =>
+        for
+          _ <- opened.fold(services.handoff.openRegistration.failsWith(_), services.handoff.openRegistration.succeedsWith(_))
+          _ <- services.assertions.recordIfAbsent.succeedsWith(taken)
+          _ <- validated.fold(services.parser.validate.failsWith(_), services.parser.validate.succeedsWith(_))
+          _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+          _ <- services.configService.getIpHeader.succeedsWith("X-Real-IP")
+          _ <- services.authService.authorizeHanded.succeedsWith(AuthorizeResponse.Initialize(authId))
+          _ = services.router.supersedes.returnsWith(ZIO.succeed(trace.add("supersedes")).unit)
+          _ = services.router.submitRegistered.returnsWith(
+            ZIO.succeed(trace.add("submitRegistered")).as(
               (ConversationResult.RenderStep(ConversationRouterSpec.initialRecord.step), ConversationRouterSpec.initialRecord),
             ),
           )
@@ -647,6 +715,97 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
             services.router.submitHanded.calls == List(
               (authId, PasskeyAssertionSubmission("""{"id":"cred-1"}""", "first-cells-csrf"), Some("""{"challenge":"c"}"""), None, None),
             ),
+          ),
+      ),
+    ),
+    // versolauth/versola#1052: a verified registration another cell handed to this one, which takes users.
+    suite("GET /challenge/registration")(
+      registeredTestCase(
+        description = "starts the request here and has the conversation it starts take the registration, with the cookie of that conversation",
+        expectedStatus = Status.SeeOther,
+        verify = resp => ZIO.succeed(assertTrue(resp.headers(Header.SetCookie).exists(_.value.name == ConversationCookie.name))),
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls == List(("cell registration", "reg-1", Instant.ofEpochSecond(1000L))),
+            services.authService.authorizeHanded.calls == List(baseRequest),
+            services.authService.authorize.calls.isEmpty,
+            services.router.submitRegistered.calls == List((authId, handedRegistration, None, None)),
+          ),
+      ),
+      registeredTestCase(
+        description = "records the session the browser had in the first cell before the registration is taken",
+        opened = Right(registrationPayload(superseded = Some(supersededSession))),
+        trace = ConcurrentLinkedQueue[String](),
+        expectedStatus = Status.SeeOther,
+        verifyServices = services => assertTrue(services.router.supersedes.calls == List((authId, supersededSession))),
+      ),
+      registeredTestCase(
+        description = "refuses a seal that is not this cell's to open, whatever the refusal, and starts nothing",
+        opened = Left(CellHandoff.Refused.Elsewhere),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls.isEmpty,
+            services.authService.authorizeHanded.calls.isEmpty,
+            services.router.submitRegistered.calls.isEmpty,
+          ),
+      ),
+      registeredTestCase(
+        description = "refuses a seal made for another use, expired or forged",
+        opened = Left(CellHandoff.Refused.Purpose),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services => assertTrue(services.router.submitRegistered.calls.isEmpty),
+      ),
+      registeredTestCase(
+        description = "refuses a request that carries no conversation cookie",
+        cookie = None,
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls.isEmpty,
+            services.authService.authorizeHanded.calls.isEmpty,
+            services.router.submitRegistered.calls.isEmpty,
+          ),
+      ),
+      registeredTestCase(
+        description = "refuses a request whose conversation cookie is not the one the seal was made with, and does not take the seal",
+        cookie = Some("another-browsers-cookie"),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls.isEmpty,
+            services.authService.authorizeHanded.calls.isEmpty,
+            services.router.submitRegistered.calls.isEmpty,
+            services.router.supersedes.calls.isEmpty,
+          ),
+      ),
+      registeredTestCase(
+        description = "refuses a seal that was presented before, and registers nobody",
+        taken = false,
+        opened = Right(registrationPayload(superseded = Some(supersededSession))),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls == List(("cell registration", "reg-1", Instant.ofEpochSecond(1000L))),
+            services.authService.authorizeHanded.calls.isEmpty,
+            services.router.submitRegistered.calls.isEmpty,
+            services.router.supersedes.calls.isEmpty,
+          ),
+      ),
+      registeredTestCase(
+        description = "refuses a seal that carries no credential, or two",
+        opened = Right(registrationPayload(phone = None)),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services => assertTrue(services.router.submitRegistered.calls.isEmpty),
+      ),
+      registeredTestCase(
+        description = "answers a request this cell does not accept like any authorization request that does not parse, and registers nobody",
+        validated = Left(Error.BadRequest),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls.isEmpty,
+            services.router.submitRegistered.calls.isEmpty,
           ),
       ),
     ),

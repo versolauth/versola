@@ -8,11 +8,14 @@ import versola.oauth.challenge.passkey.WebAuthnService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   Acr,
+  ApplicationType,
   AuthFactor,
   AuthFactorType,
   AuthFlow,
+  AuthMethod,
   AuthMethodRef,
   ClientId,
+  OAuthClientRecord,
   OtpType,
   PassedAuthFactor,
   PassedFactorRecord,
@@ -25,6 +28,7 @@ import versola.oauth.client.model.{
   RegistrationFlow,
   RegistrationStep,
   ScopeToken,
+  TenantId,
 }
 import versola.oauth.conversation.CodeAlternativeFixtures as Alt
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
@@ -43,7 +47,7 @@ import zio.json.ast.Json
 import zio.logging.logContext
 import zio.prelude.NonEmptyList
 import zio.test.*
-import zio.{Exit, ZIO}
+import zio.{Exit, ZIO, durationInt}
 
 import java.time.Instant
 import java.util.UUID
@@ -781,8 +785,233 @@ object ConversationRouterSpec extends UnitSpecBase:
     },
   )
 
+  private val registrationTenant = TenantId("tenant-1")
+
+  private val registrationClient = OAuthClientRecord(
+    id = clientId,
+    tenantId = registrationTenant,
+    clientName = Map("en" -> "Registering client"),
+    redirectUris = Set("https://example.com/callback"),
+    scope = Set(ScopeToken("read")),
+    secret = None,
+    previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    theme = "default",
+    authFlow = None,
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
+    applicationType = ApplicationType.web,
+  )
+
+  private val codeVerifiedAt = Instant.ofEpochSecond(1_700_000_000L)
+  private val codeVerified = PassedFactorRecord(codeVerifiedAt, Set(AuthMethodRef.otp, AuthMethodRef.sms))
+
+  /** What a conversation looks like once the code of a registration has passed and the next step is to register the user. */
+  private val codeTyped = registrationRecord.copy(
+    credential = Some(Right(phone)),
+    step = otp,
+    registrationStep = Some(0),
+    amr = Map(PassedAuthFactor.otp -> codeVerified),
+  )
+
+  private val handedRegistration = CellHandoff.Registered(credential = Right(phone), verified = codeVerified, tenantId = registrationTenant)
+
+  private def taken(env: Env) =
+    for
+      _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
+      _ <- env.configService.get.succeedsWith(registrationClient)
+    yield ()
+
+  /** A verified registration refused by a cell that takes no users, and taken by the one that does (versolauth/versola#1052). */
+  val registrationHandoffSuite = suite("a registration that a cell that takes no users refuses")(
+    test(
+      "is handed to the cell central names, with the credential, the factor and when it passed, and the tenant; this cell's conversation is left to be ended once it is sealed",
+    ) {
+      val env = Env(TestEnvConfig.cellCoreConfig)
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(codeTyped))
+        _ <- env.otpConversationService.checkOtp.succeedsWith(ConversationResult.StepPassed(codeTyped))
+        _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(Some(otherCell)))
+        _ <- env.configService.get.succeedsWith(registrationClient)
+        (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+      yield assertTrue(
+        result == ConversationResult.RegistrationElsewhere(otherCell, handedRegistration, codeTyped.copy(registrationStep = Some(1))),
+        env.otpConversationService.offerSetPassword.calls.isEmpty,
+        env.otpConversationService.accessDenied.calls.isEmpty,
+        // ended by the controller, once the seal is made
+        env.conversationRepository.delete.calls.isEmpty,
+        env.handoff.sealRegistration.calls.isEmpty,
+      )
+    },
+    test("ends with the error of a registration that cannot be made when no cell takes users: no handoff") {
+      val env = Env(TestEnvConfig.cellCoreConfig)
+      val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(codeTyped))
+        _ <- env.otpConversationService.checkOtp.succeedsWith(ConversationResult.StepPassed(codeTyped))
+        _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(None))
+        _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+        (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+      yield assertTrue(result == denied, env.otpConversationService.accessDenied.calls.size == 1)
+    },
+    test("ends with that error when central names this very cell: a cell is not handed its own refusal") {
+      val env = Env(TestEnvConfig.cellCoreConfig)
+      val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(codeTyped))
+        _ <- env.otpConversationService.checkOtp.succeedsWith(ConversationResult.StepPassed(codeTyped))
+        _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(Some(TestEnvConfig.cellId)))
+        _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+        (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+      yield assertTrue(result == denied)
+    },
+    test("is registered here, and not handed on, when the directory takes it") {
+      val env = Env(TestEnvConfig.cellCoreConfig)
+      val registered = codeTyped.copy(userId = Some(testUserId), registrationStep = Some(1))
+      for
+        _ <- env.otpConversationService.find.succeedsWith(Some(codeTyped))
+        _ <- env.otpConversationService.checkOtp.succeedsWith(ConversationResult.StepPassed(codeTyped))
+        _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.Registering(registered))
+        _ <- env.otpConversationService.offerSetPassword.succeedsWith(conversationResult)
+        (result, _) <- env.router.submit(authId, OtpSubmission(otpCode, "test-csrf"), None, None)
+      yield assertTrue(result == conversationResult)
+    },
+    suite("taken by the cell it was handed to")(
+      test("the credential step is passed by the factor that passed it, the user is registered through the ordinary path, and the flow goes on") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val flow = tenantRegistrationFlow.copy(steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()))
+        val registered = initialRecord.copy(userId = Some(testUserId), registrationFlow = Some(flow), registrationStep = Some(1))
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(flow))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.Registering(registered))
+          _ <- env.otpConversationService.offerSetPassword.succeedsWith(conversationResult)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+          written = env.conversationRepository.overwrite.calls.map(_._2)
+          asked = env.otpConversationService.registerVerifiedUser.calls
+        yield assertTrue(
+          result == conversationResult,
+          env.configService.registrationFor.calls == List((clientId, Right(phone))),
+          written.size == 1,
+          written.head.credential == Some(Right(phone)),
+          written.head.amr == Map(PassedAuthFactor.otp -> codeVerified),
+          written.head.registrationFlow == Some(flow),
+          // past the code step, on the step after it
+          written.head.registrationStep == Some(1),
+          written.head.userId.isEmpty,
+          asked.size == 1,
+          asked.head._4 == Right(phone),
+          // no code is asked for again, and central is not asked where the address goes
+          env.otpConversationService.prepareInitialOtp.calls.isEmpty,
+          env.otpConversationService.startRegistration.calls.isEmpty,
+          env.directory.homeOfAddress.calls.isEmpty,
+          env.otpConversationService.offerSetPassword.calls.size == 1,
+        )
+      },
+      test("a flow that is only the code finishes the sign-in") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val registered = initialRecord.copy(userId = Some(testUserId))
+        val finished = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.Registering(registered))
+          _ <- env.otpConversationService.finish.succeedsWith(finished)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(result == finished, env.otpConversationService.finish.calls.size == 1)
+      },
+      test("is not handed on a second time when this cell is refused in turn: the registration cannot be made") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(Some(otherCell)))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+          _ <- env.otpConversationService.registerVerifiedUser.succeedsWith(RegistrationEntry.NotTaking(None))
+          (noneResult, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(result == denied, noneResult == denied, env.handoff.sealRegistration.calls.isEmpty)
+      },
+      test("is refused, and nothing is registered, for a request of another tenant than the one that verified it") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration.copy(tenantId = TenantId("another")), None, None)
+        yield assertTrue(
+          result == denied,
+          env.otpConversationService.registerVerifiedUser.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+      },
+      test("is refused when this cell's tenant does not register the address (its phone regions, its email domains)") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(None)
+          _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(
+          result == denied,
+          env.otpConversationService.registerVerifiedUser.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.isEmpty,
+        )
+      },
+      test("is refused when this cell's registration flow has no code step: an address is registered only once it is verified") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val denied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow.copy(steps = List(RegistrationStep.SetPassword()))))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(denied)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(result == denied, env.otpConversationService.registerVerifiedUser.calls.isEmpty)
+      },
+      test("loses the conversation it was handed for: a write conflict, and nobody registered") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- taken(env)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          (result, _) <- env.router.submitRegistered(authId, handedRegistration, None, None)
+        yield assertTrue(result == ConversationResult.WriteConflict, env.otpConversationService.registerVerifiedUser.calls.isEmpty)
+      },
+      test("fails as expired when the conversation started for it is gone") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(None)
+          result <- env.router.submitRegistered(authId, handedRegistration, None, None).exit
+        yield assertTrue(result.isFailure, env.otpConversationService.registerVerifiedUser.calls.isEmpty)
+      },
+    ),
+  )
+
   val spec = suite("ConversationRouter")(
     handedSubmissionSuite,
+    registrationHandoffSuite,
     leavingSuite,
     supersededSessionSuite,
     suite("getConversation")(

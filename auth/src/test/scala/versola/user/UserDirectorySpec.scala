@@ -115,6 +115,36 @@ object UserDirectorySpec extends ZIOSpecDefault:
         rejected <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).claim(Right(phone)).exit
       yield assertTrue(rejected.isFailure)
     },
+    // versolauth/versola#1052
+    test("a claim central refuses because this cell does not take users fails naming the cell that does") {
+      for
+        (client, _) <- central(Response.json("""{"error":"cell_not_taking","cell":"kz-2"}""").status(Status.Conflict))
+        refused <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).claim(Right(phone)).either
+      yield assertTrue(refused.left.exists {
+        case UserDirectory.CellNotTaking(cell) => (cell: String) == "kz-2"
+        case _ => false
+      })
+    },
+    test("a claim central refuses because no cell takes users fails as that") {
+      for
+        (client, _) <- central(Response.json("""{"error":"no_cell_takes_users"}""").status(Status.Conflict))
+        refused <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).claim(Right(phone)).either
+      yield assertTrue(refused == Left(UserDirectory.NoCellTakesUsers))
+    },
+    test("a refusal that names a cell that is not a cell id, or says something else, is a failure and not a placement") {
+      for
+        (malformedClient, _) <- central(Response.json("""{"error":"cell_not_taking","cell":"KZ.1"}""").status(Status.Conflict))
+        malformed <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(malformedClient)).claim(Right(phone)).either
+        (otherClient, _) <- central(Response.json("""{"error":"something_else"}""").status(Status.Conflict))
+        other <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(otherClient)).claim(Right(phone)).either
+        (missingClient, _) <- central(Response.json("""{"error":"cell_not_taking"}""").status(Status.Conflict))
+        missing <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(missingClient)).claim(Right(phone)).either
+      yield assertTrue(
+        malformed.isLeft && !malformed.left.exists(_.isInstanceOf[UserDirectory.CellNotTaking]),
+        other.isLeft && !other.left.exists(_.isInstanceOf[UserDirectory.CellNotTaking]),
+        missing.isLeft && !missing.left.exists(_.isInstanceOf[UserDirectory.CellNotTaking]),
+      )
+    },
     test("fails when central names a cell that is not a cell id, rather than creating the user here") {
       for
         (client, _) <- central(Response.json(UserDirectory.ClaimResponse(userId, Some("KZ.1")).toJson))

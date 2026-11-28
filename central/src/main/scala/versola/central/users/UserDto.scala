@@ -40,6 +40,11 @@ case class RegisteredUserRequest(
   */
 case class RegisteredUserResponse(userId: UserId, cell: Option[CellId]) derives JsonCodec, Schema
 
+/** The body of the `409` that refuses a registration in a cell that does not take users. `cell` is the cell that does, and is
+  * absent when none does.
+  */
+case class CellRefusalResponse(error: String, cell: Option[CellId]) derives JsonCodec, Schema
+
 /** Who holds a credential, asked by a cell that did not find it in its own database (versolauth/versola#1046). */
 case class LookupUserRequest(
     email: Option[Email],

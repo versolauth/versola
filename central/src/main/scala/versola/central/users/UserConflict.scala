@@ -1,5 +1,7 @@
 package versola.central.users
 
+import versola.central.configuration.topology.CellId
+
 type UserConflict = UserConflict.type
 
 case object UserConflict
@@ -21,3 +23,14 @@ case object UserIndexConflict
 type UserMoving = UserMoving.type
 
 case object UserMoving
+
+/** A cell that does not take users (closed, draining, or of weight 0) was asked to register an address nobody holds. Answered
+  * `409` with the error code `cell_not_taking` and the cell that does take it, which is the one [[UserService.placementCell]]
+  * picks for the address among the cells that take users.
+  */
+final case class CellNotTaking(cell: CellId)
+
+/** The same refusal when no cell takes users: answered `409` with the error code `no_cell_takes_users`. */
+type NoCellTakesUsers = NoCellTakesUsers.type
+
+case object NoCellTakesUsers

@@ -39,6 +39,7 @@ final case class CellStand(
     loginClient: CellStand.RegisteredClient,
     private val setups: Ref[List[Flows.Setup]],
     private val states: (String, String) => Task[Unit],
+    private val secondClosedAtFullWeight: Task[Unit],
 ):
   private def takingUsers(first: Boolean, second: Boolean): Task[Unit] =
     states(if first then "open" else "closed", if second then "open" else "closed")
@@ -59,6 +60,13 @@ final case class CellStand(
     * cell it was typed in, and with one taking cell that cell is named for every address. */
   def whileOnlySecondTakesUsers[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
     (takingUsers(false, true) *> effect).ensuring(takingUsers(true, false).orDie)
+
+  /** Runs `effect` with cell 2 `closed` but still carrying the weight of an open cell, and cell 1 open, and puts the stand back
+    * whatever happens: a cell closed without its weight being taken away. No cell places anything in cell 2, but an address
+    * nobody holds is sent there as often as to cell 1 (versolauth/versola#1052: the answer does not depend on the cells' states),
+    * which is what makes a spec able to find one within a few tries. */
+  def whileSecondClosedAtFullWeight[R, A](effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    (secondClosedAtFullWeight *> effect).ensuring(takingUsers(true, false).orDie)
 
   /** A registration client and an address nobody has used. */
   def nextRegistration: Task[Flows.Setup] =
@@ -280,6 +288,11 @@ object CellStand:
         (process, log) <- launch(config, server.named(database), secondKey)
         _ <- awaitReady(process, log, client)
         unused <- Ref.make(setups)
+        // An open cell takes users with a weight of 100; a closed and a draining one take none, unless the spec says otherwise.
+        placed = (id: String, url: String, mutualTlsUrl: String, key: Json.Obj, state: String, weight: Int) =>
+          central
+            .put("/configuration/cells", cell(id, url, mutualTlsUrl, pin, state = state, weight = weight, publicKey = key))
+            .flatMap(accepted(s"the state of cell $id", _))
       yield CellStand(
         first = Cell(config.authCellId, oauth, config.authUrl, config.authMutualTlsUrl),
         second = Cell(
@@ -293,18 +306,13 @@ object CellStand:
         ),
         passwordClient = RegisteredClient(passwordClientId, passwordClient.secret, RedirectUri),
         loginClient = RegisteredClient(loginClientId, loginClient.secret, RedirectUri),
-        // An open cell takes users with a weight of 100; a closed and a draining one take none.
         states = (firstState, secondState) =>
-          def placed(id: String, url: String, mutualTlsUrl: String, key: Json.Obj, state: String) =
-            central
-              .put(
-                "/configuration/cells",
-                cell(id, url, mutualTlsUrl, pin, state = state, weight = if state == "open" then 100 else 0, publicKey = key),
-              )
-              .flatMap(accepted(s"the state of cell $id", _))
-          placed(config.authCellId, config.authUrl, config.authMutualTlsUrl, firstPublicKey, firstState) *>
-            placed(SecondCellId, secondUrl, secondMutualTlsUrl, secondPublicKey, secondState) *>
-            edge.syncConfiguration.unit
-        ,
+          placed(config.authCellId, config.authUrl, config.authMutualTlsUrl, firstPublicKey, firstState, if firstState == "open" then 100 else 0) *>
+            placed(SecondCellId, secondUrl, secondMutualTlsUrl, secondPublicKey, secondState, if secondState == "open" then 100 else 0) *>
+            edge.syncConfiguration.unit,
+        secondClosedAtFullWeight =
+          placed(config.authCellId, config.authUrl, config.authMutualTlsUrl, firstPublicKey, "open", 100) *>
+            placed(SecondCellId, secondUrl, secondMutualTlsUrl, secondPublicKey, "closed", 100) *>
+            edge.syncConfiguration.unit,
         setups = unused,
       )

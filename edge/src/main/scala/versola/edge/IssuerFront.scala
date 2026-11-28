@@ -53,6 +53,7 @@ object IssuerFront extends Controller:
     * issuer's pages are given them ([[routes]]); the proxy drops them. */
   val IssuerCookies: Set[String] = Set(ConversationCookie, SessionCookie, UserAgentCookie)
   private val HandoffParameter = "handoff"
+  private val RegistrationParameter = "registration"
   private val RequestUriNamespace = "urn:ietf:params:oauth:request_uri:"
 
   /** What the hop itself owns and is not passed on, in either direction. */
@@ -70,6 +71,9 @@ object IssuerFront extends Controller:
       // first cell's (versolauth/versola#1046).
       case Some("challenge") if path == List("challenge", "handoff") =>
         query(HandoffParameter).orElse(cookie(ConversationCookie)).fold(CellRouting.Placement)(CellRouting.ByValue(_))
+      // A verified registration one cell hands to the cell that takes users does the same, by its own parameter.
+      case Some("challenge") if path == List("challenge", "registration") =>
+        query(RegistrationParameter).orElse(cookie(ConversationCookie)).fold(CellRouting.Placement)(CellRouting.ByValue(_))
       case Some("challenge") => cookie(ConversationCookie).fold(CellRouting.Placement)(CellRouting.ByValue(_))
       // The pushed request is in one cell and nowhere else, so it decides before the browser's session does.
       case Some("authorize") =>

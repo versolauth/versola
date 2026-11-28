@@ -78,6 +78,23 @@ object UserServiceSpec extends UnitSpecBase:
         drafts.isEmpty,
       )
     },
+    // versolauth/versola#1052: this cell takes no users; the caller hands the registration on, nothing is created here.
+    test("does not create a user here when central refuses the claim because this cell takes no users, or no cell does") {
+      val env = Env()
+      val taking = RoutingKey.CellId.parse("kz-2").toOption.get
+      for
+        _ <- env.directory.claim.failsWith(UserDirectory.CellNotTaking(taking))
+        refused <- env.service.register(Left(email), tenantId, roleIds).either
+        _ <- env.directory.claim.failsWith(UserDirectory.NoCellTakesUsers)
+        none <- env.service.register(Left(email), tenantId, roleIds).either
+        drafts <- env.audit.recorded
+      yield assertTrue(
+        refused == Left(UserDirectory.CellNotTaking(taking)),
+        none == Left(UserDirectory.NoCellTakesUsers),
+        env.userRepository.register.calls.isEmpty,
+        drafts.isEmpty,
+      )
+    },
     test("an auth that is no cell creates the user whatever the claim says of cells, as before cells existed") {
       val env = Env(TestEnvConfig.coreConfig)
       for

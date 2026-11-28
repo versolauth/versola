@@ -10,6 +10,7 @@ import versola.oauth.conversation.model.AuthId
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRouter}
 import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, ConversationCookie}
+import versola.oauth.session.model.SupersededSession
 import versola.util.CoreConfig
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.util.http.{Controller, Observability}
@@ -31,6 +32,7 @@ object AuthorizeEndpointController extends Controller:
     postAuthorizeRoute,
     handoffRoute,
     handedSubmissionRoute,
+    registeredRoute,
   )
 
   /** A sign-in another cell took and sealed for this one, because this cell holds the user of the address typed there
@@ -56,7 +58,10 @@ object AuthorizeEndpointController extends Controller:
 
   /** The session the browser had in the first cell, written on the conversation started for the sign-in handed here. */
   private def superseding(authId: AuthId, payload: CellHandoff.Payload): ZIO[ConversationRouter, Throwable, Unit] =
-    ZIO.foreachDiscard(payload.superseded)(session => ZIO.serviceWithZIO[ConversationRouter](_.supersedes(authId, session)))
+    superseding(authId, payload.superseded)
+
+  private def superseding(authId: AuthId, superseded: Option[SupersededSession]): ZIO[ConversationRouter, Throwable, Unit] =
+    ZIO.foreachDiscard(superseded)(session => ZIO.serviceWithZIO[ConversationRouter](_.supersedes(authId, session)))
 
   private def handoffRefused(refused: CellHandoff.Refused): UIO[Response] =
     AuthMetrics.authorizeError("handoff_refused") *>
@@ -99,12 +104,53 @@ object AuthorizeEndpointController extends Controller:
                     authorizeAnd(authorizeRequest, par = false): (authId, started) =>
                       (superseding(authId, payload) *>
                         ConversationController.handed(request, authId, authorizeRequest.clientId, submission.passkeyRequest))
-                        .map: response =>
-                          // The cookie of the conversation this cell started, unless the answer already ends it.
-                          val ended = response.headers(Header.SetCookie).exists(_.value.name == ConversationCookie.name)
-                          if ended then response else started.headers(Header.SetCookie).foldLeft(response)((r, cookie) => r.addHeader(cookie)),
+                        .map(response => withStartedCookie(response, started)),
       )
     }
+
+  /** What a registration's seal is recorded under in the store of client assertions, apart from the submissions'. */
+  private val HandedRegistrations = "cell registration"
+
+  /** A registration another cell verified and sealed for this one, which takes users (`CellHandoff.sealRegistration`,
+    * versolauth/versola#1052): the browser arrives by the redirect of the cell where the code was typed. The seal is refused
+    * unless it is this cell's to open, for a registration, unexpired, and the browser presents the conversation cookie it was
+    * sealed with; it is taken once. The authorization request inside is validated as any other and starts a conversation, in
+    * which the credential step is already passed and the user is registered by the ordinary path
+    * (`ConversationRouter.submitRegistered`).
+    */
+  val registeredRoute: Route[Env, Throwable] =
+    Method.GET / "challenge" / "registration" -> handler { (request: Request) =>
+      val opened =
+        for
+          payload <- ZIO.serviceWithZIO[CellHandoff](
+            _.openRegistration(request.url.queryParams.getAll(CellHandoff.RegistrationParameter).headOption.getOrElse("")),
+          )
+          _ <- ZIO.fail(CellHandoff.Refused.AnotherBrowser)
+            .unless(request.cookie(ConversationCookie.name).exists(cookie => CellHandoff.sameCookie(payload.cookie, cookie.content)))
+          registered <- ZIO.fromOption(payload.registered).orElseFail(CellHandoff.Refused.Forged)
+        yield (payload, registered)
+      opened.foldZIO(
+        handoffRefused,
+        (payload, registered) =>
+          answered:
+            ZIO.serviceWithZIO[AuthorizeRequestParser](_.validate(payload.params.view.mapValues(Chunk.fromIterable).toMap, request))
+              .flatMap: authorizeRequest =>
+                ZIO.serviceWithZIO[ClientAssertionRepository](
+                  _.recordIfAbsent(clientId = HandedRegistrations, jti = payload.id, expiresAt = Instant.ofEpochSecond(payload.expiresAt)),
+                ).flatMap:
+                  case false => handoffRefused(CellHandoff.Refused.Replayed)
+                  case true =>
+                    authorizeAnd(authorizeRequest, par = false, handed = true): (authId, started) =>
+                      (superseding(authId, payload.superseded) *>
+                        ConversationController.registered(request, authId, authorizeRequest.clientId, registered))
+                        .map(response => withStartedCookie(response, started)),
+      )
+    }
+
+  /** The cookie of the conversation this cell started, unless the answer already ends it. */
+  private def withStartedCookie(response: Response, started: Response): Response =
+    val ended = response.headers(Header.SetCookie).exists(_.value.name == ConversationCookie.name)
+    if ended then response else started.headers(Header.SetCookie).foldLeft(response)((r, cookie) => r.addHeader(cookie))
 
   val getAuthorizeRoute = authorize(Method.GET)
   val postAuthorizeRoute = authorize(Method.POST)

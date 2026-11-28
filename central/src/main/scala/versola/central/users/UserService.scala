@@ -52,8 +52,16 @@ trait UserService:
 
   def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]
 
-  /** Claim credentials and return the canonical ID for self-service registration. */
-  def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, RegisteredUserResponse]
+  /** Claim credentials and return the canonical ID for self-service registration.
+    *
+    * A new registration is made only in a cell that takes users: when the caller is a registered cell that is not open or has weight 0, and
+    * the identifiers are not claimed yet, the claim is refused with [[CellNotTaking]] naming the cell that takes the address
+    * ([[UserService.placementCell]]), or with [[NoCellTakesUsers]] when no cell does. An identifier claimed before answers its owner, whatever
+    * cell asks; a caller that is no registered cell (the configured `auth`) is never refused.
+    */
+  def indexRegistered(
+      request: RegisteredUserRequest,
+  ): IO[UserIndexConflict | CellNotTaking | NoCellTakesUsers | Throwable, RegisteredUserResponse]
 
   /** The user that holds the identifiers and the cell that holds the user, without claiming anything; `None` when
     * nobody holds them, or when they belong to more than one user (which a claim reports, not a lookup). */
@@ -68,9 +76,10 @@ trait UserService:
     * cell that receives one answers it as it answers any login it does not hold. A user id is not guessed, so an
     * unknown one answers nothing.
     *
-    * An email or phone number nobody holds is sent to the cell [[UserService.placementCell]] picks by weight (versolauth/
-    * versola#1052): the cell it is sent to may register it, so unlike a login it follows the cells' weights, and it
-    * answers nothing only when no cell takes users.
+    * An email or phone number nobody holds is sent to the cell [[UserService.observableCell]] picks (versolauth/versola#1052): the
+    * same hash over every registered cell, whatever its state, so that an address is sent to a closed or draining cell as
+    * likely as a held one is. Where the cell it is sent to does not take users, that cell hands a verified registration on to the
+    * one that does ([[indexRegistered]]); answers nothing only when no cell is registered.
     */
   def homeCell(request: HomeCellRequest): Task[Option[CellId]]
 
@@ -123,19 +132,28 @@ object UserService:
       val sorted = cells.sortBy(identity[String])
       sorted((BigInt(1, mac) % sorted.size).toInt)
 
-  /** The cell an email or a phone number nobody holds is sent to (versolauth/versola#1052): weighted rendezvous hashing
-    * over the cells that take users (open, weight above 0 -- the filter of [[CellPlacement.pick]]), keyed by the MAC of
-    * the address.
+  /** The cell an email or a phone number nobody holds is sent to by a sign-in (versolauth/versola#1052): weighted rendezvous
+    * hashing keyed by the MAC of the address, over EVERY registered cell whatever its state, with the weight `max(weight, 1)`.
+    * Where every cell is open and weighted this is [[placementCell]].
     *
-    * Why it exists: a cell that does not hold the address sends the browser on when another cell holds it, and
-    * registers or answers "unknown" when nobody does. If nobody's address were sent on, the redirect would tell which
-    * addresses are registered. Sending an unheld address to a cell as well makes the two answers the same to an observer.
-    * The MAC is keyed with a secret only central has, so an outside observer cannot compute which cell an address maps
-    * to, and cannot tell a held address from an unheld one by where it is sent. What it can see is that the same address
-    * always goes to the same cell while the cells and weights are the same; that is a property of the address, not of
-    * whether anyone holds it.
+    * Why every cell: a cell that does not hold the address sends the browser on when another cell holds it, and registers or
+    * answers "unknown" when nobody does. If an address were sent only to cells that take users, an address sent to a closed,
+    * draining or weightless cell would certainly be held, and the redirect would tell which addresses are registered. The
+    * answer for an unheld address therefore does not depend on the cells' states. The MAC is keyed with a secret only central has,
+    * so an outside observer cannot compute which cell an address maps to; what it can see is that the same address always goes
+    * to the same cell while the cells are the same, which is a property of the address and not of whether anyone holds it.
     *
-    * Why rendezvous: for each taking cell, `u` is a number strictly inside (0, 1) from the first 8 bytes of
+    * @return `None` when no cell is registered
+    */
+  private[users] def observableCell(cells: Vector[CellRecord], mac: IdentifierMac): Option[CellId] =
+    rendezvous(cells.map(cell => (cell.id, math.max(cell.weight, 1))), mac)
+
+  /** The cell that takes an address when it is registered: weighted rendezvous hashing over the cells that take users (open,
+    * weight above 0 -- the filter of [[CellPlacement.pick]]), keyed by the MAC of the address. Used where a registration is made
+    * (a cell that does not take users is told which does, [[CellNotTaking]]), never to answer a sign-in: for that see
+    * [[observableCell]].
+    *
+    * Why rendezvous: for each candidate cell, `u` is a number strictly inside (0, 1) from the first 8 bytes of
     * `SHA-256(mac ++ 0x00 ++ cellId utf8)` and `score = -weight / ln(u)`; the highest score wins. A cell is chosen with
     * probability proportional to its weight, and a change of one cell's weight moves addresses only to or from that
     * cell; removing a cell moves only that cell's addresses.
@@ -147,9 +165,11 @@ object UserService:
     * @return `None` when no cell takes users
     */
   private[users] def placementCell(cells: Vector[CellRecord], mac: IdentifierMac): Option[CellId] =
-    cells
-      .filter(cell => cell.state == CellState.Open && cell.weight > 0)
-      .map(cell => cell.id -> rendezvousScore(cell.weight, rendezvousUnit(mac, cell.id)))
+    rendezvous(cells.filter(cell => cell.state == CellState.Open && cell.weight > 0).map(cell => (cell.id, cell.weight)), mac)
+
+  private def rendezvous(candidates: Vector[(CellId, Int)], mac: IdentifierMac): Option[CellId] =
+    candidates
+      .map((id, weight) => id -> rendezvousScore(weight, rendezvousUnit(mac, id)))
       .sortBy(_._1: String)
       .reduceLeftOption((best, next) => if next._2 > best._2 then next else best)
       .map(_._1)
@@ -336,16 +356,40 @@ object UserService:
         )
       yield id
 
-    override def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, RegisteredUserResponse] =
+    override def indexRegistered(
+        request: RegisteredUserRequest,
+    ): IO[UserIndexConflict | CellNotTaking | NoCellTakesUsers | Throwable, RegisteredUserResponse] =
+      val claimed = identifiers(request.email, request.phone, request.login)
       for
+        _ <- refusedUnlessTaking(request.cell, claimed)
         id <- secureRandom.nextUUIDv7.map(UserId(_))
         // The cell of a new claim is the caller's: the user is created where the registration was taken. An identifier
         // claimed before answers its owner and the owner's cell, whatever cell asks.
         owner <- userRepository.claim(
-          identifiers = identifiers(request.email, request.phone, request.login),
+          identifiers = claimed,
           candidate = UserDirectoryRecord(id, cellId = request.cell),
         )
       yield RegisteredUserResponse(userId = owner.id, cell = owner.cellId)
+
+    /** A registration is made only in a cell that takes users. A caller that is a registered cell and does not (not open, or weight 0)
+      * is refused for an address nobody holds, and told which cell takes it; an address that is held answers its owner as before.
+      * A caller that names no registered cell (the configured `auth`) is not refused. An address is the first of the identifiers given; a
+      * claim of none has no address to place and is refused as taken by no cell. */
+    private def refusedUnlessTaking(
+        caller: Option[CellId],
+        claimed: List[DirectoryIdentifier],
+    ): IO[CellNotTaking | NoCellTakesUsers | Throwable, Unit] =
+      ZIO.foreachDiscard(caller): id =>
+        topology.getCells.flatMap: cells =>
+          cells.find(_.id == id) match
+            case Some(cell) if !(cell.state == CellState.Open && cell.weight > 0) =>
+              ZIO.foreach(claimed)(userRepository.findByIdentifier).flatMap: owners =>
+                if owners.exists(_.isDefined) then ZIO.unit
+                else
+                  claimed.headOption.flatMap(identifier => UserService.placementCell(cells, identifier.mac)) match
+                    case Some(taking) => ZIO.fail(CellNotTaking(taking))
+                    case None => ZIO.fail(NoCellTakesUsers)
+            case _ => ZIO.unit
 
     override def lookup(request: LookupUserRequest): Task[Option[RegisteredUserResponse]] =
       ZIO.foreach(identifiers(request.email, request.phone, request.login))(userRepository.findByIdentifier).map: owners =>
@@ -357,7 +401,7 @@ object UserService:
       def ofAddress(identifier: DirectoryIdentifier): Task[Option[CellId]] =
         userRepository.findByIdentifier(identifier).flatMap:
           case Some(owner) => ZIO.succeed(owner.cellId)
-          case None => topology.getCells.map(cells => UserService.placementCell(cells, identifier.mac))
+          case None => topology.getCells.map(cells => UserService.observableCell(cells, identifier.mac))
       (request.login, request.userId, request.email, request.phone) match
         case (Some(login), None, None, None) =>
           val identifier = directoryKey.login(login)

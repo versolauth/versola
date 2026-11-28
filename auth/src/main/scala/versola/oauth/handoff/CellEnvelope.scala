@@ -44,10 +44,14 @@ object CellEnvelope:
     val Handoff = "handoff"
     val UserMove = "user-move"
 
+    /** A registration a cell that does not take users hands, verified, to the cell that does ([[CellHandoff.RegistrationPayload]]). */
+    val Registration = "registration"
+
     /** How long an envelope of this purpose may be opened. A handoff is the browser's next request; a moved user is carried
       * by central across its retries of a step, so it lives longer. */
     def lifetimeOf(purpose: String): Option[Duration] = purpose match
       case Handoff => Some(1.minute)
+      case Registration => Some(1.minute)
       case UserMove => Some(10.minutes)
       case _ => None
 

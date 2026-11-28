@@ -2,6 +2,7 @@ package versola.oauth.handoff
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import versola.oauth.client.model.{AuthMethodRef, PassedFactorRecord, TenantId}
 import versola.oauth.conversation.ConversationRouterSpec
 import versola.oauth.model.{Nonce, State}
 import versola.oauth.session.SessionRepository
@@ -129,6 +130,52 @@ object CellHandoffSpec extends UnitSpecBase:
         ),
         ttl = ttl,
         signature = JWT.Signature.Asymmetric(algorithm, signer.keyId, signer.privateKey),
+      )
+      encrypted <- security.encryptRsaHybrid(jws.getBytes(StandardCharsets.UTF_8), encryptedTo.publicKey)
+    yield RoutingKey.encode(home, Base64.urlEncode(encrypted))
+
+  private val verifiedAt = Instant.ofEpochSecond(1_000)
+  private val verifiedByCode = PassedFactorRecord(at = verifiedAt, methods = Set(AuthMethodRef.otp))
+  private val tenant = TenantId("t1")
+  private val registered = CellHandoff.Registered(credential = Left(email), verified = verifiedByCode, tenantId = tenant)
+
+  /** A registration seal as a cell that does what it should not would make it. */
+  private def forgedRegistration(
+      signer: RsaKeyPair = TestEnvConfig.authKeyPair,
+      issuer: String = "kz-1",
+      audience: List[String] = List("kz-2"),
+      from: String = "kz-1",
+      to: String = "kz-2",
+      expiresAt: Long = 60,
+      email: Option[Email] = Some(CellHandoffSpec.email),
+      phone: Option[Phone] = None,
+      purpose: String = CellEnvelope.Purpose.Registration,
+      encryptedTo: RsaKeyPair = TestEnvConfig.anotherCellKeyPair,
+  ): ZIO[SecurityService, Throwable, String] =
+    val payload = CellHandoff.RegistrationPayload(
+      params = Map("client_id" -> List("c")),
+      from = from,
+      to = to,
+      expiresAt = expiresAt,
+      id = "id-1",
+      cookie = CellHandoff.cookieDigest(cookie),
+      email = email,
+      phone = phone,
+      verified = verifiedByCode,
+      tenantId = tenant,
+      superseded = None,
+    )
+    for
+      security <- ZIO.service[SecurityService]
+      jws <- JWT.serialize(
+        claims = JWT.Claims(
+          issuer,
+          issuer,
+          audience,
+          Json.Obj("purpose" -> Json.Str(purpose), "body" -> Json.Str(Base64.urlEncode(payload.toJson.getBytes(StandardCharsets.UTF_8)))),
+        ),
+        ttl = 1.minute,
+        signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, signer.keyId, signer.privateKey),
       )
       encrypted <- security.encryptRsaHybrid(jws.getBytes(StandardCharsets.UTF_8), encryptedTo.publicKey)
     yield RoutingKey.encode(home, Base64.urlEncode(encrypted))
@@ -577,6 +624,146 @@ object CellHandoffSpec extends UnitSpecBase:
       test("a seal made under the old shape of the payload, with no superseded field, is not read as having one") {
         val old = """{"params":{},"to":"kz-2","expiresAt":1,"submission":null}"""
         assertTrue(old.fromJson[CellHandoff.Payload].isLeft || old.fromJson[CellHandoff.Payload].exists(_.superseded.isEmpty))
+      },
+    ),
+    // versolauth/versola#1052: the verified registration a cell that does not take users hands to the one that does.
+    suite("a registration seal")(
+      test("round-trips: the request without a login hint, the credential, the factor and when, the tenant, the digest of the cookie") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          ticket <- first.sealRegistration(record, registered, home, cookie)
+          payload <- second.openRegistration(ticket)
+        yield assertTrue(
+          ticket.startsWith("v1.kz-2."),
+          !ticket.contains("user"),
+          payload.from == "kz-1",
+          payload.to == "kz-2",
+          payload.params("client_id") == List(record.clientId: String),
+          !payload.params.contains("login_hint"),
+          payload.registered == Some(registered),
+          payload.verified == verifiedByCode,
+          payload.tenantId == tenant,
+          payload.cookie == CellHandoff.cookieDigest(cookie),
+          !payload.cookie.contains(cookie),
+          payload.id.nonEmpty,
+        )
+      },
+      test("carries a phone as the credential") {
+        val byPhone = registered.copy(credential = Right(Phone("+15551234567")))
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          payload <- first.sealRegistration(record, byPhone, home, cookie).flatMap(second.openRegistration)
+        yield assertTrue(payload.registered == Some(byPhone), payload.email.isEmpty)
+      },
+      test("two seals of the same registration have different ids, and sameCookie accepts the cookie sealed and refuses another") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          one <- first.sealRegistration(record, registered, home, cookie).flatMap(second.openRegistration)
+          two <- first.sealRegistration(record, registered, home, cookie).flatMap(second.openRegistration)
+        yield assertTrue(
+          one.id != two.id,
+          CellHandoff.sameCookie(one.cookie, cookie),
+          !CellHandoff.sameCookie(one.cookie, cookie + "x"),
+          !CellHandoff.sameCookie(one.cookie, ""),
+        )
+      },
+      test("a registration seal is not a handoff, and a handoff is not a registration, whoever made it") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          registration <- first.sealRegistration(record, registered, home, cookie)
+          handoff <- first.seal(record, Left(email), home)
+          submission <- first.sealSubmission(record, home, cookie, None)
+          registrationAsHandoff <- second.open(registration).either
+          handoffAsRegistration <- second.openRegistration(handoff).either
+          submissionAsRegistration <- second.openRegistration(submission).either
+          movedAsRegistration <- forgedRegistration(purpose = CellEnvelope.Purpose.UserMove).flatMap(second.openRegistration(_).either)
+          registrationAsMove <- forgedRegistration(purpose = CellEnvelope.Purpose.Handoff).flatMap(second.openRegistration(_).either)
+          handoffBodyAsRegistration <- forged().flatMap(second.openRegistration(_).either)
+        yield assertTrue(
+          registrationAsHandoff == Left(CellHandoff.Refused.Purpose),
+          handoffAsRegistration == Left(CellHandoff.Refused.Purpose),
+          submissionAsRegistration == Left(CellHandoff.Refused.Purpose),
+          movedAsRegistration == Left(CellHandoff.Refused.Purpose),
+          registrationAsMove == Left(CellHandoff.Refused.Purpose),
+          handoffBodyAsRegistration == Left(CellHandoff.Refused.Purpose),
+        )
+      },
+      test("is opened only by the cell it is sealed for: another cell, a cell that is none, a seal that names another cell") {
+        for
+          first <- at(Some("kz-1"))
+          third <- at(Some("kz-3"))
+          ticket <- first.sealRegistration(record, registered, home, cookie)
+          elsewhere <- third.openRegistration(ticket).either
+          notACell <- at(None).flatMap(_.openRegistration(ticket).either)
+          second <- at(Some("kz-2"))
+          audienceOther <- forgedRegistration(audience = List("kz-3")).flatMap(second.openRegistration(_).either)
+          payloadOther <- forgedRegistration(to = "kz-3").flatMap(second.openRegistration(_).either)
+        yield assertTrue(
+          elsewhere == Left(CellHandoff.Refused.Forged),
+          notACell == Left(CellHandoff.Refused.NotACell),
+          audienceOther == Left(CellHandoff.Refused.Elsewhere),
+          payloadOther == Left(CellHandoff.Refused.Elsewhere),
+        )
+      },
+      test("expires after a minute, in its signature and in its payload") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          ticket <- first.sealRegistration(record, registered, home, cookie)
+          _ <- TestClock.adjust(59.seconds)
+          inTime <- second.openRegistration(ticket).either
+          _ <- TestClock.adjust(1.second)
+          late <- second.openRegistration(ticket).either
+          payloadExpired <- forgedRegistration(expiresAt = 0).flatMap(second.openRegistration(_).either)
+        yield assertTrue(
+          inTime.isRight,
+          late == Left(CellHandoff.Refused.Expired),
+          payloadExpired == Left(CellHandoff.Refused.Expired),
+        )
+      },
+      test("forged, altered, made under another key, in another cell's name, or with no credential or two, is refused") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          stranger <- at(Some("kz-9"))
+          ticket <- first.sealRegistration(record, registered, home, cookie)
+          altered <- second.openRegistration(ticket.dropRight(4) + "AAAA").either
+          foreign <- stranger.sealRegistration(record, registered, home, cookie).flatMap(second.openRegistration(_).either)
+          wrongKey <- forgedRegistration(signer = strangerKeyPair).flatMap(second.openRegistration(_).either)
+          inOthersName <-
+            forgedRegistration(signer = thirdKeyPair, issuer = "kz-3", from = "kz-1").flatMap(second.openRegistration(_).either)
+          noCredential <- forgedRegistration(email = None).flatMap(second.openRegistration(_).either)
+          twoCredentials <- forgedRegistration(phone = Some(Phone("+15551234567"))).flatMap(second.openRegistration(_).either)
+          garbage <- second.openRegistration("v1.kz-2.not base64!").either
+          bare <- second.openRegistration("").either
+        yield assertTrue(
+          altered == Left(CellHandoff.Refused.Forged),
+          foreign == Left(CellHandoff.Refused.Forged),
+          wrongKey == Left(CellHandoff.Refused.Forged),
+          inOthersName == Left(CellHandoff.Refused.Forged),
+          noCredential == Left(CellHandoff.Refused.Forged),
+          twoCredentials == Left(CellHandoff.Refused.Forged),
+          garbage == Left(CellHandoff.Refused.Malformed),
+          bare.isLeft,
+        )
+      },
+      test("is not made for a request too large for a URL, for a cell with no key, or by an auth that is no cell") {
+        val large = record.copy(state = Some(State("s" * CellHandoff.MaxLength)))
+        for
+          first <- at(Some("kz-1"))
+          tooLarge <- first.sealRegistration(large, registered, home, cookie).either
+          noKey <- first.sealRegistration(record, registered, RoutingKey.CellId.parse("kz-9").toOption.get, cookie).either
+          plain <- at(None).flatMap(_.sealRegistration(record, registered, home, cookie).either)
+        yield assertTrue(
+          tooLarge.left.exists(_.isInstanceOf[CellHandoff.TooLarge]),
+          noKey == Left(CellHandoff.NoKey("kz-9")),
+          plain.isLeft,
+          !plain.left.exists(_.isInstanceOf[CellHandoff.NoKey]),
+        )
       },
     ),
     suite("SupersededSession")(

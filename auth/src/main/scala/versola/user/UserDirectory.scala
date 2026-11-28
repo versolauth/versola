@@ -4,7 +4,7 @@ import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.session.model.SupersededSession
 import versola.user.model.{Login, UserId}
 import versola.util.{CoreConfig, Email, Phone, RoutingKey}
-import zio.http.{Body, Header, MediaType, Request, Status}
+import zio.http.{Body, Header, MediaType, Request, Response, Status}
 import zio.json.*
 import zio.{Task, URLayer, ZIO, ZLayer}
 
@@ -43,11 +43,21 @@ trait UserDirectory:
   def sessionSuperseded(session: SupersededSession): Task[Unit]
 
 object UserDirectory:
+  /** Central refuses the claim because this cell does not take users (closed, draining or of weight 0) and nobody holds the
+    * address: `cell` is the cell that does take it (`409 cell_not_taking`). The registration is made there. */
+  final case class CellNotTaking(cell: RoutingKey.CellId) extends RuntimeException(s"this cell does not take users; cell '$cell' does")
+
+  /** The same refusal when no cell takes users (`409 no_cell_takes_users`). */
+  case object NoCellTakesUsers extends RuntimeException("no cell takes users")
+
   /** @param cell the cell that holds the user; `None` on an installation with no cell. */
   final case class Claim(userId: UserId, cell: Option[RoutingKey.CellId])
 
   /** What central is asked: the credential, and the cell that asks. */
   private[user] case class ClaimRequest(email: Option[Email], phone: Option[Phone], cell: Option[String]) derives JsonCodec
+
+  /** The body of the `409` that refuses a claim. */
+  private[user] case class ClaimRefusal(error: String, cell: Option[String]) derives JsonCodec
 
   private[user] case class ClaimResponse(userId: UserId, cell: Option[String]) derives JsonCodec
 
@@ -127,7 +137,19 @@ object UserDirectory:
               .post(RegistrationsUrl, Body.fromString(request.toJson))
               .addHeader(Header.ContentType(MediaType.application.json)),
           )
+          _ <- refused(response).when(response.status == Status.Conflict)
           _ <- ZIO.unless(response.status.isSuccess):
             ZIO.fail(new Exception(s"Claiming registration failed with ${response.status}"))
           claim <- response.body.asJsonFromCodec[ClaimResponse].flatMap(read)
         yield claim
+
+    /** What a `409` says: the cell that takes the address, or that none does. Any other `409` (the identifiers belong to more than
+      * one user) is a failure like any other. */
+    private def refused(response: Response): Task[Unit] =
+      response.body.asJsonFromCodec[ClaimRefusal].option.flatMap:
+        case Some(ClaimRefusal("cell_not_taking", Some(cell))) =>
+          ZIO.fromEither(RoutingKey.CellId.parse(cell))
+            .mapBoth(reason => new Exception(s"central answered an invalid cell: $reason"), CellNotTaking(_))
+            .flatMap(ZIO.fail(_))
+        case Some(ClaimRefusal("no_cell_takes_users", _)) => ZIO.fail(NoCellTakesUsers)
+        case _ => ZIO.unit

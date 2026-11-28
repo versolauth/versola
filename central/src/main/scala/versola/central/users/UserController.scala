@@ -202,8 +202,16 @@ object UserController extends AuditedController:
       yield Response.json(claim.toJson))
         .catchAll:
           case UserIndexConflict => ZIO.succeed(Response.status(Status.Conflict))
+          case CellNotTaking(taking) =>
+            Observability.setError("cell_not_taking", Some("the cell does not take users")).as(refusal("cell_not_taking", Some(taking)))
+          case NoCellTakesUsers =>
+            Observability.setError("no_cell_takes_users", Some("no cell takes users")).as(refusal("no_cell_takes_users", None))
           case error: Throwable => ZIO.fail(error)
     }
+
+  /** `409` with the error code, and the cell that takes the address when there is one. */
+  private def refusal(error: String, cell: Option[CellId]): Response =
+    Response.json(CellRefusalResponse(error = error, cell = cell).toJson).status(Status.Conflict)
 
   /** The cell a new claim is made in (#1050), from who the caller is and not from what it says. `Cell(id)` is `id`, and a body
     * that names another cell is refused: a cell cannot place a user in another's directory. The configured `auth` is the cell its

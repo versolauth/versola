@@ -60,7 +60,19 @@ object CellEnvelopeSpec extends UnitSpecBase:
         moveAsHandoff <- second.open(CellEnvelope.Purpose.Handoff, move).either
         handoffAsMove <- second.open(CellEnvelope.Purpose.UserMove, handoff).either
         unknown <- second.open("something-else", move).either
+        registration <- first.seal(two, CellEnvelope.Purpose.Registration, content)
+        registrationAsHandoff <- second.open(CellEnvelope.Purpose.Handoff, registration).either
+        registrationAsMove <- second.open(CellEnvelope.Purpose.UserMove, registration).either
+        handoffAsRegistration <- second.open(CellEnvelope.Purpose.Registration, handoff).either
+        moveAsRegistration <- second.open(CellEnvelope.Purpose.Registration, move).either
+        registrationOpened <- second.open(CellEnvelope.Purpose.Registration, registration).either
       yield assertTrue(
+        registrationAsHandoff == Left(CellEnvelope.Refused.WrongPurpose),
+        registrationAsMove == Left(CellEnvelope.Refused.WrongPurpose),
+        handoffAsRegistration == Left(CellEnvelope.Refused.WrongPurpose),
+        moveAsRegistration == Left(CellEnvelope.Refused.WrongPurpose),
+        registrationOpened.isRight,
+        CellEnvelope.Purpose.lifetimeOf(CellEnvelope.Purpose.Registration) == Some(1.minute),
         moveAsHandoff == Left(CellEnvelope.Refused.WrongPurpose),
         handoffAsMove == Left(CellEnvelope.Refused.WrongPurpose),
         unknown == Left(CellEnvelope.Refused.WrongPurpose),

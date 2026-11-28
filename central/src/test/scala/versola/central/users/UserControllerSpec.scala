@@ -478,6 +478,38 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       authorization = internalAuthorization,
     ),
     controllerTestCase(
+      description = "registered user maps CellNotTaking to 409 with the error code and the cell that takes the address",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Conflict,
+      setup = service => service.indexRegistered.failsWith(CellNotTaking(CellId("kz-2"))),
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (response, service) =>
+        for body <- response.body.asString
+        yield assertTrue(
+          body == """{"error":"cell_not_taking","cell":"kz-2"}""",
+          service.indexRegistered.calls == List(registeredRequest.copy(cell = Some(CellId("kz-1")))),
+        ),
+    ),
+    controllerTestCase(
+      description = "registered user maps NoCellTakesUsers to 409 with the error code and no cell",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Conflict,
+      setup = service => service.indexRegistered.failsWith(NoCellTakesUsers),
+      authorization = cellAuthorization,
+      cells = List(kz1, kz2),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body == """{"error":"no_cell_takes_users"}""")),
+    ),
+    controllerTestCase(
+      description = "registered user answers the configured auth's claim as before, and a refusal it gets is the service's",
+      request = registration(registeredRequestBody),
+      expectedStatus = Status.Conflict,
+      setup = service => service.indexRegistered.failsWith(CellNotTaking(CellId("kz-2"))),
+      authorization = internalAuthorization,
+      cells = List(kz1, kz2),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.indexRegistered.calls == List(registeredRequest))),
+    ),
+    controllerTestCase(
       description = "registered user forwards the login field when present",
       request = Request(
         method = Method.POST,

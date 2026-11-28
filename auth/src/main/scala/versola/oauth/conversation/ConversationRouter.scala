@@ -70,6 +70,19 @@ trait ConversationRouter:
       ipAddress: Option[String],
   ): Task[(ConversationResult.Render, ConversationRecord)]
 
+  /** A registration another cell verified and handed to this one, which takes users, for the conversation this cell has just
+    * started for it (`CellHandoff.sealRegistration`, versolauth/versola#1052). The credential step is passed by the factor the first
+    * cell recorded, so no code is asked for again; the user is registered here by the ordinary path, where the tenant's rules for
+    * the address apply, and the conversation goes on with the steps of the registration flow that remain. This cell does not hand
+    * the registration on: when it too is refused, the registration cannot be made.
+    */
+  def submitRegistered(
+      authId: AuthId,
+      registered: CellHandoff.Registered,
+      uiLocale: Option[String],
+      ipAddress: Option[String],
+  ): Task[(ConversationResult.Render, ConversationRecord)]
+
   /** Advance an already-created conversation to the first factor step that still needs to be
     * completed. The conversation must already have `credential` populated (set at creation time
     * when `userId` and `targetAcr` are known). Satisfied factors (present in `amr`) are skipped
@@ -226,6 +239,55 @@ object ConversationRouter:
               .orElseSucceed(ConversationResult.ServiceUnavailable)
               .map(_ -> located)
 
+    override def submitRegistered(
+        authId: AuthId,
+        registered: CellHandoff.Registered,
+        uiLocale: Option[String],
+        ipAddress: Option[String],
+    ): Task[(ConversationResult.Render, ConversationRecord)] =
+      conversationService.find(authId).orElseFail(Error.ServiceUnavailable)
+        .flatMap:
+          case None => ZIO.fail(Error.ConversationExpired)
+          case Some(conversation) =>
+            val located = withUiLocale(conversation, uiLocale)
+            startVerifiedRegistration(authId, located, registered)
+              .tap(endSuperseded(located))
+              .tapErrorCause(cause => ZIO.logErrorCause("Couldn't take a registration handed to this cell", cause))
+              .orElseSucceed(ConversationResult.ServiceUnavailable)
+              .map(_ -> located)
+
+    /** The registration flow of the tenant for the address, entered after its code step, as if the code had been typed here. Refused
+      * (access denied) when the request is for another tenant than the one that verified, when the tenant does not register this
+      * address, or when its flow has no code step (an address is registered only after it is verified). */
+    private def startVerifiedRegistration(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        registered: CellHandoff.Registered,
+    ): Task[ConversationResult.Render] =
+      def refused(reason: String): Task[ConversationResult.Render] =
+        Observability.setError("registration_refused", Some(reason)) *> conversationService.accessDenied(authId, conversation)
+      configService.get(conversation.clientId).flatMap: client =>
+        if client.tenantId != registered.tenantId then refused("the handed registration is for another tenant")
+        else
+          configService.registrationFor(conversation.clientId, registered.credential).flatMap:
+            case None => refused("this cell's tenant does not register the address")
+            case Some(flow) =>
+              flow.steps.indexOf(RegistrationStep.Otp()) match
+                case -1 => refused("this cell's registration flow has no code step")
+                case otpIndex =>
+                  val verifiedConversation = conversation.withoutIdentityState.copy(
+                    credential = Some(registered.credential),
+                    amr = Map(PassedAuthFactor.otp -> registered.verified),
+                    registrationFlow = Some(flow),
+                    registrationStep = Some(otpIndex + 1),
+                  )
+                  conversationRepository.overwrite(authId, verifiedConversation).flatMap:
+                    case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                    case true =>
+                      val current = verifiedConversation.copy(version = verifiedConversation.version + 1)
+                      withVerifiedRegistrationUser(authId, current, handed = true): verified =>
+                        runRegistrationStep(authId, verified, ProofInput.NoScript)
+
     /** The conversation as it would be had this cell issued the assertion request itself: the request the first cell
       * sealed becomes the pending one of the credential card. `None` when the request this cell started has no card
       * that takes a passkey with no user (its client asks for something else here). */
@@ -322,8 +384,9 @@ object ConversationRouter:
             // The user is resolved and refused BEFORE the credential is looked at: a right and a wrong password answer alike while
             // the user is leaving, and a password check is not charged to a user who is not served here (versolauth/versola#1051).
             // (An auth that is no cell moves nobody, so it has no departure to ask about.)
-            ZIO.when(config.cellId.isDefined)(userRepository.findByLogin(submitted.login))
-              .flatMap(found => refusedDeparture(found.flatten.map(_.id))).flatMap:
+            val leaving = ZIO.when(config.cellId.isDefined)(userRepository.findByLogin(submitted.login))
+              .flatMap(found => refusedDeparture(found.flatten.map(_.id)))
+            leaving.flatMap:
               case Some(refused) => ZIO.succeed(refused)
               case None =>
                 conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password)
@@ -474,10 +537,15 @@ object ConversationRouter:
 
     /** Resolve the account only after OTP verification, immediately before an account-bound setup
       * step or successful completion.
+      *
+      * Where the directory refuses the registration because this cell does not take users, the verified registration is handed
+      * to the cell that does (`ConversationResult.RegistrationElsewhere`, sealed by the controller); when `handed`, it was handed here
+      * already and is not handed on again.
       */
     private def withVerifiedRegistrationUser(
         authId: AuthId,
         conversation: ConversationRecord,
+        handed: Boolean,
     )(continue: ConversationRecord => Task[ConversationResult.Render]): Task[ConversationResult.Render] =
       val credentialVerified =
         conversation.amr.contains(PassedAuthFactor.otp) &&
@@ -491,9 +559,35 @@ object ConversationRouter:
           case (Some(flow), Some(credential)) =>
             conversationService.registerVerifiedUser(authId, conversation, flow, credential).flatMap:
               case RegistrationEntry.Registering(updated) => continue(updated)
+              case RegistrationEntry.NotTaking(home) => notTaking(authId, conversation, credential, home, handed)
               case ConversationResult.WriteConflict => ZIO.succeed(ConversationResult.WriteConflict)
           case _ =>
             conversationService.accessDenied(authId, conversation)
+
+    /** The registration cannot be made here. The verified registration is handed to the cell central names, unless it was handed
+      * here already, or central names this cell, or none: then it cannot be made at all, and the flow shows what it shows when
+      * access is denied. */
+    private def notTaking(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        home: Option[RoutingKey.CellId],
+        handed: Boolean,
+    ): Task[ConversationResult.Render] =
+      def cannot(code: String, reason: String): Task[ConversationResult.Render] =
+        Observability.setError(code, Some(reason)) *> conversationService.accessDenied(authId, conversation)
+      (home, conversation.amr.get(PassedAuthFactor.otp)) match
+        case (None, _) => cannot("no_cell_takes_users", "no cell takes users")
+        case (Some(_), _) if handed => cannot("cell_not_taking", "the cell the registration was handed to does not take users either")
+        case (Some(cell), _) if config.cellId.contains(cell) => cannot("cell_not_taking", "central names this cell for a registration it refused")
+        case (Some(_), None) => cannot("illegal_state", "a registration was refused after a code that was not recorded")
+        case (Some(cell), Some(verified)) =>
+          configService.get(conversation.clientId).map: client =>
+            ConversationResult.RegistrationElsewhere(
+              home = cell,
+              registered = CellHandoff.Registered(credential = credential, verified = verified, tenantId = client.tenantId),
+              conversation = conversation,
+            )
 
     /** Render the pending registration step, or finish once the flow is exhausted.
       *
@@ -516,15 +610,15 @@ object ConversationRouter:
               conversationService.accessDenied(authId, conversation)
 
         case Some(_: RegistrationStep.SetPassword) =>
-          withVerifiedRegistrationUser(authId, conversation): verified =>
+          withVerifiedRegistrationUser(authId, conversation, handed = false): verified =>
             conversationService.offerSetPassword(authId, verified)
 
         case Some(_: RegistrationStep.PasskeyEnroll) =>
-          withVerifiedRegistrationUser(authId, conversation): verified =>
+          withVerifiedRegistrationUser(authId, conversation, handed = false): verified =>
             conversationService.offerPasskeyEnroll(authId, verified)
 
         case None =>
-          withVerifiedRegistrationUser(authId, conversation): verified =>
+          withVerifiedRegistrationUser(authId, conversation, handed = false): verified =>
             conversationService.finish(authId, verified)
 
     /** Determine the first factor step after the user submits their credential,

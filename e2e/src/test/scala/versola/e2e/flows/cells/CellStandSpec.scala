@@ -2,7 +2,7 @@ package versola.e2e.flows.cells
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Status, URL}
+import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -106,29 +106,81 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
   private case class Registered(code: String, cookie: Option[String], tokens: TokenResult.Success)
 
   /** The email-and-code conversation of `setup` at `cell` up to the code step's answer. */
-  private def submitCode(cell: CellStand.Cell, setup: Flows.Setup, email: String): RIO[CellStand, (AuthorizeResult, SubmitResult)] =
+  private def submitCode(
+      cell: CellStand.Cell,
+      setup: Flows.Setup,
+      email: String,
+  ): RIO[CellStand & E2EConfig & Client, (AuthorizeResult, SubmitResult)] =
     ZIO.serviceWithZIO[CellStand]: s =>
       // An address nobody holds is registered in the cell central names for it (versolauth/versola#1052): for a user of
       // cell 2, cell 2 is the one cell that takes users while the address is typed.
       if cell.id == s.second.id then s.whileOnlySecondTakesUsers(codeSubmitted(cell, setup, email))
       else codeSubmitted(cell, setup, email)
 
-  private def codeSubmitted(cell: CellStand.Cell, setup: Flows.Setup, email: String): Task[(AuthorizeResult, SubmitResult)] =
+  /** What a browser does with a redirect of the issuer: a GET at the address through edge, with the conversation cookie it
+    * holds, when it holds one. */
+  private def visited(location: String, cookie: Option[String]): ZIO[E2EConfig & Client, Throwable, Response] =
     for
-      authorize <- cell.auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri))
-        .assertChallengeRedirect
-      cookie = authorize.conversationCookie.get
-      credential <- cell.auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
-      _ <- cell.auth.submitEmail(cookie, email, credential.csrf)
-      otp <- cell.auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
-      submitted <- cell.auth.submitOtp(cookie, fixedOtp, otp.csrf)
-    yield (authorize, submitted)
+      config <- ZIO.service[E2EConfig]
+      client <- ZIO.service[Client]
+      url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}$location")).mapError(RuntimeException(_))
+      request = Request.get(url)
+      response <- client.batched(cookie.fold(request)(content => request.addHeader(Header.Custom("Cookie", s"__Host-SSO_CONVERSATION=$content"))))
+    yield response
 
-  private def register(cell: CellStand.Cell, setup: Flows.Setup, email: String): RIO[CellStand, Registered] =
+  /** The conversation cookie a response sets, when it sets one. */
+  private def conversationCookieOf(response: Response): Option[String] =
+    response.headers.getAll(Header.SetCookie).collectFirst {
+      case h if h.value.name == "__Host-SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
+    }
+
+  /** The address typed at `cell` on a new sign-in: the request, the cookie of its conversation, and the answer to the address. */
+  private def typedAt(cell: CellStand.Cell, setup: Flows.Setup, email: String): Task[(AuthorizeResult, String, SubmitResult)] =
     for
+      authorize <- cell.auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri)).assertChallengeRedirect
+      cookie = authorize.conversationCookie.get
+      card <- cell.auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+      typed <- cell.auth.submitEmail(cookie, email, card.csrf)
+    yield (authorize, cookie, typed)
+
+  private def handedTo(cell: CellStand.Cell, answer: SubmitResult): Boolean =
+    answer.location.contains(s"/challenge/handoff?handoff=v1.${cell.id}.")
+
+  /** The conversation of `setup` at `cell` up to the code step's answer. An address nobody holds may be sent to another cell
+    * than the one it was typed at, which a browser follows (versolauth/versola#1052): the code is then asked, and typed, there; and a
+    * cell that takes no users hands the registration, once the code is verified, to one that does, which a browser follows as well.
+    * What is returned is the last answer of the browser, which is the redirect with the code when the sign-in has finished. */
+  private def codeSubmitted(
+      cell: CellStand.Cell,
+      setup: Flows.Setup,
+      email: String,
+  ): RIO[E2EConfig & Client, (AuthorizeResult, SubmitResult)] =
+    for
+      (authorize, cookie, typed) <- typedAt(cell, setup, email)
+      browser <- front
+      // Where the code is asked: here, or at the cell the address was sent to.
+      (asked, held) <-
+        if typed.location.contains("/challenge/handoff?handoff=") then
+          visited(typed.location, None).flatMap: arrived =>
+            ZIO.fromOption(conversationCookieOf(arrived)).orElseFail(RuntimeException(s"the handoff was not taken: ${arrived.status}"))
+              .map(next => (browser.auth, next))
+        else ZIO.succeed((cell.auth, cookie))
+      otp <- asked.getChallenge(held).assertStep(ConversationStep.Otp)
+      submitted <- asked.submitOtp(held, fixedOtp, otp.csrf)
+      finished <-
+        if submitted.location.contains("/challenge/registration?registration=") then
+          visited(submitted.location, Some(held)).map(SubmitResult(_))
+        else ZIO.succeed(submitted)
+    yield (authorize, finished)
+
+  private def register(cell: CellStand.Cell, setup: Flows.Setup, email: String): RIO[CellStand & E2EConfig & Client, Registered] =
+    for
+      s <- stand
       (authorize, submitted) <- submitCode(cell, setup, email)
       code <- submitted.assertRedirect
-      tokens <- cell.auth.token(
+      // The code names the cell that issued it, which is the one that took the registration.
+      issuer = if code.startsWith(s"v1.${s.second.id}.") then s.second else s.first
+      tokens <- issuer.auth.token(
         code,
         authorize.verifier,
         clientId = Some(setup.clientId),
@@ -143,11 +195,11 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
   /** Registers a user at cell 2 and gives it a login and a password through central, which sets both in the cell that
     * holds the user. The login travels by central's outbox, so a sign-in at cell 2 is repeated, within a bound, until
     * cell 2 knows the login. */
-  private def loginUserOfSecond(s: CellStand): ZIO[OAuthClient & CentralApi & CellStand, Throwable, LoginUser] =
+  private def loginUserOfSecond(s: CellStand): ZIO[OAuthClient & CentralApi & CellStand & E2EConfig & Client, Throwable, LoginUser] =
     loginUserOf(s, s.second)
 
   /** The same for a user of `cell`. */
-  private def loginUserOf(s: CellStand, cell: CellStand.Cell): ZIO[OAuthClient & CentralApi & CellStand, Throwable, LoginUser] =
+  private def loginUserOf(s: CellStand, cell: CellStand.Cell): ZIO[OAuthClient & CentralApi & CellStand & E2EConfig & Client, Throwable, LoginUser] =
     for
       auth <- ZIO.service[OAuthClient]
       central <- ZIO.service[CentralApi]
@@ -637,6 +689,84 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
           .label(s"the registration was made in the cell central named: $code") &&
         assertTrue(shape(again) == shape(typed))
           .label(s"held or not, cell 1 answers alike: ${shape(typed)} then ${shape(again)}")
+    },
+    // versolauth/versola#1052: a cell that does not take users is sent a held address and an unheld one alike, and a registration
+    // that is verified there is made in a cell that does.
+    test("a closed cell is sent a held address and an unheld one alike, and an unheld one registers in the open cell") {
+      for
+        s <- stand
+        central <- ZIO.service[CentralApi]
+        front <- front
+        heldSetup <- s.nextRegistration
+        setup <- s.nextRegistration
+        heldEmail = heldSetup.email.get
+        // A user of cell 2, made while it takes users.
+        _ <- register(s.second, heldSetup, heldEmail)
+        result <- s.whileSecondClosedAtFullWeight:
+          for
+            // (a) the held address, typed in the open cell: sent to cell 2, which holds the user, and shown the code step.
+            (_, _, heldTyped) <- typedAt(s.first, heldSetup, heldEmail)
+            heldArrived <- visited(heldTyped.location, None)
+            heldCookie <- ZIO.fromOption(
+              conversationCookieOf(heldArrived),
+            ).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${heldArrived.status}"))
+            heldStep <- front.auth.getChallenge(heldCookie).assertStep(ConversationStep.Otp)
+            // (b) addresses nobody holds, until one is sent to the closed cell: bounded, and a failure says how many were tried.
+            found <- ZIO.iterate((0, Option.empty[(String, AuthorizeResult, SubmitResult)]))(state => state._2.isEmpty && state._1 < 40):
+              case (tries, _) =>
+                for
+                  email <- CentralApi.email("closed")
+                  (authorize, _, typed) <- typedAt(s.first, setup, email)
+                yield (tries + 1, Option.when(handedTo(s.second, typed))((email, authorize, typed)))
+            (tries, chosen) = found
+            (email, authorize, typed) <- ZIO.fromOption(chosen)
+              .orElseFail(RuntimeException(s"none of $tries unheld addresses was sent to the closed cell"))
+            arrived <- visited(typed.location, None)
+            cookie <-
+              ZIO.fromOption(conversationCookieOf(arrived)).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${arrived.status}"))
+            step <- front.auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+            // The code is typed in the closed cell, which refuses to register and hands the verified registration to the open one.
+            typedCode <- front.auth.submitOtp(cookie, fixedOtp, step.csrf)
+            registration <- visited(typedCode.location, Some(cookie))
+            code <- SubmitResult(registration).assertRedirect
+            tokens <- s.first.auth.token(
+              code,
+              authorize.verifier,
+              clientId = Some(setup.clientId),
+              clientSecret = Some(setup.clientSecret),
+              redirectUri = Some(setup.redirectUri),
+            ).success
+            issuedBy <- cellHeader(tokens.accessToken)
+            sub <- subject(tokens.accessToken)
+            inDirectory <- central.get("/users", "email" -> email).flatMap(_.items("users"))
+            // The same address again: the closed cell sends it straight to the open cell, and the open cell asks for its code itself.
+            (_, _, atClosed) <- typedAt(s.second, setup, email)
+            (_, againCookie, atOpen) <- typedAt(s.first, setup, email)
+            againStep <- s.first.auth.getChallenge(againCookie).assertStep(ConversationStep.Otp)
+          yield (tries, heldTyped, heldStep, typed, step, typedCode, code, issuedBy, sub, inDirectory, atClosed, atOpen, againStep)
+        (tries, heldTyped, heldStep, typed, step, typedCode, code, issuedBy, sub, inDirectory, atClosed, atOpen, againStep) = result
+        shape = (answer: SubmitResult) =>
+          (
+            answer.response.status,
+            answer.location.takeWhile(_ != '=') + "=" + answer.location.dropWhile(_ != '=').drop(1).split('.').take(2).mkString("."),
+          )
+      yield assertTrue(handedTo(s.second, heldTyped), handedTo(s.second, typed))
+        .label(s"a held address and an unheld one are both sent to the closed cell (after $tries tries): ${heldTyped.location} ${typed.location}") &&
+        assertTrue(shape(heldTyped) == shape(typed))
+          .label(s"and the answer to either has the same shape: ${shape(heldTyped)} and ${shape(typed)}") &&
+        assertTrue(heldStep.getClass == step.getClass).label("both are shown the code step") &&
+        assertTrue(typedCode.location.contains(s"/challenge/registration?registration=v1.${s.first.id}."))
+          .label(s"the code verified in the closed cell is handed to the open one: ${typedCode.response.status} ${typedCode.location}") &&
+        assertTrue(code.startsWith(s"v1.${s.first.id}."), issuedBy.contains(s.first.id))
+          .label(s"the tokens are issued in the open cell: $code $issuedBy") &&
+        assertTrue(inDirectory.flatMap(_.str("cell")) == Chunk(s.first.id), inDirectory.flatMap(_.str("id")) == Chunk.fromIterable(sub))
+          .label(s"the directory says the user is the open cell's: $inDirectory") &&
+        assertTrue(handedTo(
+          s.first,
+          atClosed,
+        )).label(s"a second sign-in with the address goes from the closed cell straight to the open one: ${atClosed.location}") &&
+        assertTrue(!atOpen.location.contains("/challenge/handoff"), againStep.csrf.nonEmpty)
+          .label(s"and in the open cell it stays and asks for the code: ${atOpen.location}")
     },
     // versolauth/versola#1048: what names the user only when it is submitted is repeated in the cell that holds the user.
     test("a login and password typed where the sign-in was placed are checked in the cell that holds the user, once, and not asked twice") {

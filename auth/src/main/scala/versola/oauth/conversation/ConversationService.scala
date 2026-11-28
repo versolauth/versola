@@ -45,10 +45,10 @@ import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.{Login, UserId, UserRecord}
-import versola.user.{UserRepository, UserService}
+import versola.user.{UserDirectory, UserRepository, UserService}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
-import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, Secret, SecureRandom, SecurityService}
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, RoutingKey, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.prelude.NonEmptyList
 
@@ -251,6 +251,12 @@ sealed trait RegistrationEntry
 object RegistrationEntry:
   /** The user is positioned on the first registration step. */
   case class Registering(conversation: ConversationRecord) extends RegistrationEntry
+
+  /** The directory refused the registration because this cell does not take users and nobody holds the address.
+    *
+    * @param home the cell that takes it; `None` when no cell takes users
+    */
+  case class NotTaking(home: Option[RoutingKey.CellId]) extends RegistrationEntry
 
 object ConversationService:
   /** What the event log names the SMS budget as when, in `shadow`, it would have refused a code that went out. */
@@ -1631,18 +1637,23 @@ object ConversationService:
     ): Task[RegistrationEntry | ConversationResult.WriteConflict.type] =
       for
         client <- configService.get(conversation.clientId)
-        user <- userService.register(credential, client.tenantId, flow.roleIds)
-        updated = conversation.copy(
-          userId = Some(user.id),
-          userEmail = user.email,
-          userPhone = user.phone,
-          userLogin = user.login,
-          userClaims = Some(user.claims),
-        )
-        written <- conversationRepository.overwrite(authId, updated)
-      yield
-        if written then RegistrationEntry.Registering(updated.copy(version = updated.version + 1))
-        else ConversationResult.WriteConflict
+        registered <- userService.register(credential, client.tenantId, flow.roleIds).map(Right(_)).catchSome:
+          case UserDirectory.CellNotTaking(home) => ZIO.left(Some(home))
+          case UserDirectory.NoCellTakesUsers => ZIO.left(None)
+        result <- registered match
+          case Left(home) => ZIO.succeed(RegistrationEntry.NotTaking(home))
+          case Right(user) =>
+            val updated = conversation.copy(
+              userId = Some(user.id),
+              userEmail = user.email,
+              userPhone = user.phone,
+              userLogin = user.login,
+              userClaims = Some(user.claims),
+            )
+            conversationRepository.overwrite(authId, updated).map:
+              case true => RegistrationEntry.Registering(updated.copy(version = updated.version + 1))
+              case false => ConversationResult.WriteConflict
+      yield result
 
     override def setNewPassword(
         conversation: ConversationRecord,
