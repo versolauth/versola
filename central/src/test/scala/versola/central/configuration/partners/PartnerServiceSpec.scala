@@ -228,7 +228,14 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
               ),
             ),
           )
-          _ <- env.clients.refreshNow.succeedsWith(())
+          // read back as stored: the cache has not necessarily heard of the registration yet, and nothing reloads it by hand
+          _ <- env.clients.findClientFresh.returnsZIO(id =>
+            ZIO.succeed(
+              Option.when(id == ClientId("acme-console") && env.clients.registerClient.calls.nonEmpty)(
+                console.copy(scope = env.clients.registerClient.calls.head._1.allowedScopes),
+              ),
+            ),
+          )
           _ <- env.presets.savePresets.succeedsWith(Right(()))
           _ <- env.edges.registerEdgeWithoutKey.succeedsWith(())
           _ <- env.edges.sync().succeedsWith(())

@@ -322,9 +322,8 @@ object PartnerService:
         // to the partner's limits (its scope is what the console needs, its redirect is the console's), but a partner's
         // client in every other way.
         _ <- registration(clients.registerClient(consoleClient(record, request.consoleRedirectUri), allowOutsideLimits = true))
-        // the preset is validated against the clients central has cached, which a notification refreshes after the commit
-        _ <- clients.refreshNow
-        console <- clients.findClient(consoleId).someOrFail(IllegalStateException(s"client '$consoleId' was registered and cannot be read"))
+        // as stored: the `client_change` notification of the registration has not necessarily reached the cache yet
+        console <- clients.findClientFresh(consoleId).someOrFail(IllegalStateException(s"client '$consoleId' was registered and cannot be read"))
         _ <- consolePreset(console, request.consoleRedirectUri)
         edge <- enrol(record, request.firstEdgeId, request.firstEdgePublicUrl)
       yield Created(record, edge)
