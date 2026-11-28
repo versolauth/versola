@@ -530,8 +530,8 @@ object PartnerService:
             limit <- requestedNativeStart(approval)
             set = record.rateLimits.getOrElse(RateLimitPolicies.empty).copy(nativeStart = Some(limit))
             _ <- ZIO.fromEither(set.validate).mapError(PartnerError.Invalid(_))
+            // the `partner_change` notification of this write brings it to the registry of every pod: nothing is reloaded here
             _ <- partners.setRateLimits(record.id, Some(set), None).someOrFail(PartnerError.NotFound(s"partner '${record.id}'"))
-            _ <- registry.refreshNow
           yield ()
         case _ => partnerClients.applyApproval(approval, applied)
 
@@ -654,8 +654,7 @@ object PartnerService:
           .catchSome:
             case _: PartnerRateLimitsChanged => ZIO.fail(PartnerError.Conflict("the rate limits changed since they were read; read them again"))
           .someOrFail(PartnerError.NotFound(s"partner '${partner.id}'"))
-        // the partners are cached and the cache hears of a write through a notification: this one is seen by the next sync of an edge at once
-        _ <- registry.refreshNow
+        // the partners are cached, and the cache of every pod hears of this write through the `partner_change` notification
         waiting <- ZIO.foreach(forOperator)(limit => requestRateLimitsChange(partner, requestedBy, limit, current.flatten))
       yield GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision, waiting)
 

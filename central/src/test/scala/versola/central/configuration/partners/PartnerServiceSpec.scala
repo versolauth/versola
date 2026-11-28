@@ -659,18 +659,18 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("the rate limits of the group (the partner's to manage, once for the group)")(
-      test("setting them writes the partner once, not an edge, and the cache is told at once") {
+      test("setting them writes the partner once, not an edge, and leaves the cache to the notification of the write") {
         val env = Env()
         val policies = RateLimitPolicies.recommended
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(policies), rateLimitsRevision = 3)))
-          _ <- env.registry.refreshNow.succeedsWith(())
           set <- env.service.setRateLimits(acme, Some(policies), Some(2), "staff-1")
         yield assertTrue(
           env.partners.setRateLimits.calls == List((acme.id, Some(policies), Some(2))),
           // what an edge is served is the partner's value: no edge is written
           env.edges.patchPolicies.calls.isEmpty,
-          env.registry.refreshNow.calls.size == 1,
+          // nothing is reloaded by hand: the `partner_change` notification of the write tells the registry of every pod
+          env.registry.refreshNow.calls.isEmpty,
           set == PartnerService.GroupRateLimits(Some(policies), 3),
         )
       },
@@ -680,7 +680,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val invalid = RateLimitPolicies(RateLimitPolicies.recommended.policies ++ RateLimitPolicies.recommended.policies.take(1), 1)
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme))
-          _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1)), None, "staff-1")
           refused <- env.service.setRateLimits(acme, Some(invalid), None, "staff-1").flip
         yield assertTrue(
@@ -695,7 +694,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val invalid = stricter.copy(nativeStart = Some(NativeStartRateLimit(limit = 5, windowSeconds = 60, burst = 50, mode = GuardMode.Enforce)))
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(stricter), rateLimitsRevision = 1)))
-          _ <- env.registry.refreshNow.succeedsWith(())
           set <- env.service.setRateLimits(acme, Some(stricter), None, "staff-1")
           refused <- env.service.setRateLimits(acme, Some(invalid), None, "staff-1").flip
         yield assertTrue(
@@ -722,7 +720,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
             _ <- env.registry.findFresh.succeedsWith(Some(held))
             _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
             _ <- env.partners.setRateLimits.succeedsWith(Some(held.copy(rateLimitsRevision = 5)))
-            _ <- env.registry.refreshNow.succeedsWith(())
             _ <- env.approvals.createIfNoneWaiting.succeedsWith(true)
             set <- env.service.setRateLimits(acme, Some(asked), Some(4), "staff-1")
             queued = env.approvals.createIfNoneWaiting.calls
@@ -748,7 +745,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.registry.findFresh.succeedsWith(Some(held))
           _ <- env.partners.setRateLimits.succeedsWith(Some(held))
-          _ <- env.registry.refreshNow.succeedsWith(())
           // the policies change, the approved limit is sent back as it is
           kept <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended.copy(nativeStart = Some(approved))), None, "staff-1")
           default <-
@@ -756,7 +752,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- fresh.registry.findFresh.succeedsWith(Some(acme))
           _ <- fresh.approvals.waitingFor.succeedsWith(Vector.empty)
           _ <- fresh.partners.setRateLimits.succeedsWith(Some(acme))
-          _ <- fresh.registry.refreshNow.succeedsWith(())
           _ <- fresh.approvals.createIfNoneWaiting.succeedsWith(true)
           first <- fresh.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1, Some(approved))), None, "staff-1")
         yield assertTrue(
@@ -811,7 +806,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.approvals.decide.succeedsWith(true)
           _ <- env.registry.findFresh.succeedsWith(Some(held))
           _ <- env.partners.setRateLimits.succeedsWith(Some(held))
-          _ <- env.registry.refreshNow.succeedsWith(())
           approved <- env.service.approve(request.id, Some("operator-1"), None, None)
           _ <- rejecting.approvals.find.succeedsWith(Some(request))
           _ <- rejecting.approvals.decide.succeedsWith(true)
@@ -821,7 +815,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           overridden.isInstanceOf[PartnerError.Invalid],
           approved.status == ApprovalStatus.Approved,
           env.partners.setRateLimits.calls == List((acme.id, Some(RateLimitPolicies.recommended.copy(nativeStart = Some(asked))), None)),
-          env.registry.refreshNow.calls.size == 1,
+          // nothing is reloaded by hand: the `partner_change` notification of the write tells the registry of every pod
+          env.registry.refreshNow.calls.isEmpty,
           rejected.status == ApprovalStatus.Rejected,
           rejecting.partners.setRateLimits.calls.isEmpty,
         )
@@ -851,7 +846,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val env = Env()
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 1)))
-          _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
           _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended), None, "staff-1")
           _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1"))))
