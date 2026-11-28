@@ -40,6 +40,14 @@ object SutDatabases:
     */
   private val creation = new Object
 
+  /** The databases already made fresh by this JVM, which under sbt's default layering is one `test` invocation. These are
+    * scratch databases that outlive the run, so one left by an earlier checkout holds migrations as that checkout had
+    * them; a migration edited since (or a branch switched) no longer matches its recorded checksum and Flyway refuses
+    * every spec with `Migration checksum mismatch`. They hold nothing worth keeping, so the first use in a run drops and
+    * recreates them, and later uses in the same run share what that made.
+    */
+  private val recreated = scala.collection.mutable.Set.empty[String]
+
   private def migrationsOf(directory: String): String =
     if Files.isDirectory(Path.of(directory)) then s"filesystem:./$directory"
     else s"filesystem:../$directory"
@@ -51,8 +59,8 @@ object SutDatabases:
     // went to localhost:5432 whatever the run was told.
     live(PostgresSpec.config.build).map(_.get[PostgresConfig])
 
-  /** Creates the database if absent and applies the given migrations directory to it. Idempotent
-    * -- Flyway skips what it has already applied -- so several specs can share one prepared
+  /** Creates the database (fresh on its first use in this run) and applies the given migrations directory to it.
+    * Idempotent within a run -- Flyway skips what it has already applied -- so several specs can share one prepared
     * database without ordering between them.
     */
   def prepare(database: String, migrationsDirectory: String): ZIO[Scope, Throwable, SutDatabaseConfig] =
@@ -75,6 +83,14 @@ object SutDatabases:
           try
             val statement = connection.createStatement()
             try
+              if !recreated.contains(database) then
+                // Only a scratch database of this suite is ever dropped, whatever name a future caller passes.
+                require(database.startsWith("loadgen_sut_"), s"refusing to drop '$database': not a loadgen SUT scratch database")
+                // WITH (FORCE) (Postgres 13+) ends the other sessions on it: two runs against one Postgres (two worktrees
+                // with the same POSTGRES_HOST) are not supported, the second would cut the first off.
+                statement.execute(s"DROP DATABASE IF EXISTS $database WITH (FORCE)")
+                // Recorded only once the drop has worked: a failed one must fail the next spec too, not leave it on the stale database.
+                recreated += database
               val existing = statement.executeQuery(s"SELECT 1 FROM pg_database WHERE datname = '$database'")
               if !existing.next() then statement.execute(s"CREATE DATABASE $database")
             finally statement.close()
